@@ -1,0 +1,8 @@
+.gradle/
+build/
+out/
+*.log
+*.jar
+*.swp
+.idea/
+.DS_Store
