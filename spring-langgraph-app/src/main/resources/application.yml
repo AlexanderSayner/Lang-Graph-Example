@@ -1,26 +1,53 @@
 server:
-  port: 8080
+  port: 9191
+  shutdown: graceful
 
 spring:
   application:
     name: spring-langgraph-app
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
   graphql:
     path: /graphql
+    graphiql:
+      enabled: true
+      path: /graphiql
     schema:
       locations: classpath*:graphql/**/*.graphqls
+    websocket:
+      path: /graphql/ws
+  jackson:
+    default-property-inclusion: non_null
 
 grpc:
   client:
     langgraph-service:
-      address: 'static://localhost:50051'
+      address: 'static://${langgraph.service.host:localhost}:${langgraph.service.port:50051}'
       negotiation-type: PLAINTEXT
+      enable-keep-alive: true
+      keep-alive-time: 30s
+      keep-alive-without-calls: true
 
 langgraph:
   service:
-    host: localhost
-    port: 50051
+    host: ${LANGGRAPH_HOST:localhost}
+    port: ${LANGGRAPH_PORT:50051}
+  execution:
+    timeout: ${LANGGRAPH_EXECUTION_TIMEOUT:60s}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when_authorized
 
 logging:
   level:
-    com.example.langgraph: DEBUG
-    io.grpc: DEBUG
+    root: INFO
+    org.sandbox.langgraph: DEBUG
+    io.grpc: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

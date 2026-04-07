@@ -1,11 +1,11 @@
-package com.example.langgraph;
+package org.sandbox.langgraph;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
  * Main Spring Boot Application for LangGraph Integration.
- * 
+ * <p>
  * This application provides a GraphQL API for building and executing
  * LangGraph workflows, with gRPC communication to a Python LangGraph service.
  */

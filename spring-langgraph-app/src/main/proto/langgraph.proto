@@ -1,7 +1,7 @@
 syntax = "proto3";
 
 option java_multiple_files = true;
-option java_package = "com.example.langgraph.grpc";
+option java_package = "org.sandbox.langgraph.grpc";
 option java_outer_classname = "LangGraphProto";
 
 package langgraph;
