@@ -1,0 +1,26 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: spring-langgraph-app
+  graphql:
+    path: /graphql
+    schema:
+      locations: classpath*:graphql/**/*.graphqls
+
+grpc:
+  client:
+    langgraph-service:
+      address: 'static://localhost:50051'
+      negotiation-type: PLAINTEXT
+
+langgraph:
+  service:
+    host: localhost
+    port: 50051
+
+logging:
+  level:
+    com.example.langgraph: DEBUG
+    io.grpc: DEBUG

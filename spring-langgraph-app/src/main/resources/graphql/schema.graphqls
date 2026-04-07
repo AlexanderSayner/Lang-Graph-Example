@@ -1,0 +1,117 @@
+type Query {
+    "List all available graphs"
+    listGraphs(pageSize: Int = 10, pageToken: String): GraphConnection!
+    
+    "Get the current state of a graph"
+    getGraphState(graphId: String!, threadId: String): GraphState!
+}
+
+type Mutation {
+    "Build a new graph with the given configuration"
+    buildGraph(
+        graphId: String!
+        graphName: String!
+        nodes: [NodeInput!]!
+        edges: [EdgeInput!]!
+        config: MapStringString
+    ): BuildGraphResult!
+    
+    "Execute a graph with the given input"
+    executeGraph(
+        graphId: String!
+        input: String!
+        context: MapStringString
+    ): ExecuteGraphResult!
+    
+    "Update the state of a graph"
+    updateGraphState(
+        graphId: String!
+        threadId: String
+        stateUpdates: MapStringString!
+    ): UpdateGraphStateResult!
+    
+    "Delete a graph"
+    deleteGraph(graphId: String!): DeleteGraphResult!
+}
+
+type Subscription {
+    "Subscribe to real-time graph execution events"
+    executeGraphStream(
+        graphId: String!
+        input: String!
+        context: MapStringString
+    ): ExecuteGraphEvent!
+}
+
+type GraphConnection {
+    graphs: [GraphInfo!]!
+    nextPageToken: String
+    totalCount: Int!
+}
+
+type GraphInfo {
+    graphId: ID!
+    graphName: String!
+    nodeCount: Int!
+    createdAt: String!
+    status: String!
+}
+
+type GraphState {
+    success: Boolean!
+    state: MapStringString!
+    currentNode: String
+    nodeHistory: [String!]!
+}
+
+type BuildGraphResult {
+    success: Boolean!
+    graphId: String
+    message: String!
+}
+
+type ExecuteGraphResult {
+    success: Boolean!
+    output: String
+    state: MapStringString
+    errorMessage: String
+}
+
+type UpdateGraphStateResult {
+    success: Boolean!
+    updatedState: MapStringString!
+    message: String!
+}
+
+type DeleteGraphResult {
+    success: Boolean!
+    message: String!
+}
+
+type ExecuteGraphEvent {
+    eventType: String!
+    nodeId: String
+    output: String
+    state: MapStringString
+    timestamp: Long!
+    errorMessage: String
+}
+
+input NodeInput {
+    nodeId: String!
+    nodeType: String!
+    handlerName: String!
+    metadata: MapStringString
+}
+
+input EdgeInput {
+    source: String!
+    target: String!
+    condition: String
+}
+
+"Map<String, String> scalar type"
+scalar MapStringString
+
+"Long scalar type"
+scalar Long

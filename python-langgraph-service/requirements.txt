@@ -1,0 +1,9 @@
+grpcio==1.68.1
+grpcio-tools==1.68.1
+langgraph==0.2.53
+langchain-core==0.3.25
+langchain-openai==0.2.11
+pydantic==2.10.4
+python-dotenv==1.0.1
+uvloop==0.21.0; platform_system != "Windows"
+
