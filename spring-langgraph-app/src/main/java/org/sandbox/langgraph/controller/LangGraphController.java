@@ -35,6 +35,7 @@ public class LangGraphController {
 
     @QueryMapping
     public Mono<@NonNull GraphListPayload> listGraphs(
+            // Maps to pageSize: Int! in schema (primitive requires non-null)
             @Argument int pageSize,
             @Argument String pageToken) {
         return langGraphService.listGraphs(pageSize, pageToken);
@@ -59,7 +60,7 @@ public class LangGraphController {
         return langGraphService.executeGraphStream(input, false)
                 .reduce(new ExecuteGraphPayloadAccumulator(), ExecuteGraphPayloadAccumulator::accumulate)
                 .map(ExecuteGraphPayloadAccumulator::toPayload)
-                .defaultIfEmpty(new ExecuteGraphPayload(true, "", null, null)); // Fix: Use Record constructor
+                .defaultIfEmpty(new ExecuteGraphPayload(true, "", null, null));
     }
 
     @SubscriptionMapping
@@ -82,6 +83,7 @@ public class LangGraphController {
         return langGraphService.deleteGraph(graphId);
     }
 
+    // Internal helper class for accumulating stream results
     private static final class ExecuteGraphPayloadAccumulator {
         private String output;
         private final Map<String, Object> state = new HashMap<>();

@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<configuration>
+    <springProfile name="!json-logs">
+        <property name="CONSOLE_LOG_THRESHOLD" value="${CONSOLE_LOG_THRESHOLD:-TRACE}"/>
+        <property name="CONSOLE_LOG_CHARSET" value="${CONSOLE_LOG_CHARSET:-${file.encoding:-UTF-8}}"/>
+
+        <logger name="org.springframework.vault.core.env.LeaseAwareVaultPropertySource" level="WARN" />
+        <appender name="Console" class="ch.qos.logback.core.ConsoleAppender">
+            <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+                <level>${CONSOLE_LOG_THRESHOLD}</level>
+            </filter>
+            <encoder>
+                <charset>${CONSOLE_LOG_CHARSET}</charset>
+                <pattern>%cyan(%d{HH:mm:ss}) %magenta([%thread]) %highlight(%-5level) %green(%logger{256} - %msg%n)
+                </pattern>
+            </encoder>
+        </appender>
+
+        <appender name="ASYNC" class="ch.qos.logback.classic.AsyncAppender">
+            <appender-ref ref="Console"/>
+            <queueSize>512</queueSize>
+            <discardingThreshold>0</discardingThreshold>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="ASYNC"/>
+        </root>
+    </springProfile>
+
+    <springProfile name="json-logs">
+        <logger name="org.springframework.vault.core.env.LeaseAwareVaultPropertySource" level="WARN" />
+        <appender name="jsonConsoleAppender" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+                <providers>
+                    <!-- https://github.com/liangyanfeng/logstash-logback-encoder/blob/master/README.md -->
+                    <mdc/>
+                    <timestamp/>
+                    <message/>
+                    <loggerName/>
+                    <logLevel/>
+                    <threadName/>
+                    <stackTrace>
+                        <!-- Limit stacktrace output -->
+                        <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+                            <maxDepthPerThrowable>30</maxDepthPerThrowable>
+                            <maxLength>2048</maxLength>
+                            <shortenedClassNameLength>20</shortenedClassNameLength>
+                            <!-- generated class names -->
+                            <exclude>\$\$FastClassByCGLIB\$\$</exclude>
+                            <exclude>\$\$EnhancerBySpringCGLIB\$\$</exclude>
+                            <exclude>^sun\.reflect\..*\.invoke</exclude>
+                            <!-- JDK internals -->
+                            <exclude>^com\.sun\.</exclude>
+                            <exclude>^sun\.net\.</exclude>
+                            <!-- dynamic invocation -->
+                            <exclude>^net\.sf\.cglib\.proxy\.MethodProxy\.invoke</exclude>
+                            <exclude>^org\.springframework\.cglib\.</exclude>
+                            <exclude>^org\.springframework\.transaction\.</exclude>
+                            <exclude>^org\.springframework\.validation\.</exclude>
+                            <exclude>^org\.springframework\.app\.</exclude>
+                            <exclude>^org\.springframework\.aop\.</exclude>
+                            <exclude>^java\.lang\.reflect\.Method\.invoke</exclude>
+                            <rootCauseFirst>true</rootCauseFirst>
+                            <inlineHash>true</inlineHash>
+                        </throwableConverter>
+                    </stackTrace>
+                </providers>
+            </encoder>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="jsonConsoleAppender"/>
+        </root>
+    </springProfile>
+</configuration>

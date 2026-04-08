@@ -8,12 +8,12 @@ spring:
   lifecycle:
     timeout-per-shutdown-phase: 30s
   graphql:
+    http:
+      enabled: true
     path: /graphql
     graphiql:
       enabled: true
       path: /graphiql
-    schema:
-      locations: classpath*:graphql/**/*.graphqls
     websocket:
       path: /graphql/ws
   jackson:
@@ -48,6 +48,8 @@ logging:
   level:
     root: INFO
     org.sandbox.langgraph: DEBUG
+    org.springframework.graphql: DEBUG
+    org.springframework.boot.autoconfigure.graphql: DEBUG
     io.grpc: INFO
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Generate Python gRPC code from proto files
+# Generate Python gRPC code from scripts files
 cd "$(dirname "$0")"
 
 echo "Generating Python gRPC code..."

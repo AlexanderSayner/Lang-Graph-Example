@@ -3,6 +3,7 @@ package org.sandbox.langgraph.service;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
+import org.jspecify.annotations.NonNull;
 import org.sandbox.langgraph.dto.graphql.input.BuildGraphInput;
 import org.sandbox.langgraph.dto.graphql.input.ExecuteGraphInput;
 import org.sandbox.langgraph.dto.graphql.input.UpdateGraphStateInput;
@@ -35,7 +36,7 @@ public class LangGraphGrpcService {
         this.mapper = mapper;
     }
 
-    public Mono<BuildGraphPayload> buildGraph(BuildGraphInput input) {
+    public Mono<@NonNull BuildGraphPayload> buildGraph(BuildGraphInput input) {
         return Mono.fromCallable(() -> {
                     log.debug("Building graph: {}", input.graphId());
                     BuildGraphRequest request = mapper.toBuildGraphRequest(input);
@@ -47,7 +48,7 @@ public class LangGraphGrpcService {
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
-    public Flux<GraphExecutionEventPayload> executeGraphStream(ExecuteGraphInput input, boolean stream) {
+    public Flux<@NonNull GraphExecutionEventPayload> executeGraphStream(ExecuteGraphInput input, boolean stream) {
         ExecuteGraphRequest request = stream
                 ? mapper.toStreamExecuteGraphRequest(input)
                 : mapper.toExecuteGraphRequest(input);
@@ -80,7 +81,7 @@ public class LangGraphGrpcService {
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
-    public Mono<GraphStatePayload> getGraphState(String graphId, String threadId) {
+    public Mono<@NonNull GraphStatePayload> getGraphState(String graphId, String threadId) {
         return Mono.fromCallable(() -> {
                     log.debug("Getting graph state for: {}", graphId);
                     GetGraphStateRequest request = mapper.toGetGraphStateRequest(graphId, threadId);
@@ -92,7 +93,7 @@ public class LangGraphGrpcService {
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
-    public Mono<UpdateGraphStatePayload> updateGraphState(UpdateGraphStateInput input) {
+    public Mono<@NonNull UpdateGraphStatePayload> updateGraphState(UpdateGraphStateInput input) {
         return Mono.fromCallable(() -> {
                     log.debug("Updating graph state for: {}", input.graphId());
                     UpdateGraphStateRequest request = mapper.toUpdateGraphStateRequest(input);
@@ -104,19 +105,22 @@ public class LangGraphGrpcService {
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
-    public Mono<GraphListPayload> listGraphs(int pageSize, String pageToken) {
+    public Mono<@NonNull GraphListPayload> listGraphs(int pageSize, String pageToken) {
         return Mono.fromCallable(() -> {
                     log.debug("Listing graphs with page size: {}", pageSize);
                     ListGraphsRequest request = mapper.toListGraphsRequest(pageSize, pageToken);
                     return futureStub.listGraphs(request).get();
                 })
                 .map(mapper::toGraphListPayload)
-                .doOnSuccess(response -> log.debug("Listed {} graphs", response.totalCount()))
+                .doOnSuccess(response -> {
+                    assert response != null;
+                    log.debug("Listed {} graphs", response.totalCount());
+                })
                 .doOnError(this::logAndWrapGrpcError)
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
-    public Mono<DeleteGraphPayload> deleteGraph(String graphId) {
+    public Mono<@NonNull DeleteGraphPayload> deleteGraph(String graphId) {
         return Mono.fromCallable(() -> {
                     log.debug("Deleting graph: {}", graphId);
                     DeleteGraphRequest request = mapper.toDeleteGraphRequest(graphId);

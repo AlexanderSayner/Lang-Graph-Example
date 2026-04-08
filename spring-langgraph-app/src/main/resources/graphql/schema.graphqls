@@ -1,91 +1,105 @@
-directive @constraint(
-    minLength: Int
-    maxLength: Int
-    min: Int
-    max: Int
-    pattern: String
-) on INPUT_FIELD_DEFINITION | ARGUMENT_DEFINITION
+# ============== Query & Mutation Definitions ==============
 
 type Query {
-    "List all available graphs with pagination"
-    listGraphs(
-        pageSize: Int = 10 @constraint(min: 1, max: 100)
-        pageToken: String
-    ): GraphConnection!
-
-    "Get the current state of a graph"
-    getGraphState(
-        graphId: String! @constraint(minLength: 1, maxLength: 100)
-        threadId: String
-    ): GraphState!
+    listGraphs(pageSize: Int! = 10, pageToken: String): GraphListPayload!
+    getGraphState(graphId: String!, threadId: String): GraphStatePayload!
 }
 
 type Mutation {
-    "Build a new graph with the given configuration"
-    buildGraph(input: BuildGraphInput!): BuildGraphResult!
-
-    "Execute a graph with the given input"
-    executeGraph(input: ExecuteGraphInput!): ExecuteGraphResult!
-
-    "Update the state of a graph"
-    updateGraphState(input: UpdateGraphStateInput!): UpdateGraphStateResult!
-
-    "Delete a graph"
-    deleteGraph(graphId: String! @constraint(minLength: 1)): DeleteGraphResult!
+    buildGraph(input: BuildGraphInput!): BuildGraphPayload!
+    executeGraph(input: ExecuteGraphInput!): ExecuteGraphPayload!
+    updateGraphState(input: UpdateGraphStateInput!): UpdateGraphStatePayload!
+    deleteGraph(graphId: String!): DeleteGraphPayload!
 }
 
 type Subscription {
-    "Subscribe to real-time graph execution events"
-    executeGraphStream(input: ExecuteGraphInput!): ExecuteGraphEvent!
+    executeGraphStream(input: ExecuteGraphInput!): GraphExecutionEventPayload!
 }
 
-# ============== Input Types ==============
+# ============== Input Types (Match your DTOs) ==============
 
 input BuildGraphInput {
-    graphId: String! @constraint(minLength: 1, maxLength: 100)
-    graphName: String! @constraint(minLength: 1, maxLength: 200)
-    nodes: [NodeInput!]! @constraint(minSize: 1)
+    graphId: String!
+    graphName: String!
+    nodes: [NodeInput!]!
     edges: [EdgeInput!]!
     config: JSON
 }
 
 input ExecuteGraphInput {
-    graphId: String! @constraint(minLength: 1)
-    input: String! @constraint(minLength: 1)
+    graphId: String!
+    input: String!
     context: JSON
 }
 
 input UpdateGraphStateInput {
-    graphId: String! @constraint(minLength: 1)
+    graphId: String!
     threadId: String
-    stateUpdates: JSON! @constraint(minSize: 1)
+    stateUpdates: JSON!
 }
 
 input NodeInput {
-    nodeId: String! @constraint(minLength: 1, maxLength: 100)
-    nodeType: String! @constraint(minLength: 1)
-    handlerName: String! @constraint(minLength: 1)
+    nodeId: String!
+    nodeType: String!
+    handlerName: String!
     metadata: JSON
 }
 
 input EdgeInput {
-    source: String! @constraint(minLength: 1)
-    target: String! @constraint(minLength: 1)
+    source: String!
+    target: String!
     condition: String
 }
 
-# ============== Output Types ==============
+# ============== Output Payloads (Match Controller Return Types) ==============
 
-type GraphConnection {
+type GraphListPayload {
     graphs: [GraphInfo!]!
     pageInfo: PageInfo!
     totalCount: Int!
 }
 
-type PageInfo {
-    hasNextPage: Boolean!
-    endCursor: String
+type GraphStatePayload {
+    success: Boolean!
+    state: JSON!
+    currentNode: String
+    nodeHistory: [String!]!
 }
+
+type BuildGraphPayload {
+    success: Boolean!
+    graphId: String
+    message: String!
+}
+
+type ExecuteGraphPayload {
+    success: Boolean!
+    output: String
+    state: JSON
+    errorMessage: String
+}
+
+type UpdateGraphStatePayload {
+    success: Boolean!
+    updatedState: JSON!
+    message: String!
+}
+
+type DeleteGraphPayload {
+    success: Boolean!
+    message: String!
+}
+
+type GraphExecutionEventPayload {
+    eventType: String!
+    nodeId: String
+    output: String
+    state: JSON
+    timestamp: Long!
+    errorMessage: String
+}
+
+# ============== Common Types ==============
 
 type GraphInfo {
     graphId: ID!
@@ -95,59 +109,16 @@ type GraphInfo {
     status: GraphStatus!
 }
 
+type PageInfo {
+    hasNextPage: Boolean!
+    endCursor: String
+}
+
 enum GraphStatus {
     ACTIVE
     INACTIVE
     ERROR
     BUILDING
-}
-
-type GraphState {
-    success: Boolean!
-    state: JSON!
-    currentNode: String
-    nodeHistory: [String!]!
-}
-
-type BuildGraphResult {
-    success: Boolean!
-    graphId: String
-    message: String!
-}
-
-type ExecuteGraphResult {
-    success: Boolean!
-    output: String
-    state: JSON
-    errorMessage: String
-}
-
-type UpdateGraphStateResult {
-    success: Boolean!
-    updatedState: JSON!
-    message: String!
-}
-
-type DeleteGraphResult {
-    success: Boolean!
-    message: String!
-}
-
-type ExecuteGraphEvent {
-    eventType: GraphEventType!
-    nodeId: String
-    output: String
-    state: JSON
-    timestamp: Long!
-    errorMessage: String
-}
-
-enum GraphEventType {
-    START
-    NODE_START
-    NODE_END
-    END
-    ERROR
 }
 
 # ============== Scalar Types ==============
