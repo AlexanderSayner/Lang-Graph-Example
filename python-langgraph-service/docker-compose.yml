@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  # LangGraph gRPC Service
+  langgraph-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: langgraph-service
+    ports:
+      - "50051:50051"
+    environment:
+      - SERVER_PORT=50051
+      - LOG_LEVEL=INFO
+      - DATABASE_URL=postgresql://langgraph:langgraph_password@postgres:5432/langgraph_db
+      - REDIS_URL=redis://redis:6379/0
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - langgraph-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import grpc; channel = grpc.insecure_channel('localhost:50051'); grpc.channel_ready_future(channel).result(timeout=5)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: langgraph-postgres
+    environment:
+      POSTGRES_USER: langgraph
+      POSTGRES_PASSWORD: langgraph_password
+      POSTGRES_DB: langgraph_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    networks:
+      - langgraph-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langgraph -d langgraph_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: langgraph-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - langgraph-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  langgraph-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
