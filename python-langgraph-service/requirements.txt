@@ -1,9 +1,19 @@
-grpcio==1.68.1
-grpcio-tools==1.68.1
+# gRPC
+grpcio>=1.68.1
+grpcio-tools>=1.68.1
+grpcio-status>=1.68.1
+protobuf>=5.29.0
+
+# Reflection
+grpcio-reflection>=1.68.1
+
+# LangGraph & LangChain
 langgraph==0.2.53
 langchain-core==0.3.25
 langchain-openai==0.2.11
+
+# Utilities
 pydantic==2.10.4
+pydantic-settings==2.6.1
 python-dotenv==1.0.1
 uvloop==0.21.0; platform_system != "Windows"
-

@@ -1,27 +1,24 @@
 syntax = "proto3";
 
-option python_generic_services = true;
-option py_generic_services = true;
-
 package langgraph;
 
 // LangGraph Service definition
 service LangGraphService {
     // Build a new graph with the given configuration
     rpc BuildGraph (BuildGraphRequest) returns (BuildGraphResponse);
-    
+
     // Execute a graph with the given input
     rpc ExecuteGraph (ExecuteGraphRequest) returns (stream ExecuteGraphResponse);
-    
+
     // Get graph state
     rpc GetGraphState (GetGraphStateRequest) returns (GetGraphStateResponse);
-    
+
     // Update graph state
     rpc UpdateGraphState (UpdateGraphStateRequest) returns (UpdateGraphStateResponse);
-    
+
     // List available graphs
     rpc ListGraphs (ListGraphsRequest) returns (ListGraphsResponse);
-    
+
     // Delete a graph
     rpc DeleteGraph (DeleteGraphRequest) returns (DeleteGraphResponse);
 }

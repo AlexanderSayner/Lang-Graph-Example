@@ -8,32 +8,26 @@ spring:
   lifecycle:
     timeout-per-shutdown-phase: 30s
   graphql:
+    http:
+      enabled: true
     path: /graphql
     graphiql:
       enabled: true
       path: /graphiql
-    schema:
-      locations: classpath*:graphql/**/*.graphqls
     websocket:
       path: /graphql/ws
   jackson:
     default-property-inclusion: non_null
 
-grpc:
-  client:
-    langgraph-service:
-      address: 'static://${langgraph.service.host:localhost}:${langgraph.service.port:50051}'
-      negotiation-type: PLAINTEXT
-      enable-keep-alive: true
-      keep-alive-time: 30s
-      keep-alive-without-calls: true
-
-langgraph:
-  service:
-    host: ${LANGGRAPH_HOST:localhost}
-    port: ${LANGGRAPH_PORT:50051}
-  execution:
-    timeout: ${LANGGRAPH_EXECUTION_TIMEOUT:60s}
+  grpc:
+    client:
+      channels:
+        langgraph-service:
+          address: localhost:50051
+          negotiation-type: PLAINTEXT
+          enable-keep-alive: true
+          keep-alive-time: 30s
+          keep-alive-without-calls: true
 
 management:
   endpoints:
@@ -48,6 +42,8 @@ logging:
   level:
     root: INFO
     org.sandbox.langgraph: DEBUG
+    org.springframework.graphql: DEBUG
+    org.springframework.boot.autoconfigure.graphql: DEBUG
     io.grpc: INFO
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
