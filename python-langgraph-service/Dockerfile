@@ -10,7 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
+ENV PIP_DEFAULT_TIMEOUT=120
+RUN pip install --no-cache-dir --retries=5 --user -r requirements.txt
 
 # --- Final Image ---
 FROM python:3.11-slim

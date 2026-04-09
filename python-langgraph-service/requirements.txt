@@ -1,7 +1,11 @@
 # gRPC
-grpcio==1.68.1
-grpcio-tools==1.68.1
+grpcio>=1.68.1
+grpcio-tools>=1.68.1
+grpcio-status>=1.68.1
 protobuf>=5.29.0
+
+# Reflection
+grpcio-reflection>=1.68.1
 
 # LangGraph & LangChain
 langgraph==0.2.53

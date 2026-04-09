@@ -50,7 +50,7 @@ public class LangGraphController {
 
     @MutationMapping
     public Mono<@NonNull BuildGraphPayload> buildGraph(@Valid @Argument BuildGraphInput input) {
-        log.info("Building graph: {}", input.graphId());
+        log.info("Building graph mutation: {}", input.graphId());
         return langGraphService.buildGraph(input);
     }
 

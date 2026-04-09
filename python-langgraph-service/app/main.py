@@ -2,52 +2,73 @@ import asyncio
 import logging
 import sys
 
-# Ensure local imports work
-sys.path.append(".")
-
 import grpc
-from concurrent import futures
+from grpc_reflection.v1alpha import reflection
 
+# Assuming standard package structure execution (e.g., python -m app.main)
 from app.config import settings
-from app.generated import langgraph_pb2_grpc
-from app.services.langgraph_servicer import LangGraphServiceServicer
-# Import the new interceptor
+from app.generated import langgraph_pb2, langgraph_pb2_grpc
 from app.interceptors import LoggingInterceptor
+from app.services.graph_store import GraphStore
+from app.services.langgraph_servicer import LangGraphServiceServicer
 
-# Setup logging
+# Configure structured logging
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=settings.LOG_LEVEL.upper(),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
 
-# Try to use uvloop for performance
-try:
-    import uvloop
 
-    uvloop.install()
-    logger.info("Uvloop installed for high-performance async.")
-except ImportError:
-    logger.info("Uvloop not available, using default asyncio loop.")
+async def create_server() -> grpc.aio.Server:
+    """Factory to create and configure the gRPC server."""
 
+    # 1. Initialize dependencies
+    graph_store = GraphStore()
 
-async def serve():
-    # Add the interceptor here
+    # 2. Create the Async Server
+    # Note: We do NOT pass a ThreadPoolExecutor. grpc.aio handles concurrency
+    # via the event loop. Blocking code must be offloaded manually or made async.
     server = grpc.aio.server(
-        futures.ThreadPoolExecutor(max_workers=settings.MAX_WORKERS),
-        interceptors=[LoggingInterceptor()],  # <--- Add this line
+        interceptors=[LoggingInterceptor()],
         options=[
             ('grpc.max_send_message_length', settings.MAX_MESSAGE_LENGTH),
             ('grpc.max_receive_message_length', settings.MAX_MESSAGE_LENGTH),
         ]
     )
 
+    # 3. Register Servicers
     langgraph_pb2_grpc.add_LangGraphServiceServicer_to_server(
-        LangGraphServiceServicer(), server
+        LangGraphServiceServicer(store=graph_store), server
     )
 
+    # 4. Register Reflection
+    service_names = (
+        langgraph_pb2.DESCRIPTOR.services_by_name['LangGraphService'].full_name,
+        reflection.SERVICE_NAME,
+    )
+    reflection.enable_server_reflection(service_names, server)
+
+    # 5. Bind Port
     bind_address = f'[::]:{settings.SERVER_PORT}'
     server.add_insecure_port(bind_address)
+
+    return server
+
+
+async def serve():
+    """Main entry point for the server lifecycle."""
+
+    # Attempt to use uvloop for performance
+    try:
+        import uvloop
+        uvloop.install()
+        logger.info("Uvloop installed for high-performance async.")
+    except ImportError:
+        logger.info("Uvloop not available, using default asyncio loop.")
+
+    server = await create_server()
 
     await server.start()
     logger.info(f"LangGraph gRPC server started on port {settings.SERVER_PORT}")
@@ -55,8 +76,9 @@ async def serve():
     try:
         await server.wait_for_termination()
     except KeyboardInterrupt:
-        logger.info("Shutting down server...")
-        await server.stop(0)
+        logger.info("Shutdown signal received.")
+        await server.stop(grace=5)
+        logger.info("Server shut down gracefully.")
 
 
 if __name__ == '__main__':
