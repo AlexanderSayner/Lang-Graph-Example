@@ -1,13 +1,12 @@
 import asyncio
 import logging
-import sys
 
 import grpc
 from grpc_reflection.v1alpha import reflection
 
 # Assuming standard package structure execution (e.g., python -m app.main)
 from app.config import settings
-from app.generated import langgraph_pb2, langgraph_pb2_grpc
+from app.generated import langgraph_pb2_grpc, langgraph_pb2
 from app.interceptors import LoggingInterceptor
 from app.services.graph_store import GraphStore
 from app.services.langgraph_servicer import LangGraphServiceServicer

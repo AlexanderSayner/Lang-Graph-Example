@@ -5,10 +5,9 @@ import time
 from typing import Dict, Any, Callable
 
 import grpc
-from langgraph.graph import StateGraph, END
-from langgraph.constants import START
+from langgraph.graph import StateGraph
 
-from app.generated import langgraph_pb2, langgraph_pb2_grpc
+from app.generated import langgraph_pb2_grpc, langgraph_pb2
 from app.services.graph_store import GraphStore, GraphDefinition
 
 logger = logging.getLogger(__name__)
@@ -51,6 +50,38 @@ def _map_node_result_to_response(node_name: str, result: Dict[str, Any]) -> lang
 
 # --- Servicer ---
 
+def _build_langgraph(graph_data: GraphDefinition) -> StateGraph:
+    workflow = StateGraph(dict)
+
+    for node in graph_data.nodes:
+        # Simple closure to capture handler name
+        def create_handler(name: str):
+            async def handler(state: Dict[str, Any]) -> Dict[str, Any]:
+                logger.info(f"Executing node: {name}")
+                # Simulate async work
+                await asyncio.sleep(0.01)
+                return {"last_node": name, "processed": True}
+
+            return handler
+
+        workflow.add_node(node.node_id, create_handler(node.handler_name))
+
+    # Handle Edges
+    for edge in graph_data.edges:
+        if edge.condition:
+            # Conditional edges require specific implementation logic, logging warning for now
+            logger.warning(f"Conditional edge from {edge.source} ignored (requires custom routing)")
+        else:
+            workflow.add_edge(edge.source, edge.target)
+
+    # Set Entry Point
+    if graph_data.nodes:
+        # LangGraph v2 uses START constant
+        workflow.set_entry_point(graph_data.nodes[0].node_id)
+
+    return workflow.compile()
+
+
 class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
     """Async gRPC service implementation for LangGraph operations."""
 
@@ -83,7 +114,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             raise ValueError("Failed to retrieve stored graph")
 
         # Build and compile the LangGraph
-        compiled_graph = self._build_langgraph(stored_graph.data)
+        compiled_graph = _build_langgraph(stored_graph.data)
         self._compiled_graphs[graph_id] = compiled_graph
 
         return langgraph_pb2.BuildGraphResponse(
@@ -91,37 +122,6 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             graph_id=graph_id,
             message=f"Graph '{request.graph_name}' built successfully with {len(nodes)} nodes"
         )
-
-    def _build_langgraph(self, graph_data: GraphDefinition) -> StateGraph:
-        workflow = StateGraph(dict)
-
-        for node in graph_data.nodes:
-            # Simple closure to capture handler name
-            def create_handler(name: str):
-                async def handler(state: Dict[str, Any]) -> Dict[str, Any]:
-                    logger.info(f"Executing node: {name}")
-                    # Simulate async work
-                    await asyncio.sleep(0.01)
-                    return {"last_node": name, "processed": True}
-
-                return handler
-
-            workflow.add_node(node.node_id, create_handler(node.handler_name))
-
-        # Handle Edges
-        for edge in graph_data.edges:
-            if edge.condition:
-                # Conditional edges require specific implementation logic, logging warning for now
-                logger.warning(f"Conditional edge from {edge.source} ignored (requires custom routing)")
-            else:
-                workflow.add_edge(edge.source, edge.target)
-
-        # Set Entry Point
-        if graph_data.nodes:
-            # LangGraph v2 uses START constant
-            workflow.set_entry_point(graph_data.nodes[0].node_id)
-
-        return workflow.compile()
 
     @handle_grpc_errors
     async def ExecuteGraph(self, request, context):
