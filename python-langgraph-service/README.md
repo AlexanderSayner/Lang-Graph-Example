@@ -19,14 +19,14 @@ The service was designed to:
 
 ### Core Functionality
 
-| Feature | Description |
-|---------|-------------|
-| **BuildGraph** | Dynamically create and compile LangGraph workflows with nodes and edges |
-| **ExecuteGraph** | Execute graphs with streaming support (server-side streaming RPC) |
-| **GetGraphState** | Retrieve the current state of a graph execution for a specific thread |
-| **UpdateGraphState** | Update graph state manually for a specific thread |
-| **ListGraphs** | Paginated listing of all available graphs |
-| **DeleteGraph** | Remove a graph from the system |
+| Feature              | Description                                                             |
+|----------------------|-------------------------------------------------------------------------|
+| **BuildGraph**       | Dynamically create and compile LangGraph workflows with nodes and edges |
+| **ExecuteGraph**     | Execute graphs with streaming support (server-side streaming RPC)       |
+| **GetGraphState**    | Retrieve the current state of a graph execution for a specific thread   |
+| **UpdateGraphState** | Update graph state manually for a specific thread                       |
+| **ListGraphs**       | Paginated listing of all available graphs                               |
+| **DeleteGraph**      | Remove a graph from the system                                          |
 
 ### Technical Features
 
