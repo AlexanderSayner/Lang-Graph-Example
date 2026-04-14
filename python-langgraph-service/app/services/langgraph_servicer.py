@@ -2,15 +2,27 @@ import asyncio
 import functools
 import logging
 import time
-from typing import Dict, Any, Callable
+from typing import Any, Callable, Dict
 
 import grpc
 from langgraph.graph import StateGraph
+from typing_extensions import TypedDict
 
 from app.generated import langgraph_pb2_grpc, langgraph_pb2
 from app.services.graph_store import GraphStore, GraphDefinition
 
 logger = logging.getLogger(__name__)
+
+
+# --- State Type Definition ---
+
+class GraphState(TypedDict):
+    """Typed state for LangGraph workflow."""
+    input: str
+    context: dict[str, Any]
+    timestamp: float
+    last_node: str
+    processed: bool
 
 
 # --- Decorators ---
@@ -23,13 +35,13 @@ def handle_grpc_errors(func: Callable):
         try:
             return await func(self, request, context)
         except ValueError as e:
-            logger.warning(f"Validation error: {e}")
+            logger.warning("Validation error: %s", e)
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
         except KeyError as e:
-            logger.warning(f"Resource not found: {e}")
+            logger.warning("Resource not found: %s", e)
             await context.abort(grpc.StatusCode.NOT_FOUND, str(e))
         except Exception as e:
-            logger.error(f"Internal error in {func.__name__}: {e}", exc_info=True)
+            logger.error("Internal error in %s: %s", func.__name__, e, exc_info=True)
             await context.abort(grpc.StatusCode.INTERNAL, f"Internal server error: {e}")
 
     return wrapper
@@ -37,7 +49,7 @@ def handle_grpc_errors(func: Callable):
 
 # --- Helper ---
 
-def _map_node_result_to_response(node_name: str, result: Dict[str, Any]) -> langgraph_pb2.ExecuteGraphResponse:
+def _map_node_result_to_response(node_name: str, result: dict[str, Any]) -> langgraph_pb2.ExecuteGraphResponse:
     """Maps LangGraph state to Protobuf response object."""
     return langgraph_pb2.ExecuteGraphResponse(
         event_type="NODE_END",
@@ -50,14 +62,14 @@ def _map_node_result_to_response(node_name: str, result: Dict[str, Any]) -> lang
 
 # --- Servicer ---
 
-def _build_langgraph(graph_data: GraphDefinition) -> StateGraph:
-    workflow = StateGraph(dict)
+def _build_langgraph(graph_data: GraphDefinition):
+    workflow = StateGraph(GraphState)
 
     for node in graph_data.nodes:
         # Simple closure to capture handler name
         def create_handler(name: str):
-            async def handler(state: Dict[str, Any]) -> Dict[str, Any]:
-                logger.info(f"Executing node: {name}")
+            async def handler(state: GraphState) -> GraphState:
+                logger.info("Executing node: %s", name)
                 # Simulate async work
                 await asyncio.sleep(0.01)
                 return {"last_node": name, "processed": True}
@@ -70,7 +82,7 @@ def _build_langgraph(graph_data: GraphDefinition) -> StateGraph:
     for edge in graph_data.edges:
         if edge.condition:
             # Conditional edges require specific implementation logic, logging warning for now
-            logger.warning(f"Conditional edge from {edge.source} ignored (requires custom routing)")
+            logger.warning("Conditional edge from %s ignored (requires custom routing)", edge.source)
         else:
             workflow.add_edge(edge.source, edge.target)
 
@@ -120,7 +132,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         return langgraph_pb2.BuildGraphResponse(
             success=True,
             graph_id=graph_id,
-            message=f"Graph '{request.graph_name}' built successfully with {len(nodes)} nodes"
+            message="Graph '%s' built successfully with %d nodes" % (request.graph_name, len(nodes))
         )
 
     @handle_grpc_errors
@@ -128,7 +140,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         graph_id = request.graph_id
 
         if graph_id not in self._compiled_graphs:
-            raise KeyError(f"Graph {graph_id} not found")
+            raise KeyError("Graph %s not found" % graph_id)
 
         compiled_graph = self._compiled_graphs[graph_id]
         initial_state = {
@@ -147,22 +159,24 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         try:
             # Use astream to get events as they happen
             # stream_mode="values" yields the state after each node
+            final_state: dict[str, Any] | None = None
             async for event in compiled_graph.astream(initial_state, stream_mode="values"):
                 # In 'values' mode, event is the state dict after a node run
                 last_node = event.get("last_node", "unknown")
+                final_state = event
 
                 yield _map_node_result_to_response(last_node, event)
 
             # Yield END event
             yield langgraph_pb2.ExecuteGraphResponse(
                 event_type="END",
-                output=str(event.get("input", "")),  # event holds final state here
-                state=event,
+                output=str(final_state.get("input", "")) if final_state else "",  # event holds final state here
+                state=final_state or {},
                 timestamp=int(time.time() * 1000)
             )
 
         except Exception as exec_error:
-            logger.error(f"Execution error: {exec_error}", exc_info=True)
+            logger.error("Execution error: %s", exec_error, exc_info=True)
             yield langgraph_pb2.ExecuteGraphResponse(
                 event_type="ERROR",
                 error_message=str(exec_error),
@@ -209,5 +223,5 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
 
         return langgraph_pb2.DeleteGraphResponse(
             success=success,
-            message=f"Graph {request.graph_id} deleted" if success else "Not found"
+            message=("Graph %s deleted" if success else "Not found") % request.graph_id
         )

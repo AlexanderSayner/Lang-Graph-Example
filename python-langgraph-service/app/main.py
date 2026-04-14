@@ -61,7 +61,7 @@ async def serve():
 
     # Attempt to use uvloop for performance
     try:
-        import uvloop
+        import uvloop  # type: ignore[import-not-found,import-untyped]
         uvloop.install()
         logger.info("Uvloop installed for high-performance async.")
     except ImportError:
