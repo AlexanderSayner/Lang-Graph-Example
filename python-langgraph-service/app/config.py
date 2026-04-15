@@ -1,4 +1,8 @@
-from pydantic_settings import BaseSettings
+from pathlib import Path
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+PROJECT_ROOT = Path(__file__).parent.parent
+
 
 class Settings(BaseSettings):
     # Server Configuration
@@ -9,9 +13,16 @@ class Settings(BaseSettings):
     # Logging
     LOG_LEVEL: str = "INFO"
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        extra = "ignore"
+    YC_API_KEY: str = ""
+    YC_FOLDER_ID: str = ""
+    YC_MODEL_NAME: str = "yandexgpt"  # or "yandexgpt-lite"
+
+    model_config = SettingsConfigDict(
+        # Explicitly point to the .env file location
+        env_file=str(PROJECT_ROOT / ".env"),
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
+
 
 settings = Settings()

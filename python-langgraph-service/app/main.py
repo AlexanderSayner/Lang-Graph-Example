@@ -81,4 +81,6 @@ async def serve():
 
 
 if __name__ == '__main__':
+    print(f"DEBUG: YC_API_KEY loaded? {'Yes' if settings.YC_API_KEY else 'No'}")
+    print(f"DEBUG: YC_FOLDER_ID loaded? {'Yes' if settings.YC_FOLDER_ID else 'No'}")
     asyncio.run(serve())

@@ -115,7 +115,7 @@ type PageInfo {
 }
 
 enum GraphStatus {
-    ACTIVE
+    active
     INACTIVE
     ERROR
     BUILDING

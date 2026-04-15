@@ -41,11 +41,7 @@ The service was designed to:
 
 ---
 
-## Mock Functions Analysis
-
-### Current Implementation Status
-
-**Yes, the service contains mock/simulated functionality:**
+## Mock Functions
 
 #### 1. Node Handler Mock (Line 100-107 in `langgraph_servicer.py`)
 
@@ -623,13 +619,17 @@ async for event in stub.ExecuteGraph(exec_request):
 
 ## Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SERVER_PORT` | 50051 | gRPC server port |
-| `LOG_LEVEL` | INFO | Logging level |
-| `DATABASE_URL` | - | PostgreSQL connection string |
-| `REDIS_URL` | - | Redis connection string |
-| `OPENAI_API_KEY` | - | OpenAI API key for LLM handlers |
+| Variable             | Default  | Description                     |
+|----------------------|----------|---------------------------------|
+| `SERVER_PORT`        | 50051    | gRPC server port                |
+| `LOG_LEVEL`          | INFO     | Logging level                   |
+| `DATABASE_URL`       | -        | PostgreSQL connection string    |
+| `REDIS_URL`          | -        | Redis connection string         |
+| `OPENAI_API_KEY`     | -        | OpenAI API key for LLM handlers |
+| `MAX_WORKERS`        | 10       |                                 |
+| `MAX_MESSAGE_LENGTH` | 52428800 |                                 |
+| `YC_API_KEY`         |          |                                 |
+| `YC_FOLDER_ID`       |          |                                 |
 
 ---
 
