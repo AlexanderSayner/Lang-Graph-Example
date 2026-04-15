@@ -1,12 +1,16 @@
-import asyncio
 import functools
 import logging
 import time
-from typing import Dict, Any, Callable
+import operator
+import json
+from typing import Dict, Any, Callable, TypedDict, List, Annotated
 
 import grpc
+from langchain_core.runnables import Runnable
 from langgraph.graph import StateGraph
 
+from app.clients.yandex_client import YandexGPTClient
+from app.config import settings
 from app.generated import langgraph_pb2_grpc, langgraph_pb2
 from app.services.graph_store import GraphStore, GraphDefinition
 
@@ -34,53 +38,33 @@ def handle_grpc_errors(func: Callable):
 
     return wrapper
 
-
 # --- Helper ---
 
-def _map_node_result_to_response(node_name: str, result: Dict[str, Any]) -> langgraph_pb2.ExecuteGraphResponse:
-    """Maps LangGraph state to Protobuf response object."""
-    return langgraph_pb2.ExecuteGraphResponse(
-        event_type="NODE_END",
-        node_id=node_name,
-        output=str(result.get("input", "")),
-        state=result,
-        timestamp=int(time.time() * 1000)
-    )
+def _serialize_state(state: Dict[str, Any]) -> Dict[str, str]:
+    """Converts all values in the state dict to strings for Protobuf compatibility."""
+    serialized = {}
+    for k, v in state.items():
+        if isinstance(v, (dict, list)):
+            # Convert complex objects to JSON strings
+            serialized[k] = json.dumps(v)
+        else:
+            # Convert primitives (int, float, bool) to string
+            serialized[k] = str(v)
+    return serialized
+
+
+# --- State Definition (Fix for Type Errors) ---
+class GraphState(TypedDict):
+    input: str
+    context: Dict[str, Any]
+    timestamp: float
+    last_node: str
+    output: str
+    # Automatically append new history items
+    history: Annotated[List[Dict[str, Any]], operator.add]
 
 
 # --- Servicer ---
-
-def _build_langgraph(graph_data: GraphDefinition) -> StateGraph:
-    workflow = StateGraph(dict)
-
-    for node in graph_data.nodes:
-        # Simple closure to capture handler name
-        def create_handler(name: str):
-            async def handler(state: Dict[str, Any]) -> Dict[str, Any]:
-                logger.info(f"Executing node: {name}")
-                # Simulate async work
-                await asyncio.sleep(0.01)
-                return {"last_node": name, "processed": True}
-
-            return handler
-
-        workflow.add_node(node.node_id, create_handler(node.handler_name))
-
-    # Handle Edges
-    for edge in graph_data.edges:
-        if edge.condition:
-            # Conditional edges require specific implementation logic, logging warning for now
-            logger.warning(f"Conditional edge from {edge.source} ignored (requires custom routing)")
-        else:
-            workflow.add_edge(edge.source, edge.target)
-
-    # Set Entry Point
-    if graph_data.nodes:
-        # LangGraph v2 uses START constant
-        workflow.set_entry_point(graph_data.nodes[0].node_id)
-
-    return workflow.compile()
-
 
 class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
     """Async gRPC service implementation for LangGraph operations."""
@@ -89,6 +73,66 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         self.store = store
         # Cache for compiled graphs. In production, consider LRU cache or Redis.
         self._compiled_graphs: Dict[str, Any] = {}
+
+        # Initialize our custom client
+        self._llm_client = YandexGPTClient(
+            api_key=settings.YC_API_KEY,
+            folder_id=settings.YC_FOLDER_ID
+        )
+
+    # --- MOVED INSIDE THE CLASS ---
+    def _build_langgraph(self, graph_data: GraphDefinition) -> Runnable:
+        """Internal method to build and compile the graph."""
+        # Use GraphState TypedDict for type safety
+        workflow = StateGraph(GraphState)
+        llm = self._llm_client  # Access instance client
+
+        for node in graph_data.nodes:
+            node_id = node.node_id
+            metadata = node.metadata
+
+            def create_node_handler(n_id: str, n_meta: Dict[str, Any]):
+                async def handler(state: GraphState) -> Dict[str, Any]:
+                    logger.info(f"Executing node: {n_id}")
+
+                    user_input = state.get("input", "")
+                    system_prompt = n_meta.get("system_prompt", "You are a helpful assistant and a pro developer.")
+
+                    try:
+                        # Call our custom async client
+                        logger.debug(f"Calling YandexGPT for node {n_id}...")
+                        response_text = await llm.generate(
+                            user_message=user_input,
+                            system_message=system_prompt
+                        )
+                        logger.info(f"Node {n_id} response received.")
+
+                    except Exception as e:
+                        logger.error(f"Node execution failed: {e}")
+                        response_text = f"Error: {str(e)}"
+
+                    return {
+                        "last_node": n_id,
+                        "output": response_text,
+                        "history": [{"node": n_id, "output": response_text}]
+                    }
+
+                return handler
+
+            workflow.add_node(node_id, create_node_handler(node_id, metadata))
+
+        # Handle Edges
+        for edge in graph_data.edges:
+            if edge.condition:
+                logger.warning(f"Conditional edge from {edge.source} ignored (requires custom routing)")
+            else:
+                workflow.add_edge(edge.source, edge.target)
+
+        # Set Entry Point
+        if graph_data.nodes:
+            workflow.set_entry_point(graph_data.nodes[0].node_id)
+
+        return workflow.compile()
 
     @handle_grpc_errors
     async def BuildGraph(self, request, context):
@@ -113,8 +157,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         if not stored_graph:
             raise ValueError("Failed to retrieve stored graph")
 
-        # Build and compile the LangGraph
-        compiled_graph = _build_langgraph(stored_graph.data)
+        compiled_graph = self._build_langgraph(stored_graph.data)
         self._compiled_graphs[graph_id] = compiled_graph
 
         return langgraph_pb2.BuildGraphResponse(
@@ -123,41 +166,59 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             message=f"Graph '{request.graph_name}' built successfully with {len(nodes)} nodes"
         )
 
-    @handle_grpc_errors
     async def ExecuteGraph(self, request, context):
         graph_id = request.graph_id
 
-        if graph_id not in self._compiled_graphs:
-            raise KeyError(f"Graph {graph_id} not found")
-
-        compiled_graph = self._compiled_graphs[graph_id]
-        initial_state = {
+        # 1. Define internal state (keep types as they are for LangGraph)
+        internal_state = {
             "input": request.input,
             "context": dict(request.context),
             "timestamp": time.time()
         }
 
-        # Yield START event
+        # 2. Yield START event (Serialize before yielding)
         yield langgraph_pb2.ExecuteGraphResponse(
             event_type="START",
             timestamp=int(time.time() * 1000),
-            state=initial_state
+            state=_serialize_state(internal_state)  # <--- Fix
         )
 
         try:
+            if graph_id not in self._compiled_graphs:
+                raise KeyError(f"Graph {graph_id} not found")
+
+            compiled_graph = self._compiled_graphs[graph_id]
+            initial_state = {
+                "input": request.input,
+                "context": dict(request.context),
+                "timestamp": time.time()
+            }
+
+            # Yield START event
+            yield langgraph_pb2.ExecuteGraphResponse(
+                event_type="START",
+                timestamp=int(time.time() * 1000),
+                state=_serialize_state(internal_state)
+            )
+
             # Use astream to get events as they happen
             # stream_mode="values" yields the state after each node
             async for event in compiled_graph.astream(initial_state, stream_mode="values"):
                 # In 'values' mode, event is the state dict after a node run
                 last_node = event.get("last_node", "unknown")
-
-                yield _map_node_result_to_response(last_node, event)
+                yield langgraph_pb2.ExecuteGraphResponse(
+                    event_type="NODE_END",
+                    node_id=last_node,
+                    output=str(event.get("output", "")),  # Adjusted to 'output' based on your handler
+                    state=_serialize_state(event),  # <--- Fix
+                    timestamp=int(time.time() * 1000)
+                )
 
             # Yield END event
             yield langgraph_pb2.ExecuteGraphResponse(
                 event_type="END",
-                output=str(event.get("input", "")),  # event holds final state here
-                state=event,
+                output=str(event.get("output", "")),
+                state=_serialize_state(event),
                 timestamp=int(time.time() * 1000)
             )
 
@@ -190,7 +251,6 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
 
         graph_infos = []
         for gid, graph_obj in graphs:
-            # graph_obj is a Pydantic model now
             graph_infos.append(langgraph_pb2.GraphInfo(
                 graph_id=gid,
                 graph_name=graph_obj.data.name,

@@ -17,3 +17,4 @@ pydantic>=2.10.4
 pydantic-settings>=2.6.1
 python-dotenv>=1.0.1
 uvloop>=0.21.0; platform_system != "Windows"
+httpx>=0.28.1
