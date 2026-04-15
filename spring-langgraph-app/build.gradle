@@ -31,6 +31,20 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-validation'
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
 
+    // LangChain4j & LangGraph4j - Java-native LLM orchestration
+    implementation 'dev.langchain4j:langchain4j:1.0.0-beta1'
+    implementation 'dev.langchain4j:langchain4j-core:1.0.0-beta1'
+    implementation 'dev.langchain4j:langchain4j-open-ai:1.0.0-beta1'
+    
+    // LangGraph4j - Stateful graph orchestration (if available as separate artifact)
+    // Note: As of early 2025, LangGraph4j is emerging. Check Maven Central for latest.
+    // Alternative: Use langchain4j with custom state management
+    // implementation 'dev.langchain4j:langchain4j-langgraph:1.0.0-beta1' // If available
+    
+    // HTTP Client for Yandex GPT REST API (replaces Python client)
+    implementation 'io.netty:netty-resolver-dns-native-macos:4.1.108.Final:osx-aarch_64'
+    implementation 'io.projectreactor.netty:reactor-netty-http'
+    
     // gRPC dependencies
     implementation "io.grpc:grpc-netty-shaded:${grpcVersion}"
     implementation "io.grpc:grpc-protobuf:${grpcVersion}"

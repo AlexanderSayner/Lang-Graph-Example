@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package core;
+
+option java_package = "org.sandbox.core.proto";
+option java_multiple_files = true;
+
+// Java exposes these capabilities to the Python Graph Engine
+service CoreLogicService {
+  
+  // RAG: Python asks Java to search the internal knowledge base
+  rpc SearchKnowledgeBase (SearchRequest) returns (SearchResponse);
+
+  // Business Logic: Python asks Java to validate a decision or fetch user context
+  rpc GetBusinessContext (ContextRequest) returns (ContextResponse);
+
+  // Human-in-the-loop: Java notifies external system to wait, then calls back to resume
+  rpc RequestApproval (ApprovalRequest) returns (ApprovalResponse);
+  
+  // Tool Execution: Generic tool execution delegated to Java
+  rpc ExecuteTool (ToolRequest) returns (ToolResponse);
+}
+
+message SearchRequest {
+  string query = 1;
+  int32 top_k = 2;
+  string user_id = 3;
+}
+
+message SearchResponse {
+  repeated DocumentChunk chunks = 1;
+}
+
+message DocumentChunk {
+  string content = 1;
+  double score = 2;
+  string source = 3;
+}
+
+message ContextRequest {
+  string user_id = 1;
+  string context_type = 2; // e.g., "credit_score", "subscription_status"
+}
+
+message ContextResponse {
+  map<string, string> data = 1;
+  bool allowed = 2;
+}
+
+message ApprovalRequest {
+  string trace_id = 1;
+  string step_name = 2;
+  string payload = 3; // JSON serialized state snapshot
+}
+
+message ApprovalResponse {
+  bool approved = 1;
+  string feedback = 2;
+}
+
+message ToolRequest {
+  string tool_name = 1;
+  string arguments = 2; // JSON
+}
+
+message ToolResponse {
+  string result = 1;
+  bool success = 2;
+}
