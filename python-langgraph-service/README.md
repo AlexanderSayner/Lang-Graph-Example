@@ -567,8 +567,8 @@ cd python-langgraph-service
 ### Building and Running with Docker
 
 ```bash
-docker build -t langgraph-service .
-docker run -p 50051:50051 langgraph-service
+docker build -t langgraph-gateway .
+docker run -d --name langgraph-container -p 50051:50051 --env-file .env langgraph-gateway
 ```
 
 ### Example Client Code (Python)
