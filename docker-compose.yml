@@ -4,7 +4,7 @@ services:
   # LangGraph gRPC Service
   langgraph-service:
     build:
-      context: .
+      context: ./python-langgraph-service
       dockerfile: Dockerfile
     container_name: langgraph-service
     ports:

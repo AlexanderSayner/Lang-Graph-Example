@@ -38,6 +38,7 @@ def handle_grpc_errors(func: Callable):
 
     return wrapper
 
+
 # --- Helper ---
 
 def _serialize_state(state: Dict[str, Any]) -> Dict[str, str]:
@@ -53,7 +54,7 @@ def _serialize_state(state: Dict[str, Any]) -> Dict[str, str]:
     return serialized
 
 
-# --- State Definition (Fix for Type Errors) ---
+# --- State Definition ---
 class GraphState(TypedDict):
     input: str
     context: Dict[str, Any]
@@ -80,7 +81,6 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             folder_id=settings.YC_FOLDER_ID
         )
 
-    # --- MOVED INSIDE THE CLASS ---
     def _build_langgraph(self, graph_data: GraphDefinition) -> Runnable:
         """Internal method to build and compile the graph."""
         # Use GraphState TypedDict for type safety
@@ -169,48 +169,44 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
     async def ExecuteGraph(self, request, context):
         graph_id = request.graph_id
 
-        # 1. Define internal state (keep types as they are for LangGraph)
-        internal_state = {
+        if graph_id not in self._compiled_graphs:
+            # Yield only error if graph not found, or let gRPC abort handle it
+            yield langgraph_pb2.ExecuteGraphResponse(
+                event_type="ERROR",
+                error_message=f"Graph {graph_id} not found",
+                timestamp=int(time.time() * 1000)
+            )
+            raise KeyError(f"Graph {graph_id} not found")
+
+        compiled_graph = self._compiled_graphs[graph_id]
+
+        # Define internal state (keep types as they are for LangGraph)
+        initial_state = {
             "input": request.input,
             "context": dict(request.context),
             "timestamp": time.time()
         }
 
-        # 2. Yield START event (Serialize before yielding)
+        # Yield START event (Serialize before yielding)
         yield langgraph_pb2.ExecuteGraphResponse(
             event_type="START",
             timestamp=int(time.time() * 1000),
-            state=_serialize_state(internal_state)  # <--- Fix
+            state=_serialize_state(initial_state)
         )
 
         try:
-            if graph_id not in self._compiled_graphs:
-                raise KeyError(f"Graph {graph_id} not found")
-
-            compiled_graph = self._compiled_graphs[graph_id]
-            initial_state = {
-                "input": request.input,
-                "context": dict(request.context),
-                "timestamp": time.time()
-            }
-
-            # Yield START event
-            yield langgraph_pb2.ExecuteGraphResponse(
-                event_type="START",
-                timestamp=int(time.time() * 1000),
-                state=_serialize_state(internal_state)
-            )
 
             # Use astream to get events as they happen
             # stream_mode="values" yields the state after each node
             async for event in compiled_graph.astream(initial_state, stream_mode="values"):
                 # In 'values' mode, event is the state dict after a node run
                 last_node = event.get("last_node", "unknown")
+
                 yield langgraph_pb2.ExecuteGraphResponse(
                     event_type="NODE_END",
                     node_id=last_node,
                     output=str(event.get("output", "")),  # Adjusted to 'output' based on your handler
-                    state=_serialize_state(event),  # <--- Fix
+                    state=_serialize_state(event),
                     timestamp=int(time.time() * 1000)
                 )
 
