@@ -4,38 +4,21 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-.venv/
+.Python
 venv/
-.env
-.env.local
-*.env.*
-
-# Build and distribution artifacts
-build/
-dist/
-*.egg-info/
-
-# Logs
-*.log
-
-# Editor/IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*.tmp
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Testing and coverage
+.venv/
+env/
+ENV/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
 .coverage
-coverage/
-htmlcov/
-.pytest_cache/
-.mypy_cache/
-
-# Docker
-.dockerenv
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.git/modules/
+.DS_Store
 ```

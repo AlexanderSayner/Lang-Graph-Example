@@ -7,10 +7,22 @@ protobuf>=5.29.0
 # Reflection
 grpcio-reflection>=1.68.1
 
-# LangGraph & LangChain
+# LangGraph & LangChain Core
 langgraph>=0.2.53
 langchain-core>=0.3.25
+
+# LLM Providers (install only what you need)
 langchain-openai>=0.2.11
+langchain-anthropic>=0.3.0
+langchain-ollama>=0.2.0
+langchain-mistralai>=0.2.0
+langchain-groq>=0.2.0
+
+# Optional: Add more providers as needed
+# langchain-cohere, langchain-google-genai, etc.
+
+# Observability
+langsmith>=0.2.0
 
 # Utilities
 pydantic>=2.10.4

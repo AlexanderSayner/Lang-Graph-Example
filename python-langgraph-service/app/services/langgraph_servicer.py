@@ -1,18 +1,17 @@
 import functools
 import logging
 import time
-import operator
 import json
-from typing import Dict, Any, Callable, TypedDict, List, Annotated
+from typing import Dict, Any, Callable, Optional
 
 import grpc
-from langchain_core.runnables import Runnable
-from langgraph.graph import StateGraph
 
-from app.clients.yandex_client import YandexGPTClient
 from app.config import settings
 from app.generated import langgraph_pb2_grpc, langgraph_pb2
 from app.services.graph_store import GraphStore, GraphDefinition
+from app.llm.providers import create_llm_provider, LLMProvider
+from app.routers.graph_builder import LangGraphBuilder, GraphState
+from app.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -53,86 +52,156 @@ def _serialize_state(state: Dict[str, Any]) -> Dict[str, str]:
     return serialized
 
 
-# --- State Definition (Fix for Type Errors) ---
-class GraphState(TypedDict):
-    input: str
-    context: Dict[str, Any]
-    timestamp: float
-    last_node: str
-    output: str
-    # Automatically append new history items
-    history: Annotated[List[Dict[str, Any]], operator.add]
-
-
 # --- Servicer ---
 
 class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
-    """Async gRPC service implementation for LangGraph operations."""
+    """
+    Async gRPC service implementation for LangGraph operations.
+    
+    Features:
+    - Multi-LLM provider support (OpenAI, Anthropic, Ollama, Mistral, Groq, Yandex, etc.)
+    - Conditional edges for dynamic routing
+    - Tool integration (RAG, API calls, approvals)
+    - Human-in-the-loop capabilities
+    - Subgraphs for nested operations
+    - LangSmith tracing for observability
+    """
 
     def __init__(self, store: GraphStore):
         self.store = store
-        # Cache for compiled graphs. In production, consider LRU cache or Redis.
+        # Cache for compiled graphs
         self._compiled_graphs: Dict[str, Any] = {}
+        
+        # Initialize default LLM provider
+        self._default_llm = self._initialize_default_llm()
+        
+        # Initialize tool registry
+        self._tool_registry = ToolRegistry().create_default_registry()
+        
+        # Java gRPC stubs (for tool integration)
+        self._java_grpc_stub = None
+        
+        logger.info("LangGraphServiceServicer initialized with multi-LLM support")
 
-        # Initialize our custom client
-        self._llm_client = YandexGPTClient(
-            api_key=settings.YC_API_KEY,
-            folder_id=settings.YC_FOLDER_ID
-        )
+    def _initialize_default_llm(self) -> Optional[LLMProvider]:
+        """Initialize the default LLM provider based on configuration."""
+        try:
+            provider_name = settings.DEFAULT_LLM_PROVIDER
+            config = settings.get_llm_config(provider_name)
+            
+            if not config.get('api_key') and not config.get('folder_id'):
+                logger.warning(f"No API key configured for {provider_name}, using mock mode")
+                return None
+            
+            llm = create_llm_provider(provider_name, config)
+            logger.info(f"Initialized default LLM provider: {provider_name}")
+            return llm
+        except Exception as e:
+            logger.error(f"Failed to initialize default LLM: {e}")
+            return None
 
-    # --- MOVED INSIDE THE CLASS ---
-    def _build_langgraph(self, graph_data: GraphDefinition) -> Runnable:
-        """Internal method to build and compile the graph."""
-        # Use GraphState TypedDict for type safety
-        workflow = StateGraph(GraphState)
-        llm = self._llm_client  # Access instance client
-
-        for node in graph_data.nodes:
-            node_id = node.node_id
-            metadata = node.metadata
-
-            def create_node_handler(n_id: str, n_meta: Dict[str, Any]):
-                async def handler(state: GraphState) -> Dict[str, Any]:
-                    logger.info(f"Executing node: {n_id}")
-
-                    user_input = state.get("input", "")
-                    system_prompt = n_meta.get("system_prompt", "You are a helpful assistant and a pro developer.")
-
+    def _build_langgraph(self, graph_data: GraphDefinition) -> Any:
+        """
+        Build and compile a LangGraph workflow from graph definition.
+        
+        Supports:
+        - Multiple LLM providers per node
+        - Conditional edges
+        - Tool integration
+        - Human-in-the-loop workflows
+        """
+        try:
+            builder = LangGraphBuilder(
+                default_llm=self._default_llm,
+                tool_registry=self._tool_registry,
+                enable_tracing=settings.LANGCHAIN_TRACING_V2
+            )
+            
+            builder.create_workflow()
+            
+            # Build LLM provider cache for nodes
+            llm_cache: Dict[str, LLMProvider] = {}
+            
+            # Add nodes
+            for node in graph_data.nodes:
+                node_id = node.node_id
+                metadata = dict(node.metadata)
+                
+                # Determine LLM provider for this node
+                llm_provider_name = metadata.get('llm_provider', settings.DEFAULT_LLM_PROVIDER)
+                
+                if llm_provider_name not in llm_cache:
+                    config = settings.get_llm_config(llm_provider_name)
+                    if config:
+                        try:
+                            llm_cache[llm_provider_name] = create_llm_provider(llm_provider_name, config)
+                        except Exception as e:
+                            logger.warning(f"Failed to initialize LLM {llm_provider_name}: {e}")
+                            llm_cache[llm_provider_name] = None
+                
+                llm = llm_cache.get(llm_provider_name)
+                
+                # Determine tools for this node
+                tools = None
+                if 'tools' in metadata:
+                    tool_names = metadata['tools'].split(',') if isinstance(metadata['tools'], str) else metadata['tools']
+                    tools = [self._tool_registry.get(t.strip()) for t in tool_names if self._tool_registry.get(t.strip())]
+                
+                system_prompt = metadata.get('system_prompt', "You are a helpful assistant.")
+                
+                builder.add_node(
+                    node_id=node_id,
+                    llm_provider=llm,
+                    system_prompt=system_prompt,
+                    tools=tools,
+                    metadata=metadata
+                )
+            
+            # Add edges (including conditional)
+            for edge in graph_data.edges:
+                source = edge.source
+                target = edge.target
+                
+                if edge.condition:
+                    # Conditional edge - parse condition from metadata
+                    logger.info(f"Adding conditional edge from {source} to {target}")
+                    
+                    # Default router based on condition field
+                    def make_router(condition_field: str, condition_map: Dict[str, str]):
+                        def router(state: Dict[str, Any]) -> str:
+                            value = state.get(condition_field, '')
+                            return condition_map.get(str(value), target)
+                        return router
+                    
+                    # Parse condition configuration
                     try:
-                        # Call our custom async client
-                        logger.debug(f"Calling YandexGPT for node {n_id}...")
-                        response_text = await llm.generate(
-                            user_message=user_input,
-                            system_message=system_prompt
+                        condition_config = json.loads(edge.condition) if edge.condition.startswith('{') else {}
+                        condition_field = condition_config.get('field', 'output')
+                        edge_map = condition_config.get('map', {target: target})
+                        
+                        builder.add_conditional_edges(
+                            source=source,
+                            condition_fn=make_router(condition_field, edge_map),
+                            edge_map=edge_map
                         )
-                        logger.info(f"Node {n_id} response received.")
-
                     except Exception as e:
-                        logger.error(f"Node execution failed: {e}")
-                        response_text = f"Error: {str(e)}"
-
-                    return {
-                        "last_node": n_id,
-                        "output": response_text,
-                        "history": [{"node": n_id, "output": response_text}]
-                    }
-
-                return handler
-
-            workflow.add_node(node_id, create_node_handler(node_id, metadata))
-
-        # Handle Edges
-        for edge in graph_data.edges:
-            if edge.condition:
-                logger.warning(f"Conditional edge from {edge.source} ignored (requires custom routing)")
-            else:
-                workflow.add_edge(edge.source, edge.target)
-
-        # Set Entry Point
-        if graph_data.nodes:
-            workflow.set_entry_point(graph_data.nodes[0].node_id)
-
-        return workflow.compile()
+                        logger.warning(f"Failed to parse condition, using simple edge: {e}")
+                        builder.add_edge(source, target)
+                else:
+                    builder.add_edge(source, target)
+            
+            # Set entry point
+            if graph_data.nodes:
+                builder.set_entry_point(graph_data.nodes[0].node_id)
+            
+            # Compile with checkpointing for memory persistence
+            compiled_graph = builder.compile(checkpointer=True)
+            logger.info(f"Successfully compiled graph with {len(graph_data.nodes)} nodes")
+            return compiled_graph
+            
+        except Exception as e:
+            logger.error(f"Failed to build graph: {e}", exc_info=True)
+            raise ValueError(f"Graph compilation failed: {e}")
 
     @handle_grpc_errors
     async def BuildGraph(self, request, context):
