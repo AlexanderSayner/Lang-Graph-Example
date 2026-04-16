@@ -7,14 +7,32 @@ protobuf>=5.29.0
 # Reflection
 grpcio-reflection>=1.68.1
 
-# LangGraph & LangChain
+# LangGraph & LangChain Core
 langgraph>=0.2.53
 langchain-core>=0.3.25
+langchain>=0.3.0
+
+# LLM Providers (Multi-LLM Support)
 langchain-openai>=0.2.11
+langchain-anthropic>=0.2.0
+langchain-google-genai>=0.2.0
+langchain-ollama>=0.2.0
+langchain-mistralai>=0.2.0
+langchain-groq>=0.2.0
+langchain-huggingface>=0.1.0
+
+# Yandex GPT (Custom Integration)
+httpx>=0.28.1
+
+# Observability & Tracing
+langsmith>=0.2.0
+opentelemetry-api>=1.27.0
+opentelemetry-sdk>=1.27.0
+opentelemetry-exporter-otlp>=1.27.0
 
 # Utilities
 pydantic>=2.10.4
 pydantic-settings>=2.6.1
 python-dotenv>=1.0.1
 uvloop>=0.21.0; platform_system != "Windows"
-httpx>=0.28.1
+tenacity>=8.4.0

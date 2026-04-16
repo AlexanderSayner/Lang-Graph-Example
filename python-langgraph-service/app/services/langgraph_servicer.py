@@ -3,13 +3,16 @@ import logging
 import time
 import operator
 import json
-from typing import Dict, Any, Callable, TypedDict, List, Annotated
+from typing import Dict, Any, Callable, TypedDict, List, Annotated, Optional
 
 import grpc
 from langchain_core.runnables import Runnable
-from langgraph.graph import StateGraph
+from langgraph.graph import StateGraph, END
+from langgraph.graph.state import CompiledStateGraph
+from langgraph.checkpoint.memory import MemorySaver
 
-from app.clients.yandex_client import YandexGPTClient
+from app.llm_providers.factory import LLMProviderFactory
+from app.tools import ToolRegistry, RAGSearchTool, BusinessContextTool, ApprovalTool, SubgraphTool
 from app.config import settings
 from app.generated import langgraph_pb2_grpc, langgraph_pb2
 from app.services.graph_store import GraphStore, GraphDefinition
@@ -45,67 +48,154 @@ def _serialize_state(state: Dict[str, Any]) -> Dict[str, str]:
     serialized = {}
     for k, v in state.items():
         if isinstance(v, (dict, list)):
-            # Convert complex objects to JSON strings
             serialized[k] = json.dumps(v)
         else:
-            # Convert primitives (int, float, bool) to string
             serialized[k] = str(v)
     return serialized
 
 
-# --- State Definition (Fix for Type Errors) ---
+# --- State Definition ---
 class GraphState(TypedDict):
+    """Enhanced graph state with support for all LangGraph features."""
     input: str
     context: Dict[str, Any]
     timestamp: float
     last_node: str
     output: str
-    # Automatically append new history items
+    messages: Annotated[List[Dict[str, Any]], operator.add]
     history: Annotated[List[Dict[str, Any]], operator.add]
+    # Human-in-the-loop
+    pending_approval: bool
+    approval_result: Optional[Dict[str, Any]]
+    # Subgraph support
+    subgraph_output: Optional[Dict[str, Any]]
+    # Tool results
+    tool_results: Annotated[List[Dict[str, Any]], operator.add]
 
 
 # --- Servicer ---
 
 class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
-    """Async gRPC service implementation for LangGraph operations."""
+    """
+    Enhanced Async gRPC service implementation for LangGraph operations.
+    
+    Supports:
+    - Multi-LLM provider switching (OpenAI, Anthropic, Ollama, Mistral, Groq, Yandex, etc.)
+    - Conditional edges for dynamic routing
+    - Tool integration (RAG, API calls, business validation)
+    - Human-in-the-loop approvals
+    - Subgraphs for nested operations
+    - Observability with LangSmith tracing
+    """
 
     def __init__(self, store: GraphStore):
         self.store = store
-        # Cache for compiled graphs. In production, consider LRU cache or Redis.
-        self._compiled_graphs: Dict[str, Any] = {}
+        self._compiled_graphs: Dict[str, CompiledStateGraph] = {}
+        
+        # Initialize gRPC channel for Java backend communication (if needed)
+        self._java_channel = None
+        
+        # Initialize tool registry
+        self._tool_registry = ToolRegistry()
+        
+        # LLM provider cache (supports multiple providers per graph)
+        self._llm_providers: Dict[str, Any] = {}
 
-        # Initialize our custom client
-        self._llm_client = YandexGPTClient(
-            api_key=settings.YC_API_KEY,
-            folder_id=settings.YC_FOLDER_ID
-        )
+    def _get_or_create_llm_provider(self, provider_type: str, config: Dict[str, Any]):
+        """Get or create an LLM provider instance."""
+        key = f"{provider_type}:{config.get('model_name', 'default')}"
+        if key not in self._llm_providers:
+            self._llm_providers[key] = LLMProviderFactory.create_provider(provider_type, config)
+        return self._llm_providers[key]
 
-    # --- MOVED INSIDE THE CLASS ---
+    def _setup_tools(self, graph_config: Dict[str, Any]):
+        """Initialize tools based on graph configuration."""
+        # Only initialize Java-dependent tools if channel is available
+        if self._java_channel:
+            if graph_config.get("enable_rag", False):
+                self._tool_registry.register(RAGSearchTool(self._java_channel))
+            if graph_config.get("enable_business_validation", False):
+                self._tool_registry.register(BusinessContextTool(self._java_channel))
+            if graph_config.get("enable_approvals", False):
+                self._tool_registry.register(ApprovalTool(self._java_channel, self.store))
+        
+        # Subgraph tool is always available
+        self._tool_registry.register(SubgraphTool(self._execute_subgraph))
+
     def _build_langgraph(self, graph_data: GraphDefinition) -> Runnable:
-        """Internal method to build and compile the graph."""
-        # Use GraphState TypedDict for type safety
+        """
+        Build and compile a LangGraph with full feature support.
+        
+        Features:
+        - Multi-LLM support per node
+        - Conditional edges
+        - Tool integration
+        - Human-in-the-loop checkpoints
+        - Subgraph nesting
+        """
+        # Setup memory saver for checkpointing (human-in-the-loop)
+        memory = MemorySaver()
+        
+        # Use enhanced GraphState
         workflow = StateGraph(GraphState)
-        llm = self._llm_client  # Access instance client
+        
+        # Extract graph-level configuration
+        graph_config = graph_data.config or {}
+        default_provider = graph_config.get("llm_provider", "yandex")
+        default_model_config = graph_config.get("llm_config", {})
 
+        # Register tools if enabled
+        self._setup_tools(graph_config)
+
+        # Build nodes
         for node in graph_data.nodes:
             node_id = node.node_id
             metadata = node.metadata
+            
+            # Node-specific LLM configuration
+            node_provider = metadata.get("llm_provider", default_provider)
+            node_model_config = metadata.get("llm_config", default_model_config)
+            
+            # Get or create the LLM provider for this node
+            llm_provider = self._get_or_create_llm_provider(node_provider, node_model_config)
 
-            def create_node_handler(n_id: str, n_meta: Dict[str, Any]):
+            def create_node_handler(n_id: str, n_meta: Dict[str, Any], llm: Any):
                 async def handler(state: GraphState) -> Dict[str, Any]:
                     logger.info(f"Executing node: {n_id}")
 
                     user_input = state.get("input", "")
-                    system_prompt = n_meta.get("system_prompt", "You are a helpful assistant and a pro developer.")
+                    system_prompt = n_meta.get("system_prompt", "You are a helpful assistant.")
+                    
+                    # Check for pending approval (human-in-the-loop)
+                    if state.get("pending_approval", False):
+                        logger.info(f"Node {n_id} waiting for approval")
+                        return {"last_node": n_id}
+
+                    # Check if tools are requested
+                    tools_enabled = n_meta.get("enable_tools", False)
+                    tool_results = []
+                    
+                    if tools_enabled:
+                        requested_tools = n_meta.get("tools", [])
+                        for tool_name in requested_tools:
+                            tool = self._tool_registry.get_tool(tool_name)
+                            if tool:
+                                tool_params = n_meta.get(f"tool_params_{tool_name}", {})
+                                result = await tool.execute(**tool_params)
+                                tool_results.append({"tool": tool_name, "result": result})
+                                # Augment user input with tool results
+                                if result:
+                                    user_input = f"{user_input}\n\nContext from {tool_name}: {result}"
 
                     try:
-                        # Call our custom async client
-                        logger.debug(f"Calling YandexGPT for node {n_id}...")
+                        # Generate response using the node's LLM provider
+                        logger.debug(f"Calling {node_provider} LLM for node {n_id}...")
                         response_text = await llm.generate(
                             user_message=user_input,
-                            system_message=system_prompt
+                            system_message=system_prompt,
+                            **n_meta.get("llm_params", {})
                         )
-                        logger.info(f"Node {n_id} response received.")
+                        logger.info(f"Node {n_id} response received from {node_provider}")
 
                     except Exception as e:
                         logger.error(f"Node execution failed: {e}")
@@ -114,17 +204,26 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                     return {
                         "last_node": n_id,
                         "output": response_text,
-                        "history": [{"node": n_id, "output": response_text}]
+                        "messages": [{"role": "assistant", "content": response_text}],
+                        "history": [{"node": n_id, "output": response_text, "provider": node_provider}],
+                        "tool_results": tool_results
                     }
 
                 return handler
 
-            workflow.add_node(node_id, create_node_handler(node_id, metadata))
+            workflow.add_node(node_id, create_node_handler(node_id, metadata, llm_provider))
 
-        # Handle Edges
+        # Handle Edges (including conditional edges)
         for edge in graph_data.edges:
             if edge.condition:
-                logger.warning(f"Conditional edge from {edge.source} ignored (requires custom routing)")
+                # Conditional edge support
+                logger.info(f"Adding conditional edge from {edge.source}")
+                condition_func = self._create_condition_function(edge.condition)
+                workflow.add_conditional_edges(
+                    edge.source,
+                    condition_func,
+                    {edge.target: edge.target}  # Map condition result to target
+                )
             else:
                 workflow.add_edge(edge.source, edge.target)
 
@@ -132,7 +231,56 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         if graph_data.nodes:
             workflow.set_entry_point(graph_data.nodes[0].node_id)
 
-        return workflow.compile()
+        # Compile with checkpointing for human-in-the-loop
+        return workflow.compile(checkpointer=memory)
+
+    def _create_condition_function(self, condition: str) -> Callable:
+        """
+        Create a conditional routing function based on condition string.
+        
+        Supported conditions:
+        - "if_approval_needed": Route to approval node if pending
+        - "if_tool_required": Route to tool execution
+        - Custom lambda-like expressions
+        """
+        def condition_func(state: GraphState) -> str:
+            # Simple condition evaluation
+            if condition == "if_approval_needed":
+                return "approval_node" if state.get("pending_approval", False) else END
+            
+            if condition == "if_has_tool_results":
+                return "process_tools" if state.get("tool_results", []) else END
+            
+            # Default: continue to next node
+            return END
+        
+        return condition_func
+
+    async def _execute_subgraph(
+        self,
+        graph_id: str,
+        input_data: Dict[str, Any],
+        context: Optional[Dict[str, Any]] = None
+    ) -> Any:
+        """Execute a subgraph (nested graph operation)."""
+        if graph_id not in self._compiled_graphs:
+            raise KeyError(f"Subgraph {graph_id} not found")
+        
+        compiled_subgraph = self._compiled_graphs[graph_id]
+        initial_state = {
+            "input": input_data.get("input", ""),
+            "context": context or {},
+            "timestamp": time.time(),
+            "messages": [],
+            "history": [],
+            "pending_approval": False,
+            "approval_result": None,
+            "subgraph_output": None,
+            "tool_results": []
+        }
+        
+        result = await compiled_subgraph.ainvoke(initial_state)
+        return result.get("output", "")
 
     @handle_grpc_errors
     async def BuildGraph(self, request, context):

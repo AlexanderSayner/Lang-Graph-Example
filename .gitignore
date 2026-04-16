@@ -1,41 +1,76 @@
 ```
 # Dependencies
+node_modules/
+venv/
+.venv/
 __pycache__/
+.mypy_cache/
+.pytest_cache/
+target/
+.gradle/
+
+# Python
 *.pyc
 *.pyo
 *.pyd
-.venv/
-venv/
-.env
-.env.local
-*.env.*
-
-# Build and distribution artifacts
+__pycache__/
+*.so
+.Python
 build/
+develop-eggs/
 dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
 *.egg-info/
+.installed.cfg
+*.egg
 
-# Logs
-*.log
+# Java/Spring
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+target/
+build/
+.gradle/
+!gradle-wrapper.properties
 
-# Editor/IDE
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
-*.tmp
+*~
 
-# OS
+# System
 .DS_Store
 Thumbs.db
+.env
+.env.local
+*.env.*
 
-# Testing and coverage
-.coverage
+# Logs
+*.log
+
+# Coverage
 coverage/
 htmlcov/
-.pytest_cache/
-.mypy_cache/
+.coverage
 
-# Docker
-.dockerenv
+# Proto
+*.pb.go
+*.py
+*_pb2.py
+*_pb2_grpc.py
+
+# Distribution / packaging
+.python-version
 ```
