@@ -61,11 +61,11 @@ public interface GraphGrpcMapper {
         return toExecuteGraphRequestInternal(input, true);
     }
 
-    // FIX: Removed 'default' modifier. It is now just 'private'.
     private ExecuteGraphRequest toExecuteGraphRequestInternal(ExecuteGraphInput input, boolean stream) {
         ExecuteGraphRequest.Builder builder = ExecuteGraphRequest.newBuilder()
                 .setGraphId(input.graphId())
                 .setInput(input.input())
+                .setThreadId(input.threadId())
                 .setStreamOutput(stream);
         if (input.context() != null) {
             builder.putAllContext(convertToStringMap(input.context()));
@@ -124,11 +124,10 @@ public interface GraphGrpcMapper {
         return new GraphSummary(graph.getGraphId(), graph.getGraphName(), graph.getNodeCount(), graph.getCreatedAt(), graph.getStatus());
     }
 
-    // FIX: Wrapped response.getStateMap() with new HashMap<>(...) to cast Map<String, String> to Map<String, Object>
     default GraphStatePayload toGraphStatePayload(org.sandbox.langgraph.grpc.GetGraphStateResponse response) {
         return new GraphStatePayload(
                 response.getSuccess(),
-                response.getStateMap() != null ? new HashMap<>(response.getStateMap()) : null,
+                new HashMap<>(response.getStateMap()),
                 response.getCurrentNode(),
                 response.getNodeHistoryList()
         );
@@ -138,23 +137,21 @@ public interface GraphGrpcMapper {
         return new BuildGraphPayload(response.getSuccess(), response.getGraphId(), response.getMessage());
     }
 
-    // FIX: Wrapped response.getStateMap() with new HashMap<>(...)
     default GraphExecutionEventPayload toGraphExecutionEventPayload(org.sandbox.langgraph.grpc.ExecuteGraphResponse response) {
         return new GraphExecutionEventPayload(
                 response.getEventType(),
                 response.getNodeId(),
                 response.getOutput(),
-                response.getStateMap() != null ? new HashMap<>(response.getStateMap()) : null,
+                new HashMap<>(response.getStateMap()),
                 response.getTimestamp(),
                 response.getErrorMessage()
         );
     }
 
-    // FIX: Wrapped response.getUpdatedStateMap() with new HashMap<>(...)
     default UpdateGraphStatePayload toUpdateGraphStatePayload(org.sandbox.langgraph.grpc.UpdateGraphStateResponse response) {
         return new UpdateGraphStatePayload(
                 response.getSuccess(),
-                response.getUpdatedStateMap() != null ? new HashMap<>(response.getUpdatedStateMap()) : null,
+                new HashMap<>(response.getUpdatedStateMap()),
                 "Graph state updated successfully"
         );
     }

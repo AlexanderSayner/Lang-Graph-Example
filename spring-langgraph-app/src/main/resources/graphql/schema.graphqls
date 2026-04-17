@@ -28,6 +28,7 @@ input BuildGraphInput {
 
 input ExecuteGraphInput {
     graphId: String!
+    threadId: String
     input: String!
     context: JSON
 }

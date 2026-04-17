@@ -8,6 +8,7 @@ from typing import Dict, Any, Callable, TypedDict, List, Annotated
 import grpc
 from langchain_core.runnables import Runnable
 from langgraph.graph import StateGraph
+from langgraph.checkpoint.redis import RedisSaver
 
 from app.clients.yandex_client import YandexGPTClient
 from app.config import settings
@@ -70,10 +71,12 @@ class GraphState(TypedDict):
 class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
     """Async gRPC service implementation for LangGraph operations."""
 
-    def __init__(self, store: GraphStore):
+    def __init__(self, store: GraphStore, checkpointer: Any):
         self.store = store
         # Cache for compiled graphs. In production, consider LRU cache or Redis.
         self._compiled_graphs: Dict[str, Any] = {}
+
+        self._checkpointer = checkpointer
 
         # Initialize our custom client
         self._llm_client = YandexGPTClient(
@@ -132,7 +135,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         if graph_data.nodes:
             workflow.set_entry_point(graph_data.nodes[0].node_id)
 
-        return workflow.compile()
+        return workflow.compile(checkpointer=self._checkpointer)
 
     @handle_grpc_errors
     async def BuildGraph(self, request, context):
@@ -194,11 +197,17 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             state=_serialize_state(initial_state)
         )
 
+        config = {
+            "configurable": {
+                "thread_id": request.thread_id if request.thread_id else "default_session"
+            }
+        }
+
         try:
 
             # Use astream to get events as they happen
             # stream_mode="values" yields the state after each node
-            async for event in compiled_graph.astream(initial_state, stream_mode="values"):
+            async for event in compiled_graph.astream(initial_state, config=config, stream_mode="values"):
                 # In 'values' mode, event is the state dict after a node run
                 last_node = event.get("last_node", "unknown")
 

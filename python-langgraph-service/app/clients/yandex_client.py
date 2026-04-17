@@ -2,6 +2,8 @@ import logging
 
 import httpx
 
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -21,7 +23,7 @@ class YandexGPTClient:
     async def generate(
             self,
             user_message: str,
-            system_message: str = "Ты умный помощник.",
+            system_message: str = settings.SYSTEM_PROMPT,
             model_name: str = "yandexgpt",
             temperature: float = 0.6,
             max_tokens: int = 2000

@@ -4,7 +4,8 @@ import logging
 import grpc
 from grpc_reflection.v1alpha import reflection
 
-# Assuming standard package structure execution (e.g., python -m app.main)
+from langgraph.checkpoint.redis import AsyncRedisSaver
+
 from app.config import settings
 from app.generated import langgraph_pb2_grpc, langgraph_pb2
 from app.interceptors import LoggingInterceptor
@@ -26,6 +27,19 @@ async def create_server() -> grpc.aio.Server:
     # 1. Initialize dependencies
     graph_store = GraphStore()
 
+    # Redis LangChain checkpoint for a human in loop feature
+    checkpointer = AsyncRedisSaver(settings.REDIS_URL)
+
+    try:
+        # Connect and create indices
+        await checkpointer.asetup()
+        logger.info("Redis Checkpointer initialized.")
+    except Exception as e:
+        logger.error(f"Failed to init Redis: {e}. Falling back to MemorySaver.")
+        # Fallback if Redis is down
+        from langgraph.checkpoint.memory import MemorySaver
+        checkpointer = MemorySaver()
+
     # 2. Create the Async Server
     # Note: We do NOT pass a ThreadPoolExecutor. grpc.aio handles concurrency
     # via the event loop. Blocking code must be offloaded manually or made async.
@@ -39,7 +53,7 @@ async def create_server() -> grpc.aio.Server:
 
     # 3. Register Servicers
     langgraph_pb2_grpc.add_LangGraphServiceServicer_to_server(
-        LangGraphServiceServicer(store=graph_store), server
+        LangGraphServiceServicer(store=graph_store, checkpointer=checkpointer), server
     )
 
     # 4. Register Reflection

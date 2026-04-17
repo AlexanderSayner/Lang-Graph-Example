@@ -11,5 +11,8 @@ public record ExecuteGraphInput(
         @NotBlank(message = "Input is required")
         String input,
 
-        Map<String, Object> context
+        Map<String, Object> context,
+
+        @NotBlank(message = "Thread id is required")
+        String threadId
 ) {}
