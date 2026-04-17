@@ -1,14 +1,13 @@
 import functools
-import logging
-import time
-import operator
 import json
+import logging
+import operator
+import time
 from typing import Dict, Any, Callable, TypedDict, List, Annotated
 
 import grpc
 from langchain_core.runnables import Runnable
 from langgraph.graph import StateGraph
-from langgraph.checkpoint.redis import RedisSaver
 
 from app.clients.yandex_client import YandexGPTClient
 from app.config import settings
@@ -147,26 +146,32 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         edges = [{"source": e.source, "target": e.target, "condition": e.condition or None}
                  for e in request.edges]
 
-        graph_data = {
+        # 1. Prepare the dictionary
+        graph_dict = {
             "name": request.graph_name,
             "nodes": nodes,
             "edges": edges,
             "config": dict(request.config)
         }
 
-        self.store.add_graph(graph_id, graph_data)
-        stored_graph = self.store.get_graph(graph_id)
+        # 2. Save the Dictionary to Store (Redis)
+        await self.store.add_graph(graph_id, graph_dict)
+        stored_graph_data = await self.store.get_graph(graph_id)
 
-        if not stored_graph:
+        if not stored_graph_data:
             raise ValueError("Failed to retrieve stored graph")
 
-        compiled_graph = self._build_langgraph(stored_graph.data)
+        # 3. Convert Dict -> Pydantic Model for the internal builder
+        validated_graph_data = GraphDefinition(**graph_dict)
+
+        # 4. Build the graph using the validated model
+        compiled_graph = self._build_langgraph(validated_graph_data)
         self._compiled_graphs[graph_id] = compiled_graph
 
         return langgraph_pb2.BuildGraphResponse(
             success=True,
             graph_id=graph_id,
-            message=f"Graph '{request.graph_name}' built successfully with {len(nodes)} nodes"
+            message=f"Graph '{request.graph_name}' built successfully with {len(validated_graph_data.nodes)} nodes"
         )
 
     async def ExecuteGraph(self, request, context):
@@ -237,38 +242,75 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
 
     @handle_grpc_errors
     async def GetGraphState(self, request, context):
-        state = self.store.get_state(request.graph_id, request.thread_id or "default")
-        return langgraph_pb2.GetGraphStateResponse(success=True, state=state)
+        graph_id = request.graph_id
+        thread_id = request.thread_id or "default"
+
+        if graph_id not in self._compiled_graphs:
+            raise KeyError(f"Graph {graph_id} not found")
+
+        compiled_graph = self._compiled_graphs[graph_id]
+
+        # Use the checkpointer-aware method to get state
+        config = {"configurable": {"thread_id": thread_id}}
+        current_state = await compiled_graph.aget_state(config)
+
+        # current_state is a StateSnapshot object
+        # We convert it to the proto response format
+        return langgraph_pb2.GetGraphStateResponse(
+            success=True,
+            # current_state.values contains the actual dict state
+            state=_serialize_state(current_state.values),
+            current_node=current_state.next[0] if current_state.next else "",
+            node_history=[]  # Logic to parse history can be added here
+        )
 
     @handle_grpc_errors
     async def UpdateGraphState(self, request, context):
-        updated = self.store.update_state(
-            request.graph_id,
-            request.thread_id or "default",
-            dict(request.state_updates)
+        graph_id = request.graph_id
+        thread_id = request.thread_id or "default"
+
+        if graph_id not in self._compiled_graphs:
+            raise KeyError(f"Graph {graph_id} not found")
+
+        compiled_graph = self._compiled_graphs[graph_id]
+        config = {"configurable": {"thread_id": thread_id}}
+
+        # Update the state
+        # as_node="human_input" is optional but recommended to mark where the update came from
+        await compiled_graph.aupdate_state(
+            config,
+            dict(request.state_updates),
+            as_node="human_input"
         )
-        return langgraph_pb2.UpdateGraphStateResponse(success=True, updated_state=updated)
+
+        # Get the updated state to return
+        updated_snapshot = await compiled_graph.aget_state(config)
+
+        return langgraph_pb2.UpdateGraphStateResponse(
+            success=True,
+            updated_state=_serialize_state(updated_snapshot.values)
+        )
 
     @handle_grpc_errors
     async def ListGraphs(self, request, context):
         page_size = request.page_size if request.page_size > 0 else 10
-        graphs, next_token = self.store.list_graphs(page_size, request.page_token)
+        graphs, next_token = await self.store.list_graphs(page_size, request.page_token)
 
         graph_infos = []
         for gid, graph_obj in graphs:
             graph_infos.append(langgraph_pb2.GraphInfo(
                 graph_id=gid,
-                graph_name=graph_obj.data.name,
-                node_count=len(graph_obj.data.nodes),
-                created_at=graph_obj.created_at,
-                status=graph_obj.status
+                graph_name=graph_obj.get("name", "Unknown"),
+                node_count=len(graph_obj.get("nodes", [])),
+                created_at=graph_obj.get("created_at", ""),
+                status=graph_obj.get("status", "active")
             ))
 
         return langgraph_pb2.ListGraphsResponse(graphs=graph_infos, next_page_token=next_token)
 
     @handle_grpc_errors
     async def DeleteGraph(self, request, context):
-        success = self.store.delete_graph(request.graph_id)
+        success = await self.store.delete_graph(request.graph_id)
         if request.graph_id in self._compiled_graphs:
             del self._compiled_graphs[request.graph_id]
 

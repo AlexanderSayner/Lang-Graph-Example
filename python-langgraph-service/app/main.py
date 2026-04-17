@@ -2,8 +2,8 @@ import asyncio
 import logging
 
 import grpc
+import redis.asyncio as redis
 from grpc_reflection.v1alpha import reflection
-
 from langgraph.checkpoint.redis import AsyncRedisSaver
 
 from app.config import settings
@@ -24,8 +24,11 @@ logger = logging.getLogger(__name__)
 async def create_server() -> grpc.aio.Server:
     """Factory to create and configure the gRPC server."""
 
-    # 1. Initialize dependencies
-    graph_store = GraphStore()
+    # Init Redis
+    redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+
+    # 1. Initialize GraphStore with Redis client
+    graph_store = GraphStore(redis_client)
 
     # Redis LangChain checkpoint for a human in loop feature
     checkpointer = AsyncRedisSaver(settings.REDIS_URL)
