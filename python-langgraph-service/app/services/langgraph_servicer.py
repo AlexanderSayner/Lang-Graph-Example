@@ -7,6 +7,7 @@ from typing import Dict, Any, Callable, TypedDict, List, Annotated
 
 import grpc
 from langchain_core.runnables import Runnable
+from langgraph.constants import END
 from langgraph.graph import StateGraph
 
 from app.clients.yandex_client import YandexGPTClient
@@ -62,6 +63,7 @@ class GraphState(TypedDict):
     last_node: str
     output: str
     # Automatically append new history items
+    variables: Dict[str, Any]
     history: Annotated[List[Dict[str, Any]], operator.add]
 
 
@@ -89,16 +91,45 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         workflow = StateGraph(GraphState)
         llm = self._llm_client  # Access instance client
 
+        # --- 1. Pre-process Edges to handle Conditions ---
+        from collections import defaultdict
+
+        conditional_map = defaultdict(list)
+        unconditional_edges = []
+
+        for edge in graph_data.edges:
+            if edge.condition:
+                # Store condition: (source, target, condition_string)
+                conditional_map[edge.source].append((edge.target, edge.condition))
+            else:
+                unconditional_edges.append(edge)
+
         for node in graph_data.nodes:
             node_id = node.node_id
             metadata = node.metadata
 
-            def create_node_handler(n_id: str, n_meta: Dict[str, Any]):
+            # Check if this node is a "Router" node (has conditional outgoing edges)
+            is_router = node_id in conditional_map
+
+            def create_node_handler(n_id: str, n_meta: Dict[str, Any], is_router_node: bool):
                 async def handler(state: GraphState) -> Dict[str, Any]:
                     logger.info(f"Executing node: {n_id}")
 
                     user_input = state.get("input", "")
                     system_prompt = n_meta.get("system_prompt", "You are a helpful assistant and a pro developer.")
+
+                    # If it's a router node, we instruct the LLM to classify the intent
+                    if is_router_node:
+                        # Extract the keys expected by the conditions
+                        # E.g., from "ticket_type == 'technical'" -> we want "ticket_type"
+                        # This is a simple heuristic to make the LLM output the right JSON
+                        system_prompt = (
+                            f"You are a classifier. Analyze the user input and determine the intent. "
+                            f"Respond with a single JSON object containing the classification key. "
+                            f"DO NOT output any other text.\n"
+                            f"Example Input: 'My laptop screen is flickering'\n"
+                            f"Example Output: {{'ticket_type': 'technical'}}"
+                        )
 
                     try:
                         # Call our custom async client
@@ -109,26 +140,104 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                         )
                         logger.info(f"Node {n_id} response received.")
 
+                        # Try to parse JSON from router nodes to update state variables
+                        if is_router_node:
+                            import json
+                            import re
+
+                            try:
+                                # Looks for text between { and }
+                                json_match = re.search(r'\{.*}', response_text, re.DOTALL)
+
+                                if json_match:
+                                    json_str = json_match.group(0)
+                                    # Parse JSON
+                                    parsed_data = json.loads(json_str)
+
+                                    logger.info(f"Router {n_id} extracted data: {parsed_data}")
+
+                                    # Return the parsed data to merge into state
+                                    return {
+                                        "last_node": n_id,
+                                        "output": response_text,
+                                        "variables": parsed_data  # Merge 'ticket_type': 'technical' into state
+                                    }
+                                else:
+                                    logger.warning(f"Router {n_id}: No JSON found in response.")
+
+                            except json.JSONDecodeError:
+                                import ast
+                                # Fallback: Try parsing single quotes (Python dict style)
+                                try:
+                                    parsed_data = ast.literal_eval(json_match.group(0))
+                                    logger.info(f"Router {n_id} extracted data (literal_eval): {parsed_data}")
+                                    return {
+                                        "last_node": n_id,
+                                        "output": response_text,
+                                        **parsed_data
+                                    }
+                                except Exception as e:
+                                    logger.error(f"Router {n_id} failed to parse response: {e}")
+
+                        return {
+                            "last_node": n_id,
+                            "output": response_text,
+                            "history": [{"node": n_id, "output": response_text}]
+                        }
+
                     except Exception as e:
                         logger.error(f"Node execution failed: {e}")
                         response_text = f"Error: {str(e)}"
 
-                    return {
-                        "last_node": n_id,
-                        "output": response_text,
-                        "history": [{"node": n_id, "output": response_text}]
-                    }
+                        return {
+                            "last_node": n_id,
+                            "output": response_text,
+                            "history": [{"node": n_id, "output": response_text}]
+                        }
 
                 return handler
 
-            workflow.add_node(node_id, create_node_handler(node_id, metadata))
+            workflow.add_node(node_id, create_node_handler(node_id, metadata, is_router))  # type: ignore[arg-type]
 
-        # Handle Edges
-        for edge in graph_data.edges:
-            if edge.condition:
-                logger.warning(f"Conditional edge from {edge.source} ignored (requires custom routing)")
-            else:
-                workflow.add_edge(edge.source, edge.target)
+        # --- 3. Add Unconditional Edges ---
+        for edge in unconditional_edges:
+            workflow.add_edge(edge.source, edge.target)
+
+        # --- 4. Add Conditional Edges (Grouped by Source) ---
+        for source, conditions in conditional_map.items():
+            # Create the routing function
+            def make_router(condition_list):
+                def router(state: GraphState) -> str:
+                    # Check each condition
+                    for target, condition_str in condition_list:
+                        # Simple parser for "key == 'value'"
+                        if "==" in condition_str:
+                            key, val = condition_str.split("==")
+                            key = key.strip()
+                            val = val.strip().strip("'\"")
+
+                            current_val = state.get("variables", {}).get(key)
+                            if current_val is None:
+                                current_val = state.get(key)
+
+                            logger.info(f"Router Check: Key='{key}', Expected='{val}', Actual='{current_val}'")
+
+                            # Check if state matches
+                            if current_val == val:
+                                return target
+
+                    # If no condition matches, go to END (or a default fallback)
+                    logger.warning(f"No condition matched for node {source}. Ending.")
+                    return END
+
+                return router
+
+            # Map possible return values to node names
+            # LangGraph needs to know possible paths
+            path_map = {target: target for target, _ in conditions}
+            path_map[END] = END
+
+            workflow.add_conditional_edges(source, make_router(conditions), path_map)
 
         # Set Entry Point
         if graph_data.nodes:
