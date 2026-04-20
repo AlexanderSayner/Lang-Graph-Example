@@ -41,29 +41,6 @@ The service was designed to:
 
 ---
 
-## Mock Functions
-
-**Issue**: The node handlers are hardcoded to return a simple response. They don't actually call any real business logic or external services based on the `handler_name` specified in the graph definition.
-
-#### In-Memory Store (Lines 39-40 in `graph_store.py`)
-
-```python
-self._graphs: Dict[str, StoredGraph] = {}
-self._states: Dict[str, Dict[str, Any]] = {}
-```
-
-**Issue**: Data is stored in memory only. All graphs and states are lost when the service restarts. The comment explicitly states: *"In a real app, this would be Redis or a Database"*
-
-#### 3. Conditional Edges Ignored (Line 115 in `langgraph_servicer.py`)
-
-```python
-logger.warning(f"Conditional edge from {edge.source} ignored (requires custom routing)")
-```
-
-**Issue**: Conditional edges defined in the graph are not implemented - they're simply logged as warnings and ignored.
-
----
-
 ## Step-by-Step Guide to Implement Full Functionality
 
 ### Phase 1: Replace Mock Node Handlers with Real Implementations
