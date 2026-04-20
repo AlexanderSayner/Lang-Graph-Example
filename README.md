@@ -53,6 +53,11 @@ This project demonstrates a microservices architecture where:
 
 ## Getting Started
 
+### Run Redis server
+```shell
+docker run -d --name redis-stack -p 6380:6379 redis/redis-stack-server:latest
+```
+
 ### 1. Start the Python LangGraph Service
 
 ```bash
@@ -70,6 +75,14 @@ python -m app.server
 ```
 
 The Python service will start on `localhost:50051`.
+
+#### Build python service docker image
+```shell
+docker build -t langgraph-gateway:snapshot .
+```
+```shell
+docker run -d --name langgraph-container-snapshot -p 50051:50051 langgraph-gateway:snapshot
+```
 
 ### 2. Build and Run the Spring Boot Application
 
