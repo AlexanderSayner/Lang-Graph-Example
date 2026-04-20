@@ -28,6 +28,7 @@ input BuildGraphInput {
 
 input ExecuteGraphInput {
     graphId: String!
+    threadId: String
     input: String!
     context: JSON
 }
@@ -115,7 +116,7 @@ type PageInfo {
 }
 
 enum GraphStatus {
-    active
+    ACTIVE
     INACTIVE
     ERROR
     BUILDING

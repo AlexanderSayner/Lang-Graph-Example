@@ -43,21 +43,9 @@ The service was designed to:
 
 ## Mock Functions
 
-#### 1. Node Handler Mock (Line 100-107 in `langgraph_servicer.py`)
-
-```python
-def create_handler(name: str):
-    async def handler(state: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing node: {name}")
-        # Simulate async work
-        await asyncio.sleep(0.01)
-        return {"last_node": name, "processed": True}
-    return handler
-```
-
 **Issue**: The node handlers are hardcoded to return a simple response. They don't actually call any real business logic or external services based on the `handler_name` specified in the graph definition.
 
-#### 2. In-Memory Store (Lines 39-40 in `graph_store.py`)
+#### In-Memory Store (Lines 39-40 in `graph_store.py`)
 
 ```python
 self._graphs: Dict[str, StoredGraph] = {}

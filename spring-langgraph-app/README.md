@@ -54,6 +54,34 @@ POST http://localhost:9191/graphql
     }
 }
 ```
+```http request
+POST http://localhost:9191/graphql
+
+{
+  "query": "mutation BuildGraph($input: BuildGraphInput!) { buildGraph(input: $input) { success graphId message } }",
+  "variables": {
+    "input": {
+      "graphId": "graph-002",
+      "graphName": "Support Ticket Triage",
+      "nodes": [
+        { "nodeId": "triage", "nodeType": "START", "handlerName": "triageHandler" },
+        { "nodeId": "technical", "nodeType": "ACTION", "handlerName": "technicalHandler" },
+        { "nodeId": "billing", "nodeType": "ACTION", "handlerName": "billingHandler" },
+        { "nodeId": "general", "nodeType": "ACTION", "handlerName": "generalHandler" },
+        { "nodeId": "resolve", "nodeType": "END", "handlerName": "resolveHandler" }
+      ],
+      "edges": [
+        { "source": "triage", "target": "technical", "condition": "ticket_type == 'technical'" },
+        { "source": "triage", "target": "billing", "condition": "ticket_type == 'billing'" },
+        { "source": "triage", "target": "general", "condition": "ticket_type == 'general'" },
+        { "source": "technical", "target": "resolve" },
+        { "source": "billing", "target": "resolve" },
+        { "source": "general", "target": "resolve" }
+      ]
+    }
+  }
+}
+```
 
 ### 1. Build a Graph
 Creates a new graph structure with nodes and edges on the gRPC backend.

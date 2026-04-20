@@ -4,7 +4,7 @@ services:
   # LangGraph gRPC Service
   langgraph-service:
     build:
-      context: .
+      context: ./python-langgraph-service
       dockerfile: Dockerfile
     container_name: langgraph-service
     ports:
@@ -54,7 +54,7 @@ services:
 
   # Redis Cache
   redis:
-    image: redis:7-alpine
+    image: redis/redis-stack-server:latest
     container_name: langgraph-redis
     command: redis-server --appendonly yes
     volumes:

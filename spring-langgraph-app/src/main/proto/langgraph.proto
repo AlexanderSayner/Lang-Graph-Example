@@ -61,6 +61,7 @@ message ExecuteGraphRequest {
     string input = 2;
     map<string, string> context = 3;
     bool stream_output = 4;
+    string thread_id = 5;
 }
 
 message ExecuteGraphResponse {
