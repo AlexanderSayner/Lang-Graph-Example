@@ -2,8 +2,8 @@ import { ApolloClient, InMemoryCache, gql, createHttpLink } from '@apollo/client
 import { GraphQLWsLink } from '@apollo/client/link/subscriptions';
 import { createClient } from 'graphql-ws';
 
-const GRAPHQL_ENDPOINT = 'http://localhost:8080/graphql';
-const WS_ENDPOINT = 'ws://localhost:8080/graphql';
+const GRAPHQL_ENDPOINT = 'http://localhost:9191/graphql';
+const WS_ENDPOINT = 'ws://localhost:9191/graphql/ws';
 
 // Create HTTP link for queries and mutations
 const httpLink = createHttpLink({
@@ -99,6 +99,34 @@ export const DELETE_GRAPH = gql`
   mutation DeleteGraph($graphId: String!) {
     deleteGraph(graphId: $graphId) {
       success
+      message
+    }
+  }
+`;
+
+export const GET_GRAPH_VIEW = gql`
+  query GetGraphView($graphId: String!) {
+    getGraphView(graphId: $graphId) {
+      success
+      graphId
+      graphName
+      status
+      nodes {
+        nodeId
+        nodeType
+        handlerName
+        metadata
+        position {
+          x
+          y
+        }
+      }
+      edges {
+        source
+        target
+        condition
+        label
+      }
       message
     }
   }

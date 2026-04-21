@@ -8,8 +8,8 @@ import ReactFlow, {
   MarkerType
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { useQuery, useMutation, useSubscription } from '@apollo/client';
-import { LIST_GRAPHS, BUILD_GRAPH, EXECUTE_GRAPH_STREAM, DELETE_GRAPH } from './apollo-client';
+import { useQuery } from '@apollo/client';
+import { GET_GRAPH_VIEW } from './apollo-client';
 
 // Custom Node Component
 const CustomNode = ({ data }) => {
@@ -28,148 +28,60 @@ const nodeTypes = {
   custom: CustomNode,
 };
 
-// Graph Viewer Component
+// Graph Viewer Component - Read-only view with conditional edges
 const GraphViewer = () => {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-  const [selectedGraph, setSelectedGraph] = useState(null);
-  const [graphInput, setGraphInput] = useState({
-    graphId: '',
-    graphName: '',
-    input: '',
-  });
-  const [executionState, setExecutionState] = useState(null);
-  const [activeNodeId, setActiveNodeId] = useState(null);
+  const [selectedGraphId, setSelectedGraphId] = useState('sample-graph-1');
+  const [graphIdInput, setGraphIdInput] = useState('sample-graph-1');
 
-  // Fetch available graphs
-  const { loading: graphsLoading, data: graphsData, refetch } = useQuery(LIST_GRAPHS, {
-    variables: { pageSize: 10 },
-    skip: false,
+  // Fetch graph view data from Redis via GraphQL
+  const { loading, data, refetch, error } = useQuery(GET_GRAPH_VIEW, {
+    variables: { graphId: selectedGraphId },
+    skip: !selectedGraphId,
   });
 
-  // Build graph mutation
-  const [buildGraph] = useMutation(BUILD_GRAPH);
+  // Transform graph view data to ReactFlow format with conditional edges
+  const transformToFlowElements = useCallback((graphViewData) => {
+    if (!graphViewData?.getGraphView) return;
 
-  // Execute graph stream subscription
-  const { data: streamData, subscribeToMore } = useSubscription(EXECUTE_GRAPH_STREAM, {
-    variables: { 
-      input: { 
-        graphId: selectedGraph?.graphId || '', 
-        input: graphInput.input || 'test input',
-        threadId: null,
-        context: null
-      } 
-    },
-    skip: !selectedGraph,
-    onData: ({ data }) => {
-      if (data?.executeGraphStream) {
-        const event = data.executeGraphStream;
-        setExecutionState(event.state);
-        if (event.nodeId) {
-          setActiveNodeId(event.nodeId);
-          // Update node status based on event
-          setNodes((nds) =>
-            nds.map((node) => ({
-              ...node,
-              data: {
-                ...node.data,
-                status: node.id === event.nodeId ? 'active' : '',
-              },
-            }))
-          );
-        }
-        if (event.eventType === 'ERROR') {
-          console.error('Graph execution error:', event.errorMessage);
-        }
-      }
-    },
-  });
-
-  // Delete graph mutation
-  const [deleteGraph] = useMutation(DELETE_GRAPH);
-
-  // Create sample graph with conditional edges
-  const createSampleGraph = useCallback(async () => {
-    const sampleInput = {
-      graphId: `graph-${Date.now()}`,
-      graphName: 'Sample Conditional Graph',
-      nodes: [
-        { nodeId: 'start', nodeType: 'START', handlerName: 'startHandler', metadata: {} },
-        { nodeId: 'process', nodeType: 'PROCESS', handlerName: 'processHandler', metadata: {} },
-        { nodeId: 'decision', nodeType: 'DECISION', handlerName: 'decisionHandler', metadata: {} },
-        { nodeId: 'success', nodeType: 'SUCCESS', handlerName: 'successHandler', metadata: {} },
-        { nodeId: 'failure', nodeType: 'FAILURE', handlerName: 'failureHandler', metadata: {} },
-        { nodeId: 'end', nodeType: 'END', handlerName: 'endHandler', metadata: {} },
-      ],
-      edges: [
-        { source: 'start', target: 'process', condition: null },
-        { source: 'process', target: 'decision', condition: null },
-        { source: 'decision', target: 'success', condition: 'result == "success"' },
-        { source: 'decision', target: 'failure', condition: 'result == "failure"' },
-        { source: 'success', target: 'end', condition: null },
-        { source: 'failure', target: 'end', condition: null },
-      ],
-      config: {},
-    };
-
-    try {
-      const result = await buildGraph({ variables: { input: sampleInput } });
-      if (result.data.buildGraph.success) {
-        alert('Graph created successfully!');
-        refetch();
-      } else {
-        alert('Failed to create graph: ' + result.data.buildGraph.message);
-      }
-    } catch (error) {
-      console.error('Error building graph:', error);
-      alert('Error creating graph');
+    const graphData = graphViewData.getGraphView;
+    if (!graphData.success || !graphData.nodes) {
+      console.error('Failed to load graph:', graphData.message);
+      return;
     }
-  }, [buildGraph, refetch]);
 
-  // Transform graph data to ReactFlow format
-  const transformToFlowElements = useCallback((graphs) => {
-    if (!graphs?.listGraphs?.graphs) return;
-
-    const selected = graphs.listGraphs.graphs[0];
-    if (!selected) return;
-
-    setSelectedGraph(selected);
-
-    // Create nodes
-    const flowNodes = [
-      { id: 'start', position: { x: 250, y: 0 }, type: 'custom', data: { label: 'Start', nodeType: 'START', handlerName: 'startHandler' } },
-      { id: 'process', position: { x: 250, y: 100 }, type: 'custom', data: { label: 'Process', nodeType: 'PROCESS', handlerName: 'processHandler' } },
-      { id: 'decision', position: { x: 250, y: 200 }, type: 'custom', data: { label: 'Decision', nodeType: 'DECISION', handlerName: 'decisionHandler' } },
-      { id: 'success', position: { x: 100, y: 300 }, type: 'custom', data: { label: 'Success', nodeType: 'SUCCESS', handlerName: 'successHandler' } },
-      { id: 'failure', position: { x: 400, y: 300 }, type: 'custom', data: { label: 'Failure', nodeType: 'FAILURE', handlerName: 'failureHandler' } },
-      { id: 'end', position: { x: 250, y: 400 }, type: 'custom', data: { label: 'End', nodeType: 'END', handlerName: 'endHandler' } },
-    ];
+    // Create nodes with auto-layout
+    const flowNodes = graphData.nodes.map((node, index) => ({
+      id: node.nodeId,
+      position: node.position || { x: 250, y: index * 100 },
+      type: 'custom',
+      data: { 
+        label: node.nodeId, 
+        nodeType: node.nodeType, 
+        handlerName: node.handlerName 
+      },
+    }));
 
     // Create edges with conditional styling
-    const flowEdges = [
-      { id: 'e1-2', source: 'start', target: 'process', markerEnd: { type: MarkerType.ArrowClosed } },
-      { id: 'e2-3', source: 'process', target: 'decision', markerEnd: { type: MarkerType.ArrowClosed } },
-      { 
-        id: 'e3-4', 
-        source: 'decision', 
-        target: 'success', 
-        label: 'result == "success"',
-        style: { stroke: '#28a745', strokeWidth: 2 },
-        labelStyle: { fill: '#28a745', fontWeight: 'bold' },
-        markerEnd: { type: MarkerType.ArrowClosed }
-      },
-      { 
-        id: 'e3-5', 
-        source: 'decision', 
-        target: 'failure', 
-        label: 'result == "failure"',
-        style: { stroke: '#dc3545', strokeWidth: 2 },
-        labelStyle: { fill: '#dc3545', fontWeight: 'bold' },
-        markerEnd: { type: MarkerType.ArrowClosed }
-      },
-      { id: 'e4-6', source: 'success', target: 'end', markerEnd: { type: MarkerType.ArrowClosed } },
-      { id: 'e5-6', source: 'failure', target: 'end', markerEnd: { type: MarkerType.ArrowClosed } },
-    ];
+    const flowEdges = graphData.edges.map((edge, index) => {
+      const hasCondition = edge.condition && edge.condition.trim() !== '';
+      return {
+        id: `e-${edge.source}-${edge.target}`,
+        source: edge.source,
+        target: edge.target,
+        label: edge.label || edge.condition || '',
+        style: { 
+          stroke: hasCondition ? (edge.condition.includes('success') ? '#28a745' : '#dc3545') : '#666', 
+          strokeWidth: hasCondition ? 2 : 1 
+        },
+        labelStyle: { 
+          fill: hasCondition ? (edge.condition.includes('success') ? '#28a745' : '#dc3545') : '#666', 
+          fontWeight: 'bold' 
+        },
+        markerEnd: { type: MarkerType.ArrowClosed },
+      };
+    });
 
     setNodes(flowNodes);
     setEdges(flowEdges);
@@ -177,76 +89,14 @@ const GraphViewer = () => {
 
   // Load graph when data arrives
   useEffect(() => {
-    if (graphsData) {
-      transformToFlowElements(graphsData);
+    if (data) {
+      transformToFlowElements(data);
     }
-  }, [graphsData, transformToFlowElements]);
+  }, [data, transformToFlowElements]);
 
-  // Execute graph
-  const executeGraph = async () => {
-    if (!selectedGraph) return;
-    
-    try {
-      const result = await buildGraph({
-        variables: {
-          input: {
-            graphId: selectedGraph.graphId,
-            graphName: selectedGraph.graphName,
-            nodes: [
-              { nodeId: 'start', nodeType: 'START', handlerName: 'startHandler', metadata: {} },
-              { nodeId: 'process', nodeType: 'PROCESS', handlerName: 'processHandler', metadata: {} },
-              { nodeId: 'decision', nodeType: 'DECISION', handlerName: 'decisionHandler', metadata: {} },
-              { nodeId: 'success', nodeType: 'SUCCESS', handlerName: 'successHandler', metadata: {} },
-              { nodeId: 'failure', nodeType: 'FAILURE', handlerName: 'failureHandler', metadata: {} },
-              { nodeId: 'end', nodeType: 'END', handlerName: 'endHandler', metadata: {} },
-            ],
-            edges: [
-              { source: 'start', target: 'process', condition: null },
-              { source: 'process', target: 'decision', condition: null },
-              { source: 'decision', target: 'success', condition: 'result == "success"' },
-              { source: 'decision', target: 'failure', condition: 'result == "failure"' },
-              { source: 'success', target: 'end', condition: null },
-              { source: 'failure', target: 'end', condition: null },
-            ],
-            config: {},
-          }
-        }
-      });
-      
-      if (result.data.buildGraph.success) {
-        // Subscribe to execution stream
-        subscribeToMore({
-          document: EXECUTE_GRAPH_STREAM,
-          variables: {
-            input: {
-              graphId: selectedGraph.graphId,
-              input: graphInput.input || 'test input',
-              threadId: null,
-              context: null
-            }
-          }
-        });
-      }
-    } catch (error) {
-      console.error('Error executing graph:', error);
-    }
-  };
-
-  // Delete current graph
-  const handleDeleteGraph = async () => {
-    if (!selectedGraph) return;
-    
-    try {
-      const result = await deleteGraph({ variables: { graphId: selectedGraph.graphId } });
-      if (result.data.deleteGraph.success) {
-        setSelectedGraph(null);
-        setNodes([]);
-        setEdges([]);
-        refetch();
-      }
-    } catch (error) {
-      console.error('Error deleting graph:', error);
-    }
+  // Handle graph ID change
+  const handleLoadGraph = () => {
+    setSelectedGraphId(graphIdInput);
   };
 
   return (
@@ -254,41 +104,26 @@ const GraphViewer = () => {
       <div className="controls">
         <input
           type="text"
-          placeholder="Graph ID"
-          value={graphInput.graphId}
-          onChange={(e) => setGraphInput({ ...graphInput, graphId: e.target.value })}
+          placeholder="Enter Graph ID"
+          value={graphIdInput}
+          onChange={(e) => setGraphIdInput(e.target.value)}
+          style={{ flex: 1, padding: '8px', borderRadius: '4px', border: '1px solid #ccc' }}
         />
-        <input
-          type="text"
-          placeholder="Graph Name"
-          value={graphInput.graphName}
-          onChange={(e) => setGraphInput({ ...graphInput, graphName: e.target.value })}
-        />
-        <input
-          type="text"
-          placeholder="Input data"
-          value={graphInput.input}
-          onChange={(e) => setGraphInput({ ...graphInput, input: e.target.value })}
-        />
-        <button onClick={createSampleGraph} disabled={graphsLoading}>
-          Create Sample Graph
+        <button onClick={handleLoadGraph} disabled={loading}>
+          {loading ? 'Loading...' : 'Load Graph'}
         </button>
-        <button onClick={executeGraph} disabled={!selectedGraph}>
-          Execute Graph
-        </button>
-        <button onClick={handleDeleteGraph} disabled={!selectedGraph} style={{ background: '#dc3545' }}>
-          Delete Graph
-        </button>
-        {selectedGraph && (
+        {selectedGraphId && (
           <span style={{ marginLeft: 'auto', color: '#666' }}>
-            Selected: {selectedGraph.graphName} ({selectedGraph.status})
+            Viewing: {selectedGraphId}
           </span>
         )}
       </div>
 
       <div className="flow-container">
-        {graphsLoading ? (
-          <div className="loading">Loading graphs...</div>
+        {loading ? (
+          <div className="loading">Loading graph...</div>
+        ) : error ? (
+          <div className="error">Error: {error.message}</div>
         ) : (
           <ReactFlow
             nodes={nodes}
@@ -315,12 +150,11 @@ const GraphViewer = () => {
       </div>
 
       <div className="status-bar">
-        {executionState ? (
-          <span>Current State: {JSON.stringify(executionState)}</span>
+        {data?.getGraphView ? (
+          <span>Graph: {data.getGraphView.graphName || selectedGraphId} - Status: {data.getGraphView.status || 'Unknown'}</span>
         ) : (
-          <span>Ready - Create a graph to get started</span>
+          <span>Ready - Enter a graph ID to view</span>
         )}
-        {activeNodeId && <span style={{ marginLeft: '16px' }}>Active Node: {activeNodeId}</span>}
       </div>
     </div>
   );

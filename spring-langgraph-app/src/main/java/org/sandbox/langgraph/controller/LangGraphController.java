@@ -8,6 +8,7 @@ import org.sandbox.langgraph.dto.graphql.input.ExecuteGraphInput;
 import org.sandbox.langgraph.dto.graphql.input.UpdateGraphStateInput;
 import org.sandbox.langgraph.dto.graphql.payload.*;
 import org.sandbox.langgraph.service.LangGraphGrpcService;
+import org.sandbox.langgraph.service.RedisGraphViewService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.graphql.data.method.annotation.Argument;
@@ -19,6 +20,7 @@ import org.springframework.validation.annotation.Validated;
 import reactor.core.publisher.Mono;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 @Controller
@@ -28,9 +30,12 @@ public class LangGraphController {
     private static final Logger log = LoggerFactory.getLogger(LangGraphController.class);
 
     private final LangGraphGrpcService langGraphService;
+    private final RedisGraphViewService redisGraphViewService;
 
-    public LangGraphController(LangGraphGrpcService langGraphService) {
+    public LangGraphController(LangGraphGrpcService langGraphService, 
+                               RedisGraphViewService redisGraphViewService) {
         this.langGraphService = langGraphService;
+        this.redisGraphViewService = redisGraphViewService;
     }
 
     @QueryMapping
@@ -46,6 +51,47 @@ public class LangGraphController {
             @Argument String graphId,
             @Argument String threadId) {
         return langGraphService.getGraphState(graphId, threadId);
+    }
+
+    @QueryMapping
+    public Mono<@NonNull GraphViewPayload> getGraphView(@Argument String graphId) {
+        log.info("Getting graph view for: {}", graphId);
+        return redisGraphViewService.getGraphViewData(graphId)
+                .map(data -> {
+                    List<GraphNode> nodes = data.nodes().stream()
+                            .map(nodeMap -> new GraphNode(
+                                    (String) nodeMap.get("nodeId"),
+                                    (String) nodeMap.get("nodeType"),
+                                    (String) nodeMap.get("handlerName"),
+                                    (Map<String, Object>) nodeMap.get("metadata"),
+                                    null // Position can be auto-calculated by frontend
+                            ))
+                            .toList();
+
+                    List<GraphEdge> edges = data.edges().stream()
+                            .map(edgeMap -> {
+                                String condition = (String) edgeMap.get("condition");
+                                return new GraphEdge(
+                                        (String) edgeMap.get("source"),
+                                        (String) edgeMap.get("target"),
+                                        condition,
+                                        condition != null && !condition.isBlank() ? condition : null
+                                );
+                            })
+                            .toList();
+
+                    return GraphViewPayload.success(
+                            data.graphId(),
+                            data.graphName(),
+                            data.status(),
+                            nodes,
+                            edges
+                    );
+                })
+                .onErrorResume(e -> {
+                    log.error("Error loading graph view for {}: {}", graphId, e.getMessage());
+                    return Mono.just(GraphViewPayload.error("Failed to load graph: " + e.getMessage()));
+                });
     }
 
     @MutationMapping

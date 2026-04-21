@@ -1,3 +1,46 @@
 ```
+# Dependencies
 node_modules/
+.gradle/
+target/
+
+# Compiled Java files
+*.class
+*.jar
+*.war
+*.ear
+
+# Build artifacts
+build/
+dist/
+out/
+
+# IDE files
+.vscode/
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Logs
+*.log
+logs/
+
+# Environment
+.env
+.env.local
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python (if present)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
 ```

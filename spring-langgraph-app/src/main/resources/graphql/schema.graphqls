@@ -3,6 +3,7 @@
 type Query {
     listGraphs(pageSize: Int! = 10, pageToken: String): GraphListPayload!
     getGraphState(graphId: String!, threadId: String): GraphStatePayload!
+    getGraphView(graphId: String!): GraphViewPayload!
 }
 
 type Mutation {
@@ -98,6 +99,38 @@ type GraphExecutionEventPayload {
     state: JSON
     timestamp: Long!
     errorMessage: String
+}
+
+# ============== Graph View Types (for visualization) ==============
+
+type GraphViewPayload {
+    success: Boolean!
+    graphId: String
+    graphName: String
+    status: String
+    nodes: [GraphNode!]!
+    edges: [GraphEdge!]!
+    message: String
+}
+
+type GraphNode {
+    nodeId: String!
+    nodeType: String!
+    handlerName: String
+    metadata: JSON
+    position: Position
+}
+
+type GraphEdge {
+    source: String!
+    target: String!
+    condition: String
+    label: String
+}
+
+type Position {
+    x: Float!
+    y: Float!
 }
 
 # ============== Common Types ==============
