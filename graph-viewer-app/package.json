@@ -1,0 +1,23 @@
+{
+  "name": "graph-viewer-app",
+  "version": "1.0.0",
+  "description": "Desktop reactive JS app for viewing graphs with conditional edges",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "@apollo/client": "^3.8.0",
+    "graphql": "^16.8.0",
+    "reactflow": "^11.10.0",
+    "graphql-ws": "^5.14.0"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0",
+    "@vitejs/plugin-react": "^4.2.0"
+  }
+}
