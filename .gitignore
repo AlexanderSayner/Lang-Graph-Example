@@ -1,4 +1,3 @@
-```
 # Dependencies
 node_modules/
 .gradle/
@@ -14,10 +13,14 @@ target/
 build/
 dist/
 out/
+*.egg-info/
 
-# IDE files
+# Editor/IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+*.tmp
 *.iml
 *.ipr
 *.iws
@@ -35,7 +38,7 @@ logs/
 .DS_Store
 Thumbs.db
 
-# Python (if present)
+# Python
 __pycache__/
 *.pyc
 *.pyo
@@ -43,4 +46,3 @@ __pycache__/
 .Python
 venv/
 .venv/
-```
