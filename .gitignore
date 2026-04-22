@@ -1,22 +1,19 @@
-```
 # Dependencies
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.venv/
-venv/
-.env
-.env.local
-*.env.*
+node_modules/
+.gradle/
+target/
 
-# Build and distribution artifacts
+# Compiled Java files
+*.class
+*.jar
+*.war
+*.ear
+
+# Build artifacts
 build/
 dist/
+out/
 *.egg-info/
-
-# Logs
-*.log
 
 # Editor/IDE
 .vscode/
@@ -24,18 +21,28 @@ dist/
 *.swp
 *.swo
 *.tmp
+*.iml
+*.ipr
+*.iws
 
-# OS
+# Logs
+*.log
+logs/
+
+# Environment
+.env
+.env.local
+.env.*
+
+# OS files
 .DS_Store
 Thumbs.db
 
-# Testing and coverage
-.coverage
-coverage/
-htmlcov/
-.pytest_cache/
-.mypy_cache/
-
-# Docker
-.dockerenv
-```
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/

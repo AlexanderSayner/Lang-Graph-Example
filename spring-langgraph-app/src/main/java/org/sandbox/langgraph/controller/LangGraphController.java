@@ -7,7 +7,10 @@ import org.sandbox.langgraph.dto.graphql.input.BuildGraphInput;
 import org.sandbox.langgraph.dto.graphql.input.ExecuteGraphInput;
 import org.sandbox.langgraph.dto.graphql.input.UpdateGraphStateInput;
 import org.sandbox.langgraph.dto.graphql.payload.*;
+import org.sandbox.langgraph.dto.graphql.payload.redis.GraphViewPayload;
+import org.sandbox.langgraph.mapper.RedisGraphStorageMapper;
 import org.sandbox.langgraph.service.LangGraphGrpcService;
+import org.sandbox.langgraph.service.RedisGraphViewService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.graphql.data.method.annotation.Argument;
@@ -28,9 +31,15 @@ public class LangGraphController {
     private static final Logger log = LoggerFactory.getLogger(LangGraphController.class);
 
     private final LangGraphGrpcService langGraphService;
+    private final RedisGraphViewService redisGraphViewService;
+    private final RedisGraphStorageMapper redisGraphStorageMapper;
 
-    public LangGraphController(LangGraphGrpcService langGraphService) {
+    public LangGraphController(LangGraphGrpcService langGraphService,
+                               RedisGraphViewService redisGraphViewService,
+                               RedisGraphStorageMapper redisGraphStorageMapper) {
         this.langGraphService = langGraphService;
+        this.redisGraphViewService = redisGraphViewService;
+        this.redisGraphStorageMapper = redisGraphStorageMapper;
     }
 
     @QueryMapping
@@ -46,6 +55,17 @@ public class LangGraphController {
             @Argument String graphId,
             @Argument String threadId) {
         return langGraphService.getGraphState(graphId, threadId);
+    }
+
+    @QueryMapping
+    public Mono<@NonNull GraphViewPayload> getGraphView(@Argument String graphId) {
+        log.info("Getting graph view for: {}", graphId);
+        return redisGraphViewService.getGraphViewData(graphId)
+                .map(redisGraphStorageMapper::toPayload)
+                .onErrorResume(e -> {
+                    log.error("Error loading graph view for {}: {}", graphId, e.getMessage());
+                    return Mono.just(GraphViewPayload.error("Failed to load graph: " + e.getMessage()));
+                });
     }
 
     @MutationMapping

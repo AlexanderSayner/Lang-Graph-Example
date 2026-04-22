@@ -19,6 +19,12 @@ spring:
   jackson:
     default-property-inclusion: non_null
 
+  data:
+    redis:
+      host: localhost
+      port: 6380
+      timeout: 2000ms
+
   grpc:
     client:
       channels:
@@ -45,5 +51,6 @@ logging:
     org.springframework.graphql: DEBUG
     org.springframework.boot.autoconfigure.graphql: DEBUG
     io.grpc: INFO
+    org.springframework.data.redis: DEBUG
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"

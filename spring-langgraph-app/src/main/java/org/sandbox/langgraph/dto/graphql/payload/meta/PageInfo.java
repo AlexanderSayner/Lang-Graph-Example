@@ -1,4 +1,4 @@
-package org.sandbox.langgraph.dto.graphql.payload;
+package org.sandbox.langgraph.dto.graphql.payload.meta;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 
