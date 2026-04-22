@@ -1,6 +1,7 @@
 package org.sandbox.langgraph.dto.graphql.payload;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import org.sandbox.langgraph.dto.graphql.payload.meta.PageInfo;
 
 import java.util.List;
 

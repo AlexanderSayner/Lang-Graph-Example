@@ -3,6 +3,7 @@ package org.sandbox.langgraph.mapper;
 import org.mapstruct.Mapper;
 import org.sandbox.langgraph.dto.graphql.input.*;
 import org.sandbox.langgraph.dto.graphql.payload.*;
+import org.sandbox.langgraph.dto.graphql.payload.meta.PageInfo;
 import org.sandbox.langgraph.grpc.*;
 
 import java.util.HashMap;

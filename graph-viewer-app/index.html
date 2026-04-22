@@ -1,28 +1,225 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Graph Viewer</title>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LangGraph Visualizer</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reactflow@11.10.1/dist/style.css">
     <style>
-      * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
-      }
-      body, html {
-        width: 100%;
-        height: 100%;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-      }
-      #root {
-        width: 100%;
-        height: 100%;
-      }
+        body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; height: 100vh; background: #f9f9f9; }
+
+        /* Main Container */
+        #root { display: flex; width: 100%; height: 100%; }
+
+        /* Sidebar Styling */
+        .sidebar {
+            width: 300px;
+            background: #fff;
+            border-right: 1px solid #e0e0e0;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 2px 0 5px rgba(0,0,0,0.05);
+        }
+        .sidebar-header {
+            padding: 20px;
+            border-bottom: 1px solid #eee;
+            background: #fafafa;
+        }
+        .sidebar-header h3 { margin: 0; color: #333; font-size: 18px; }
+
+        .graph-list {
+            flex-grow: 1;
+            overflow-y: auto;
+        }
+
+        .graph-item {
+            padding: 15px 20px;
+            cursor: pointer;
+            border-bottom: 1px solid #f0f0f0;
+            transition: background 0.2s;
+        }
+        .graph-item:hover { background: #f5f5f5; }
+        .graph-item.active { background: #e3f2fd; border-left: 4px solid #2196f3; padding-left: 16px; }
+
+        .graph-item .name { font-weight: 600; color: #333; margin-bottom: 4px; }
+        .graph-item .meta { font-size: 11px; color: #888; display: flex; justify-content: space-between; }
+
+        /* Error/Status Styling */
+        .status-box { padding: 20px; margin: 20px; background: #ffebee; color: #c62828; border-radius: 4px; font-size: 13px; }
+
+        /* Canvas Styling */
+        .canvas { flex-grow: 1; height: 100%; position: 'relative'; }
+
+        /* React Flow Node Styling */
+        .react-flow__node {
+            font-size: 12px;
+            border-radius: 4px;
+            padding: 10px;
+            width: 150px;
+            text-align: center;
+            border: 1px solid #ddd;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .node-start { background: #e8f5e9; border-color: #c8e6c9; color: #2e7d32; }
+        .node-end { background: #ffebee; border-color: #ffcdd2; color: #c62828; }
+        .node-action { background: #e3f2fd; border-color: #bbdefb; color: #1565c0; }
+        .node-human { background: #fff3e0; border-color: #ffe0b2; color: #ef6c00; }
     </style>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
+</head>
+<body>
+<!-- React will render into here -->
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reactflow@11.10.1/dist/umd/index.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
+
+<script type="text/babel">
+    const { useState, useEffect } = React;
+    const { ReactFlow, Background, Controls, MarkerType } = window.ReactFlow;
+
+    // --- Configuration ---
+    const API_URL = "http://localhost:9191/graphql";
+
+    // --- GraphQL Helper (Using Native Fetch) ---
+    async function fetchGraphQL(query, variables = {}) {
+        const response = await fetch(API_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query, variables })
+        });
+        const json = await response.json();
+        if (json.errors) throw new Error(json.errors[0].message);
+        return json.data;
+    }
+
+    // --- Queries ---
+    const LIST_QUERY = `
+        query ListGraphs {
+            listGraphs(pageSize: 100) {
+                graphs { graphId graphName nodeCount status }
+            }
+        }
+    `;
+
+    const VIEW_QUERY = `
+        query GetGraphView($graphId: String!) {
+            getGraphView(graphId: $graphId) {
+                graphId graphName
+                nodes { nodeId nodeType position { x y } }
+                edges { source target condition label }
+            }
+        }
+    `;
+
+    // --- Layout Helper (Dagre) ---
+    const layoutGraph = (nodes, edges) => {
+        const g = new dagre.graphlib.Graph();
+        g.setGraph({ rankdir: 'TB', nodesep: 100, ranksep: 80 });
+        g.setDefaultEdgeLabel(() => ({}));
+
+        nodes.forEach(n => g.setNode(n.id, { width: 150, height: 50 }));
+        edges.forEach(e => g.setEdge(e.source, e.target));
+
+        dagre.layout(g);
+
+        return nodes.map(n => {
+            const pos = g.node(n.id);
+            return { ...n, position: { x: pos.x - 75, y: pos.y - 25 } };
+        });
+    };
+
+    // --- Main App ---
+    function App() {
+        const [graphs, setGraphs] = useState([]);
+        const [error, setError] = useState(null);
+        const [selected, setSelected] = useState(null);
+        const [nodes, setNodes] = useState([]);
+        const [edges, setEdges] = useState([]);
+
+        // 1. Load List
+        useEffect(() => {
+            fetchGraphQL(LIST_QUERY)
+                .then(data => setGraphs(data.listGraphs.graphs))
+                .catch(err => setError(`Connection Failed: ${err.message}. Ensure CORS is enabled on backend.`));
+        }, []);
+
+        // 2. Load Graph Detail
+        const loadGraph = (id) => {
+            setSelected(id);
+            fetchGraphQL(VIEW_QUERY, { graphId: id })
+                .then(data => {
+                    const rawNodes = data.getGraphView.nodes.map(n => {
+                        let cls = 'node-action';
+                        if (n.nodeType === 'START') cls = 'node-start';
+                        if (n.nodeType === 'END') cls = 'node-end';
+                        if (n.nodeType === 'HUMAN') cls = 'node-human';
+
+                        return {
+                            id: n.nodeId,
+                            data: { label: `${n.nodeId}\n(${n.nodeType})` },
+                            position: n.position || { x: 0, y: 0 },
+                            className: cls
+                        };
+                    });
+
+                    const rawEdges = data.getGraphView.edges.map((e, i) => ({
+                        id: `e${i}`,
+                        source: e.source,
+                        target: e.target,
+                        label: e.condition || e.label || '',
+                        animated: true,
+                        markerEnd: { type: MarkerType.ArrowClosed }
+                    }));
+
+                    // Apply Layout
+                    const layoutedNodes = layoutGraph(rawNodes, rawEdges);
+                    setNodes(layoutedNodes);
+                    setEdges(rawEdges);
+                })
+                .catch(err => alert("Failed to load graph: " + err.message));
+        };
+
+        if (error) return <div className="status-box">{error}</div>;
+
+        return (
+            <React.Fragment>
+                {/* Sidebar */}
+                <div className="sidebar">
+                    <div className="sidebar-header">
+                        <h3>Graphs ({graphs.length})</h3>
+                    </div>
+                    <div className="graph-list">
+                        {graphs.map(g => (
+                            <div key={g.graphId}
+                                 className={`graph-item ${g.graphId === selected ? 'active' : ''}`}
+                                 onClick={() => loadGraph(g.graphId)}>
+                                <div className="name">{g.graphName}</div>
+                                <div className="meta">
+                                    <span>{g.graphId}</span>
+                                    <span>{g.nodeCount} Nodes</span>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Canvas */}
+                <div className="canvas">
+                    <ReactFlow nodes={nodes} edges={edges} fitView>
+                        <Background />
+                        <Controls />
+                    </ReactFlow>
+                </div>
+            </React.Fragment>
+        );
+    }
+
+    // Render
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+</script>
+</body>
 </html>
