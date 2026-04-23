@@ -90,7 +90,7 @@ class GraphState(TypedDict):
 
 
 # --- Servicer ---
-#TODO: that's a service layer which manages there graphs are saved. Provide a repository for Redis/In-memory persistence control
+# TODO: that's a service layer which manages there graphs are saved. Provide a repository for Redis/In-memory persistence control
 class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
     """Async gRPC service implementation for LangGraph operations."""
 
@@ -240,7 +240,6 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
 
                         if not system_prompt:
                             system_prompt = "You are a helpful assistant and a pro developer."
-
 
                     try:
                         # Call our custom async client

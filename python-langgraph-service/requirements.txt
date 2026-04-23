@@ -10,7 +10,7 @@ grpcio-reflection>=1.68.1
 # LangGraph & LangChain
 langgraph>=0.2.53
 langchain-core>=0.3.25
-langchain-openai>=0.2.11
+langchain-openai>=1.1.14
 langgraph-checkpoint-redis # Or sqlite for local dev
 
 # Utilities
