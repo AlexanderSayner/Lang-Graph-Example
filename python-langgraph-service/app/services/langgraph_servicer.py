@@ -76,6 +76,13 @@ def _parse_condition(condition_str: str) -> tuple:
 
     return key, val
 
+# --- Reducer for Variables ---
+# This function ensures that we MERGE new variables with old ones,
+# preventing the "amnesia" issue where the LLM drops previous values.
+def merge_dicts(left: Dict[str, Any], right: Dict[str, Any]) -> Dict[str, Any]:
+    if left is None: left = {}
+    if right is None: right = {}
+    return {**left, **right}
 
 # --- State Definition ---
 class GraphState(TypedDict):
@@ -85,7 +92,7 @@ class GraphState(TypedDict):
     last_node: str
     output: str
     # Automatically append new history items
-    variables: Dict[str, Any]
+    variables: Annotated[Dict[str, Any], merge_dicts]
     history: Annotated[List[Dict[str, Any]], operator.add]
 
 
@@ -165,6 +172,11 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                     user_input = state.get("input") or ""
                     # Utilize context by injecting it into the prompt.
                     context_data = state.get("context") or {}
+
+                    # We MUST show the LLM the current variables so it knows what is already filled.
+                    current_vars = state.get("variables", {}) or {}
+                    vars_json_str = json.dumps(current_vars, indent=2)
+
                     context_str = ""
                     if context_data:
                         try:
@@ -210,6 +222,35 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                     # --- Router Logic ---
                     # If it's a router node, we instruct the LLM to classify the intent
                     if is_router_node:
+                        # Inject History so Router knows what question was just asked.
+                        # This allows it to interpret "yes" or "rebel" correctly based on the previous node.
+                        history = state.get("history") or []
+                        context_hint = ""
+                        if history:
+                            last_interaction = history[-1]
+                            # Only show the last question to guide the router
+                            context_hint = (
+                                f"CONTEXT: The previous node '{last_interaction.get('node')}' just asked: "
+                                f"'{last_interaction.get('output')}'\n\n"
+                            )
+
+                        # We force the system prompt to include the current state.
+                        # This guarantees the LLM sees the variables.
+                        base_prompt = (
+                            f"You are an entity extractor. Extract 'style', 'mood', and 'count' from the user input.\n"
+                            f"CURRENT STATE VARIABLES:\n{vars_json_str}\n"
+                            f"Merge new values with existing ones.\n"
+                            f"Output ONLY a JSON object with the updated variables.\n"
+                            f"Example: {{\"style\": \"rock\", \"mood\": \"sad\"}}"
+                        )
+
+                        # Append the user's custom prompt if provided in GraphQL
+                        if system_prompt:
+                            base_prompt += f"\n\nInstructions:\n{system_prompt}"
+
+                        # Simple input for router
+                        final_user_input = f"User Input: {user_input}"
+
                         # Instruct the LLM to output specific JSON keys based on edge conditions
                         # Extract the keys expected by the conditions
                         # E.g., from "ticket_type == 'technical'" -> we want "ticket_type"
@@ -217,13 +258,12 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                         # We dynamically construct the prompt using the first available key for the example.                        example_key = list(router_keys)[0] if router_keys else 'key'
                         if not system_prompt:
                             example_key = list(router_keys)[0] if router_keys else 'key'
-                            system_prompt = (
-                                f"You are a classifier. Analyze the user input and determine the intent. "
-                                f"Respond with a single JSON object containing the classification key. "
-                                f"DO NOT output any other text.\n"
-                                f"Example Output: {{'{example_key}': 'value'}}"
+                            base_prompt += (
+                                f"\nOutput ONLY a JSON object merging the current state with new info.\n"
+                                f"Example: {{'{example_key}': 'value'}}"
                             )
-                        final_user_input = user_input
+
+                        system_prompt = base_prompt
                     else:
                         # ACTION / HUMAN / END LOGIC: Needs full context
                         # We combine History + Static Context + Current Input
@@ -232,6 +272,10 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                             parts.append(history_str)
                         if context_str:
                             parts.append(context_str)
+
+                        # Inject variables for context if needed (optional for action nodes)
+                        if current_vars:
+                            parts.append(f"Current Variables: {vars_json_str}")
 
                         # Add the current user input clearly
                         parts.append(f"Current User Input: {user_input}")
@@ -277,6 +321,24 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                                     logger.info(f"Router {n_id} extracted data: {parsed_data}")
                                     current_vars = dict(state.get("variables", {}) or {})
                                     merged_vars = {**current_vars, **parsed_data}
+
+                                    # Remove 'intent' if LLM hallucinated it
+                                    if 'intent' in merged_vars: del merged_vars['intent']
+
+                                    # Calculate missing slots
+                                    final_intent = "build"  # Default
+                                    if not merged_vars.get("style"):
+                                        final_intent = "ask_style"
+                                    elif not merged_vars.get("mood"):
+                                        final_intent = "ask_mood"
+                                    elif not merged_vars.get("count"):
+                                        final_intent = "ask_count"
+
+                                    # Inject the correct intent
+                                    merged_vars['intent'] = final_intent
+
+                                    logger.info(f"Router {n_id} corrected intent: {final_intent}")
+
                                     return {
                                         "last_node": n_id,
                                         "output": response_text,
@@ -338,11 +400,8 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
 
                         # Look up value in state 'variables' (from routers) or top-level state
                         vars_dict = state.get("variables", {}) or {}
-                        if parsed_key in vars_dict:
-                            current_val = vars_dict.get(parsed_key)
-                        else:
-                            # fallback to top-level state
-                            current_val = state.get(parsed_key)
+                        # Check variables first, then top level
+                        current_val = vars_dict.get(parsed_key) or state.get(parsed_key)
 
                         logger.debug(
                             f"Router Check: Key='{parsed_key}', Expected='{expected_val}', Actual='{current_val}'")

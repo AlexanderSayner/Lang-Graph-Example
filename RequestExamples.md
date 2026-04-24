@@ -281,147 +281,95 @@ mutation BuildGraph {
 #### Playlist creator
 ```graphql
 
-mutation BuildPlaylistGraph {
+mutation BuildPlaylistGraphFinal {
     buildGraph(
         input: {
-            graphId: "playlist-builder-01"
-            graphName: "Personalized Playlist Generator"
+            graphId: "playlist-builder-v4"
+            graphName: "Deterministic Playlist Agent"
             nodes: [
-                # Entry point: Start only if user explicitly asks for playlist creation
+                # 1. Entry Point
                 { nodeId: "entry", nodeType: "START", handlerName: "entryHandler" }
 
-                # Ask for style/genre
+                # 2. Router (Entity Extractor)
+                # Python backend now handles the "Intent" logic 100%.
+                # This prompt just helps it extract the data.
                 {
-                    nodeId: "ask_style_genre"
-                    nodeType: "ACTION"
-                    handlerName: "askStyleGenreHandler"
+                    nodeId: "intent_router",
+                    nodeType: "ACTION",
+                    handlerName: "intentRouterHandler",
                     metadata: {
-                        system_prompt: "Ask the user: 'What style or genre of music are you in the mood for? (e.g., rock, jazz, electronic)'"
+                        system_prompt: "You are an entity extractor. Extract 'style', 'mood', and 'count' from the user input.\nMerge them with the CURRENT STATE VARIABLES.\nOutput ONLY the updated JSON object.\nExample: {\"style\": \"rock\", \"mood\": \"sad\"}"
                     }
-                }
+                },
 
-                # Ask for mood (sad or rebel)
+                # 3. Conversational Nodes
                 {
-                    nodeId: "ask_mood"
-                    nodeType: "ACTION"
-                    handlerName: "askMoodHandler"
+                    nodeId: "ask_style",
+                    nodeType: "ACTION",
+                    handlerName: "askStyleHandler",
                     metadata: {
-                        system_prompt: "Ask the user: 'Do you want a sad or rebel playlist?'"
+                        system_prompt: "You are a DJ. Ask the user what music genre they want. Be brief."
                     }
-                }
+                },
+                { nodeId: "wait_style", nodeType: "HUMAN", handlerName: "waitStyleHandler" },
 
-                # Decision point for randomness
                 {
-                    nodeId: "random_choice"
-                    nodeType: "ACTION"
-                    handlerName: "randomChoiceHandler"
+                    nodeId: "ask_mood",
+                    nodeType: "ACTION",
+                    handlerName: "askMoodHandler",
                     metadata: {
-                        system_prompt: "Check if the user wants random parameters. Respond with {\"choice\": \"random\"} if they say 'random', 'creative', 'impress', or 'surprise me'. Respond with {\"choice\": \"specific\"} otherwise."
+                        system_prompt: "You are a DJ. Ask if they want a 'sad' or 'rebel' mood. Be brief."
                     }
-                }
+                },
+                { nodeId: "wait_mood", nodeType: "HUMAN", handlerName: "waitMoodHandler" },
 
-                # If user says "I don't know" or similar, ask for randomness
                 {
-                    nodeId: "ask_random"
-                    nodeType: "ACTION"
-                    handlerName: "askRandomHandler"
+                    nodeId: "ask_count",
+                    nodeType: "ACTION",
+                    handlerName: "askCountHandler",
                     metadata: {
-                        system_prompt: "Ask: 'Should I choose random parameters for you?' If yes, set randomChoice = true. If no, set randomChoice = false."
+                        system_prompt: "You are a DJ. Ask how many songs they want. Be brief."
                     }
-                }
+                },
+                { nodeId: "wait_count", nodeType: "HUMAN", handlerName: "waitCountHandler" },
 
-                # Automatic randomness if user says "creative" or "impress"
+                # 4. Build Node
                 {
-                    nodeId: "random_auto"
-                    nodeType: "ACTION"
-                    handlerName: "randomAutoHandler"
+                    nodeId: "build_playlist",
+                    nodeType: "END",
+                    handlerName: "buildPlaylistHandler",
                     metadata: {
-                        system_prompt: "Set randomChoice = true and proceed to ask_count."
+                        system_prompt: "Generate a playlist based on the variables. Do not output JSON."
+                    }
+                },
+                {
+                    nodeId: "exit_graph",
+                    nodeType: "END",
+                    handlerName: "exitGraphHandler",
+                    metadata: {
+                        system_prompt: "Say goodbye."
                     }
                 }
-
-                # Exit if user declines random
-                {
-                    nodeId: "end_no_random"
-                    nodeType: "END"
-                    handlerName: "endNoRandomHandler"
-                    metadata: {
-                        system_prompt: "Inform the user: 'Okay, let’s stick to specific parameters. Please tell me your preferred style and mood again.'"
-                    }
-                }
-
-                # Ask for number of songs
-                {
-                    nodeId: "ask_count"
-                    nodeType: "ACTION"
-                    handlerName: "askCountHandler"
-                    metadata: {
-                        system_prompt: "Ask: 'How many songs do you want in your playlist?'"
-                    }
-                }
-
-                # Build the playlist
-                {
-                    nodeId: "build_playlist"
-                    nodeType: "ACTION"
-                    handlerName: "buildPlaylistHandler"
-                    metadata: {
-                        system_prompt: "Generate a playlist based on the gathered parameters (style, mood, count) or random if chosen. Respond with the playlist in a user-friendly format."
-                    }
-                }
-
-                # Exit if user doesn't want a playlist
-                {
-                    nodeId: "exit_graph"
-                    nodeType: "END"
-                    handlerName: "exitGraphHandler"
-                    metadata: {
-                        system_prompt: "Inform the user: 'No worries! Let me know if you’d like a playlist later.'"
-                    }
-                }
-            ]
+            ],
             edges: [
-                # Start only if user asks for playlist
-                { source: "entry", target: "ask_style_genre", condition: "user_input.contains('playlist')" }
+                { source: "entry", target: "intent_router" },
 
-                # Exit if user doesn't ask for playlist
-                { source: "entry", target: "exit_graph", condition: "!user_input.contains('playlist')" }
+                # Router Logic
+                { source: "intent_router", target: "ask_style", condition: "intent == 'ask_style'" },
+                { source: "intent_router", target: "ask_mood", condition: "intent == 'ask_mood'" },
+                { source: "intent_router", target: "ask_count", condition: "intent == 'ask_count'" },
+                { source: "intent_router", target: "build_playlist", condition: "intent == 'build'" },
+                { source: "intent_router", target: "exit_graph", condition: "intent == 'exit'" },
 
-                # Style/genre → mood
-                { source: "ask_style_genre", target: "ask_mood" }
+                # Cycle
+                { source: "ask_style", target: "wait_style" },
+                { source: "wait_style", target: "intent_router" },
 
-                # Mood → decision point
-                { source: "ask_mood", target: "random_choice" }
+                { source: "ask_mood", target: "wait_mood" },
+                { source: "wait_mood", target: "intent_router" },
 
-                # Decision point branches
-                {
-                    source: "random_choice"
-                    target: "random_auto"
-                    condition: "user_input.contains('creative') || user_input.contains('impress')"
-                }
-                {
-                    source: "random_choice"
-                    target: "ask_random"
-                    condition: "user_input.contains('know') || user_input.contains('unsure')"
-                }
-                {
-                    source: "random_choice"
-                    target: "end_no_random"
-                    condition: "user_input.contains('no') || user_input.contains('specific')"
-                }
-
-                # Randomness paths
-                { source: "ask_random", target: "ask_count", condition: "randomChoice == true" }
-                { source: "random_auto", target: "ask_count" }
-
-                # If user declines random, loop back to ask_style_genre
-                { source: "end_no_random", target: "ask_style_genre" }
-
-                # Count → build playlist
-                { source: "ask_count", target: "build_playlist" }
-
-                # Exit after building
-                { source: "build_playlist", target: "exit_graph" }
+                { source: "ask_count", target: "wait_count" },
+                { source: "wait_count", target: "intent_router" }
             ]
         }
     ) {
