@@ -13,7 +13,7 @@
 
         /* Sidebar Styling */
         .sidebar {
-            width: 300px;
+            width: 320px;
             background: #fff;
             border-right: 1px solid #e0e0e0;
             display: flex;
@@ -33,6 +33,9 @@
         }
 
         .graph-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
             padding: 15px 20px;
             cursor: pointer;
             border-bottom: 1px solid #f0f0f0;
@@ -41,8 +44,26 @@
         .graph-item:hover { background: #f5f5f5; }
         .graph-item.active { background: #e3f2fd; border-left: 4px solid #2196f3; padding-left: 16px; }
 
+        .graph-info { flex-grow: 1; margin-right: 10px; }
         .graph-item .name { font-weight: 600; color: #333; margin-bottom: 4px; }
         .graph-item .meta { font-size: 11px; color: #888; display: flex; justify-content: space-between; }
+
+        /* Delete Button */
+        .delete-btn {
+            background: transparent;
+            border: 1px solid #e0e0e0;
+            color: #999;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+            transition: all 0.2s;
+        }
+        .delete-btn:hover {
+            background: #ffebee;
+            border-color: #ffcdd2;
+            color: #c62828;
+        }
 
         /* Error/Status Styling */
         .status-box { padding: 20px; margin: 20px; background: #ffebee; color: #c62828; border-radius: 4px; font-size: 13px; }
@@ -67,7 +88,6 @@
     </style>
 </head>
 <body>
-<!-- React will render into here -->
 <div id="root"></div>
 
 <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
@@ -78,7 +98,8 @@
 
 <script type="text/babel">
     const { useState, useEffect } = React;
-    const { ReactFlow, Background, Controls, MarkerType } = window.ReactFlow;
+    // Add useNodesState and useEdgesState for movement support
+    const { ReactFlow, Background, Controls, MarkerType, useNodesState, useEdgesState } = window.ReactFlow;
 
     // --- Configuration ---
     const API_URL = "http://localhost:9191/graphql";
@@ -95,7 +116,7 @@
         return json.data;
     }
 
-    // --- Queries ---
+    // --- Queries & Mutations ---
     const LIST_QUERY = `
         query ListGraphs {
             listGraphs(pageSize: 100) {
@@ -110,6 +131,15 @@
                 graphId graphName
                 nodes { nodeId nodeType position { x y } }
                 edges { source target condition label }
+            }
+        }
+    `;
+
+    const DELETE_MUTATION = `
+        mutation DeleteGraph($graphId: String!) {
+            deleteGraph(graphId: $graphId) {
+                success
+                message
             }
         }
     `;
@@ -136,15 +166,21 @@
         const [graphs, setGraphs] = useState([]);
         const [error, setError] = useState(null);
         const [selected, setSelected] = useState(null);
-        const [nodes, setNodes] = useState([]);
-        const [edges, setEdges] = useState([]);
+
+        // Use React Flow hooks for state management (allows dragging)
+        const [nodes, setNodes, onNodesChange] = useNodesState([]);
+        const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
         // 1. Load List
         useEffect(() => {
+            loadGraphList();
+        }, []);
+
+        const loadGraphList = () => {
             fetchGraphQL(LIST_QUERY)
                 .then(data => setGraphs(data.listGraphs.graphs))
-                .catch(err => setError(`Connection Failed: ${err.message}. Ensure CORS is enabled on backend.`));
-        }, []);
+                .catch(err => setError(`Connection Failed: ${err.message}. Ensure CORS is enabled.`));
+        };
 
         // 2. Load Graph Detail
         const loadGraph = (id) => {
@@ -176,10 +212,35 @@
 
                     // Apply Layout
                     const layoutedNodes = layoutGraph(rawNodes, rawEdges);
-                    setNodes(layoutedNodes);
+                    setNodes(layoutedNodes); // This updates the state
                     setEdges(rawEdges);
                 })
                 .catch(err => alert("Failed to load graph: " + err.message));
+        };
+
+        // 3. Delete Graph
+        const handleDelete = async (e, graphId) => {
+            e.stopPropagation(); // Prevent selecting the graph when clicking delete
+
+            if (!window.confirm(`Are you sure you want to delete graph: ${graphId}?`)) return;
+
+            try {
+                const data = await fetchGraphQL(DELETE_MUTATION, { graphId });
+                if (data.deleteGraph.success) {
+                    // Remove from local state
+                    setGraphs(prev => prev.filter(g => g.graphId !== graphId));
+                    // Clear canvas if deleted graph was selected
+                    if (selected === graphId) {
+                        setNodes([]);
+                        setEdges([]);
+                        setSelected(null);
+                    }
+                } else {
+                    alert("Failed: " + data.deleteGraph.message);
+                }
+            } catch (err) {
+                alert("Error deleting graph: " + err.message);
+            }
         };
 
         if (error) return <div className="status-box">{error}</div>;
@@ -196,11 +257,20 @@
                             <div key={g.graphId}
                                  className={`graph-item ${g.graphId === selected ? 'active' : ''}`}
                                  onClick={() => loadGraph(g.graphId)}>
-                                <div className="name">{g.graphName}</div>
-                                <div className="meta">
-                                    <span>{g.graphId}</span>
-                                    <span>{g.nodeCount} Nodes</span>
+
+                                <div className="graph-info">
+                                    <div className="name">{g.graphName}</div>
+                                    <div className="meta">
+                                        <span>{g.graphId}</span>
+                                        <span>{g.nodeCount} Nodes</span>
+                                    </div>
                                 </div>
+
+                                <button
+                                    className="delete-btn"
+                                    onClick={(e) => handleDelete(e, g.graphId)}>
+                                    Delete
+                                </button>
                             </div>
                         ))}
                     </div>
@@ -208,7 +278,13 @@
 
                 {/* Canvas */}
                 <div className="canvas">
-                    <ReactFlow nodes={nodes} edges={edges} fitView>
+                    <ReactFlow
+                        nodes={nodes}
+                        edges={edges}
+                        onNodesChange={onNodesChange} // Enables dragging
+                        onEdgesChange={onEdgesChange}
+                        fitView
+                    >
                         <Background />
                         <Controls />
                     </ReactFlow>
