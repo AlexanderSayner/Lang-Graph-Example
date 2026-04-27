@@ -1,48 +1,5 @@
-# Dependencies
-node_modules/
-.gradle/
-target/
-
-# Compiled Java files
-*.class
-*.jar
-*.war
-*.ear
-
-# Build artifacts
-build/
-dist/
-out/
-*.egg-info/
-
-# Editor/IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*.tmp
-*.iml
-*.ipr
-*.iws
-
-# Logs
-*.log
-logs/
-
-# Environment
-.env
-.env.local
-.env.*
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-venv/
-.venv/
+```markdown
+# Documentation files
+GRAPHQL_API_PRODUCTION_GUIDE.md
+JAVA_GRAPHQL_API_GUIDE.md
+```
