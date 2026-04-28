@@ -15,4 +15,5 @@ public record ExecuteGraphInput(
 
         @NotBlank(message = "Thread id is required")
         String threadId
-) {}
+) {
+}
