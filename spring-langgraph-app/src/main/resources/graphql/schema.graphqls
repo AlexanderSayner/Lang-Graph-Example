@@ -11,6 +11,7 @@ type Mutation {
     executeGraph(input: ExecuteGraphInput!): ExecuteGraphPayload!
     updateGraphState(input: UpdateGraphStateInput!): UpdateGraphStatePayload!
     deleteGraph(graphId: String!): DeleteGraphPayload!
+    saveGraphCoordinates(graphId: String!, positions: [NodePositionInput!]!): GraphViewPayload!
 }
 
 type Subscription {
@@ -51,6 +52,12 @@ input EdgeInput {
     source: String!
     target: String!
     condition: String
+}
+
+input NodePositionInput {
+    nodeId: String!
+    x: Float!
+    y: Float!
 }
 
 # ============== Output Payloads (Match Controller Return Types) ==============

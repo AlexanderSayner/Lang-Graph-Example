@@ -8,29 +8,41 @@
     <style>
         body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; height: 100vh; background: #f9f9f9; }
 
-        /* Main Container */
         #root { display: flex; width: 100%; height: 100%; }
 
-        /* Sidebar Styling */
+        /* Sidebar */
         .sidebar {
             width: 320px;
             background: #fff;
             border-right: 1px solid #e0e0e0;
             display: flex;
             flex-direction: column;
-            box-shadow: 2px 0 5px rgba(0,0,0,0.05);
         }
         .sidebar-header {
             padding: 20px;
             border-bottom: 1px solid #eee;
             background: #fafafa;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
         .sidebar-header h3 { margin: 0; color: #333; font-size: 18px; }
 
-        .graph-list {
-            flex-grow: 1;
-            overflow-y: auto;
+        /* Save Button */
+        .save-btn {
+            background: #2196f3;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: bold;
         }
+        .save-btn:hover { background: #1976d2; }
+        .save-btn:disabled { background: #ccc; cursor: not-allowed; }
+
+        .graph-list { flex-grow: 1; overflow-y: auto; }
 
         .graph-item {
             display: flex;
@@ -39,7 +51,6 @@
             padding: 15px 20px;
             cursor: pointer;
             border-bottom: 1px solid #f0f0f0;
-            transition: background 0.2s;
         }
         .graph-item:hover { background: #f5f5f5; }
         .graph-item.active { background: #e3f2fd; border-left: 4px solid #2196f3; padding-left: 16px; }
@@ -48,7 +59,6 @@
         .graph-item .name { font-weight: 600; color: #333; margin-bottom: 4px; }
         .graph-item .meta { font-size: 11px; color: #888; display: flex; justify-content: space-between; }
 
-        /* Delete Button */
         .delete-btn {
             background: transparent;
             border: 1px solid #e0e0e0;
@@ -57,21 +67,12 @@
             border-radius: 4px;
             cursor: pointer;
             font-size: 11px;
-            transition: all 0.2s;
         }
-        .delete-btn:hover {
-            background: #ffebee;
-            border-color: #ffcdd2;
-            color: #c62828;
-        }
+        .delete-btn:hover { background: #ffebee; border-color: #ffcdd2; color: #c62828; }
 
-        /* Error/Status Styling */
-        .status-box { padding: 20px; margin: 20px; background: #ffebee; color: #c62828; border-radius: 4px; font-size: 13px; }
-
-        /* Canvas Styling */
         .canvas { flex-grow: 1; height: 100%; position: 'relative'; }
 
-        /* React Flow Node Styling */
+        /* Nodes */
         .react-flow__node {
             font-size: 12px;
             border-radius: 4px;
@@ -98,13 +99,12 @@
 
 <script type="text/babel">
     const { useState, useEffect } = React;
-    // Add useNodesState and useEdgesState for movement support
     const { ReactFlow, Background, Controls, MarkerType, useNodesState, useEdgesState } = window.ReactFlow;
 
     // --- Configuration ---
     const API_URL = "http://localhost:9191/graphql";
 
-    // --- GraphQL Helper (Using Native Fetch) ---
+    // --- GraphQL Helper ---
     async function fetchGraphQL(query, variables = {}) {
         const response = await fetch(API_URL, {
             method: 'POST',
@@ -119,9 +119,7 @@
     // --- Queries & Mutations ---
     const LIST_QUERY = `
         query ListGraphs {
-            listGraphs(pageSize: 100) {
-                graphs { graphId graphName nodeCount status }
-            }
+            listGraphs(pageSize: 100) { graphs { graphId graphName nodeCount status } }
         }
     `;
 
@@ -135,16 +133,22 @@
         }
     `;
 
-    const DELETE_MUTATION = `
-        mutation DeleteGraph($graphId: String!) {
-            deleteGraph(graphId: $graphId) {
+    const SAVE_COORDS_MUTATION = `
+        mutation SaveCoords($graphId: String!, $positions: [NodePositionInput!]!) {
+            saveGraphCoordinates(graphId: $graphId, positions: $positions) {
                 success
                 message
             }
         }
     `;
 
-    // --- Layout Helper (Dagre) ---
+    const DELETE_MUTATION = `
+        mutation DeleteGraph($graphId: String!) {
+            deleteGraph(graphId: $graphId) { success message }
+        }
+    `;
+
+    // --- Layout Helper (Fallback) ---
     const layoutGraph = (nodes, edges) => {
         const g = new dagre.graphlib.Graph();
         g.setGraph({ rankdir: 'TB', nodesep: 100, ranksep: 80 });
@@ -164,25 +168,16 @@
     // --- Main App ---
     function App() {
         const [graphs, setGraphs] = useState([]);
-        const [error, setError] = useState(null);
         const [selected, setSelected] = useState(null);
-
-        // Use React Flow hooks for state management (allows dragging)
         const [nodes, setNodes, onNodesChange] = useNodesState([]);
         const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
-        // 1. Load List
         useEffect(() => {
-            loadGraphList();
-        }, []);
-
-        const loadGraphList = () => {
             fetchGraphQL(LIST_QUERY)
                 .then(data => setGraphs(data.listGraphs.graphs))
-                .catch(err => setError(`Connection Failed: ${err.message}. Ensure CORS is enabled.`));
-        };
+                .catch(err => console.error(err));
+        }, []);
 
-        // 2. Load Graph Detail
         const loadGraph = (id) => {
             setSelected(id);
             fetchGraphQL(VIEW_QUERY, { graphId: id })
@@ -193,10 +188,13 @@
                         if (n.nodeType === 'END') cls = 'node-end';
                         if (n.nodeType === 'HUMAN') cls = 'node-human';
 
+                        // Use position from backend if exists (x!=0 or y!=0)
+                        const hasPos = n.position && (n.position.x || n.position.y);
+
                         return {
                             id: n.nodeId,
                             data: { label: `${n.nodeId}\n(${n.nodeType})` },
-                            position: n.position || { x: 0, y: 0 },
+                            position: hasPos ? n.position : { x: 0, y: 0 },
                             className: cls
                         };
                     });
@@ -210,47 +208,70 @@
                         markerEnd: { type: MarkerType.ArrowClosed }
                     }));
 
-                    // Apply Layout
-                    const layoutedNodes = layoutGraph(rawNodes, rawEdges);
-                    setNodes(layoutedNodes); // This updates the state
+                    // Only run auto-layout if nodes have no positions (all 0,0)
+                    const needsLayout = rawNodes.every(n => n.position.x === 0 && n.position.y === 0);
+
+                    if (needsLayout) {
+                        const layoutedNodes = layoutGraph(rawNodes, rawEdges);
+                        setNodes(layoutedNodes);
+                    } else {
+                        setNodes(rawNodes);
+                    }
+
                     setEdges(rawEdges);
-                })
-                .catch(err => alert("Failed to load graph: " + err.message));
+                });
         };
 
-        // 3. Delete Graph
         const handleDelete = async (e, graphId) => {
-            e.stopPropagation(); // Prevent selecting the graph when clicking delete
+            e.stopPropagation();
+            if (!window.confirm(`Delete graph ${graphId}?`)) return;
 
-            if (!window.confirm(`Are you sure you want to delete graph: ${graphId}?`)) return;
-
-            try {
-                const data = await fetchGraphQL(DELETE_MUTATION, { graphId });
-                if (data.deleteGraph.success) {
-                    // Remove from local state
-                    setGraphs(prev => prev.filter(g => g.graphId !== graphId));
-                    // Clear canvas if deleted graph was selected
-                    if (selected === graphId) {
-                        setNodes([]);
-                        setEdges([]);
-                        setSelected(null);
-                    }
-                } else {
-                    alert("Failed: " + data.deleteGraph.message);
-                }
-            } catch (err) {
-                alert("Error deleting graph: " + err.message);
+            const data = await fetchGraphQL(DELETE_MUTATION, { graphId });
+            if (data.deleteGraph.success) {
+                setGraphs(prev => prev.filter(g => g.graphId !== graphId));
+                if (selected === graphId) setNodes([]);
             }
         };
 
-        if (error) return <div className="status-box">{error}</div>;
+        const handleSaveLayout = async () => {
+            if (!selected) return;
+
+            // Transform React Flow nodes to Input Type format
+            const positions = nodes.map(n => ({
+                nodeId: n.id,
+                x: n.position.x,
+                y: n.position.y
+            }));
+
+            try {
+                const data = await fetchGraphQL(SAVE_COORDS_MUTATION, {
+                    graphId: selected,
+                    positions
+                });
+
+                if (data.saveGraphCoordinates.success) {
+                    alert("Layout saved successfully!");
+                } else {
+                    alert("Failed to save layout.");
+                }
+            } catch (err) {
+                console.error(err);
+                alert("Error saving layout: " + err.message);
+            }
+        };
 
         return (
             <React.Fragment>
-                {/* Sidebar */}
                 <div className="sidebar">
                     <div className="sidebar-header">
                         <h3>Graphs ({graphs.length})</h3>
+                        <button
+                            className="save-btn"
+                            onClick={handleSaveLayout}
+                            disabled={!selected}
+                        >
+                            Save Layout
+                        </button>
                     </div>
                     <div className="graph-list">
                         {graphs.map(g => (
@@ -276,12 +297,11 @@
                     </div>
                 </div>
 
-                {/* Canvas */}
                 <div className="canvas">
                     <ReactFlow
                         nodes={nodes}
                         edges={edges}
-                        onNodesChange={onNodesChange} // Enables dragging
+                        onNodesChange={onNodesChange}
                         onEdgesChange={onEdgesChange}
                         fitView
                     >
@@ -293,7 +313,6 @@
         );
     }
 
-    // Render
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(<App />);
 </script>
