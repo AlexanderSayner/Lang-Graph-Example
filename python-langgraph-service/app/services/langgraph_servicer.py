@@ -76,6 +76,7 @@ def _parse_condition(condition_str: str) -> tuple:
 
     return key, val
 
+
 # --- Reducer for Variables ---
 # This function ensures that we MERGE new variables with old ones,
 # preventing the "amnesia" issue where the LLM drops previous values.
@@ -83,6 +84,7 @@ def merge_dicts(left: Dict[str, Any], right: Dict[str, Any]) -> Dict[str, Any]:
     if left is None: left = {}
     if right is None: right = {}
     return {**left, **right}
+
 
 # --- State Definition ---
 class GraphState(TypedDict):
@@ -170,21 +172,10 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                     logger.info(f"Executing node: {n_id}")
 
                     user_input = state.get("input") or ""
-                    # Utilize context by injecting it into the prompt.
-                    context_data = state.get("context") or {}
 
                     # We MUST show the LLM the current variables so it knows what is already filled.
                     current_vars = state.get("variables", {}) or {}
                     vars_json_str = json.dumps(current_vars, indent=2)
-
-                    context_str = ""
-                    if context_data:
-                        try:
-                            # default=str ensures non-serializable objects don't crash the graph.
-                            context_str = f"\n\nAdditional Context:\n{json.dumps(context_data, indent=2, default=str)}"
-                        except Exception as e:
-                            logger.warning(f"Failed to serialize context: {e}")
-                            context_str = f"\n\nContext: {context_data}"
 
                     # Dynamic History (Conversation memory)
                     # This is CRITICAL. Without this, the LLM doesn't know what happened before.
@@ -196,94 +187,51 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                             [f"- {h.get('node')}: {h.get('output')}" for h in history if h.get('output')]
                         )
 
-                    # Default system prompt
-                    system_prompt = n_meta.get("system_prompt")
+                    # Utilize context by injecting it into the prompt.
+                    context_data = state.get("context") or {}
+                    context_str = ""
+                    if context_data:
+                        context_str = f"Static Context: {json.dumps(context_data, indent=2)}"
 
-                    # If it's not a router and has no prompt, DO NOT CALL LLM.
-                    # This prevents 'entry' and 'wait' nodes from burning tokens.
-                    if not is_router_node and not system_prompt:
-                        logger.info(f"Node {n_id} is a pass-through node (no prompt). Skipping LLM.")
-                        # Return empty update (or just pass input along if needed)
+                    # If no prompt and not a router, just pass input through (e.g., wait nodes)
+                    if not is_router_node and not n_meta.get("system_prompt"):
+                        logger.info(f"Node {n_id} is pass-through. Skipping LLM.")
                         return {"last_node": n_id, "output": user_input}
 
-                    # Check for Empty Input EARLY
-                    # If the node is a router, it NEEDS an input to classify.
-                    # If the node is an action, it usually NEEDS input.
-                    # If input is missing, we should NOT call the LLM.
-                    if not user_input.strip():
-                        logger.warning(f"Node {n_id}: Input is empty. Skipping LLM call.")
-                        # Return a logical default response
-                        return {
-                            "last_node": n_id,
-                            "output": "No input provided.",  # Or use a specific fallback message
-                            # Do not update variables or history significantly
-                        }
+                    # Safety: Don't call LLM on empty input if not router
+                    if not user_input.strip() and not is_router_node:
+                        return {"last_node": n_id, "output": "No input provided."}
+
+                    # A. The System Prompt (Logic)
+                    # We rely on the GraphQL prompt for logic.
+                    # We simply append the Current State so the LLM knows what is filled.
+                    system_prompt = n_meta.get("system_prompt", "You are a helpful assistant.")
+
+                    # We create a clear "Data Block" so the LLM cannot hallucinate state.
+                    data_block = (
+                        f"=== CURRENT STATE VARIABLES ===\n{vars_json_str}\n\n"
+                        f"=== CURRENT USER INPUT ===\n{user_input}"
+                    )
+
+                    # Append History to the data block if it exists
+                    if history_str:
+                        data_block = f"=== CONVERSATION HISTORY ===\n{history_str}\n\n" + data_block
 
                     # --- Router Logic ---
                     # If it's a router node, we instruct the LLM to classify the intent
+                    # For Routers, we explicitly remind them to output the full state
                     if is_router_node:
-                        # Inject History so Router knows what question was just asked.
-                        # This allows it to interpret "yes" or "rebel" correctly based on the previous node.
-                        history = state.get("history") or []
-                        context_hint = ""
-                        if history:
-                            last_interaction = history[-1]
-                            # Only show the last question to guide the router
-                            context_hint = (
-                                f"CONTEXT: The previous node '{last_interaction.get('node')}' just asked: "
-                                f"'{last_interaction.get('output')}'\n\n"
-                            )
-
-                        # We force the system prompt to include the current state.
-                        # This guarantees the LLM sees the variables.
-                        base_prompt = (
-                            f"You are an entity extractor. Extract 'style', 'mood', and 'count' from the user input.\n"
-                            f"CURRENT STATE VARIABLES:\n{vars_json_str}\n"
-                            f"Merge new values with existing ones.\n"
-                            f"Output ONLY a JSON object with the updated variables.\n"
-                            f"Example: {{\"style\": \"rock\", \"mood\": \"sad\"}}"
+                        system_prompt += (
+                            "\n\nIMPORTANT: You must output a valid JSON object merging the CURRENT STATE VARIABLES "
+                            "with any new variables extracted from the input. "
+                            "Do NOT drop existing variables."
                         )
-
-                        # Append the user's custom prompt if provided in GraphQL
-                        if system_prompt:
-                            base_prompt += f"\n\nInstructions:\n{system_prompt}"
-
-                        # Simple input for router
-                        final_user_input = f"User Input: {user_input}"
-
-                        # Instruct the LLM to output specific JSON keys based on edge conditions
-                        # Extract the keys expected by the conditions
-                        # E.g., from "ticket_type == 'technical'" -> we want "ticket_type"
-                        # This is a simple heuristic to make the LLM output the right JSON
-                        # We dynamically construct the prompt using the first available key for the example.                        example_key = list(router_keys)[0] if router_keys else 'key'
-                        if not system_prompt:
-                            example_key = list(router_keys)[0] if router_keys else 'key'
-                            base_prompt += (
-                                f"\nOutput ONLY a JSON object merging the current state with new info.\n"
-                                f"Example: {{'{example_key}': 'value'}}"
-                            )
-
-                        system_prompt = base_prompt
+                        final_user_input = data_block
                     else:
-                        # ACTION / HUMAN / END LOGIC: Needs full context
-                        # We combine History + Static Context + Current Input
-                        parts = []
-                        if history_str:
-                            parts.append(history_str)
+                        # Regular nodes get a conversational format
+                        final_user_input = data_block
                         if context_str:
-                            parts.append(context_str)
-
-                        # Inject variables for context if needed (optional for action nodes)
-                        if current_vars:
-                            parts.append(f"Current Variables: {vars_json_str}")
-
-                        # Add the current user input clearly
-                        parts.append(f"Current User Input: {user_input}")
-
-                        final_user_input = "\n\n".join(parts)
-
-                        if not system_prompt:
-                            system_prompt = "You are a helpful assistant and a pro developer."
+                            final_user_input += f"\n\n{context_str}"
 
                     try:
                         # Call our custom async client
@@ -318,26 +266,13 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                                     json_str = json_match.group(0)
                                     raw_data = json.loads(json_str)
                                     parsed_data = {str(k): v for k, v in raw_data.items()}
+
                                     logger.info(f"Router {n_id} extracted data: {parsed_data}")
-                                    current_vars = dict(state.get("variables", {}) or {})
+
+                                    # Merge: Existing Vars + New Data
                                     merged_vars = {**current_vars, **parsed_data}
 
-                                    # Remove 'intent' if LLM hallucinated it
-                                    if 'intent' in merged_vars: del merged_vars['intent']
-
-                                    # Calculate missing slots
-                                    final_intent = "build"  # Default
-                                    if not merged_vars.get("style"):
-                                        final_intent = "ask_style"
-                                    elif not merged_vars.get("mood"):
-                                        final_intent = "ask_mood"
-                                    elif not merged_vars.get("count"):
-                                        final_intent = "ask_count"
-
-                                    # Inject the correct intent
-                                    merged_vars['intent'] = final_intent
-
-                                    logger.info(f"Router {n_id} corrected intent: {final_intent}")
+                                    logger.info(f"Router {n_id} corrected intent: {merged_vars}")
 
                                     return {
                                         "last_node": n_id,
@@ -346,6 +281,8 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                                     }
                                 else:
                                     logger.warning(f"Router {n_id}: No JSON found in response.")
+                                    # Fallback: keep state as is
+                                    return {"last_node": n_id, "output": response_text}
 
                             except json.JSONDecodeError:
                                 logger.error(f"Router {n_id} failed to parse JSON.")
@@ -366,12 +303,10 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
 
                     except Exception as e:
                         logger.error(f"Node execution failed: {e}", exc_info=True)
-                        response_text = f"Error: {str(e)}"
-
                         return {
                             "last_node": n_id,
-                            "output": response_text,
-                            "history": state.get("history", []) + [{"node": n_id, "output": response_text}]
+                            "output": f"Error: {str(e)}",
+                            "history": [{"node": n_id, "output": f"Error: {str(e)}"}]
                         }
 
                 return handler
@@ -518,7 +453,6 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                 logger.error(f"Failed to rebuild graph {graph_id}: {e}", exc_info=True)
                 await context.abort(grpc.StatusCode.INTERNAL, f"Failed to rebuild graph: {e}")
                 return
-
 
         config = {
             "configurable": {
