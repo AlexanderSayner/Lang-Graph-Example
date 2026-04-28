@@ -72,6 +72,22 @@
 
         .canvas { flex-grow: 1; height: 100%; position: 'relative'; }
 
+        /* Error Box */
+        .error-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            z-index: 9999;
+            max-width: 400px;
+            color: #c62828;
+            border: 1px solid #ffcdd2;
+        }
+
         /* Nodes */
         .react-flow__node {
             font-size: 12px;
@@ -112,23 +128,29 @@
             body: JSON.stringify({ query, variables })
         });
         const json = await response.json();
-        if (json.errors) throw new Error(json.errors[0].message);
+        if (json.errors) {
+            // Throw the first error message
+            throw new Error(json.errors[0].message);
+        }
         return json.data;
     }
 
     // --- Queries & Mutations ---
     const LIST_QUERY = `
         query ListGraphs {
-            listGraphs(pageSize: 100) { graphs { graphId graphName nodeCount status } }
+            listGraphs(pageSize: 100) {
+                graphs { graphId graphName nodeCount status }
+            }
         }
     `;
 
+    // FIX: Removed 'label' from query as backend likely doesn't have it
     const VIEW_QUERY = `
         query GetGraphView($graphId: String!) {
             getGraphView(graphId: $graphId) {
                 graphId graphName
                 nodes { nodeId nodeType position { x y } }
-                edges { source target condition label }
+                edges { source target condition }
             }
         }
     `;
@@ -169,26 +191,40 @@
     function App() {
         const [graphs, setGraphs] = useState([]);
         const [selected, setSelected] = useState(null);
+        const [error, setError] = useState(null);
         const [nodes, setNodes, onNodesChange] = useNodesState([]);
         const [edges, setEdges, onEdgesChange] = useEdgesState([]);
 
         useEffect(() => {
             fetchGraphQL(LIST_QUERY)
-                .then(data => setGraphs(data.listGraphs.graphs))
-                .catch(err => console.error(err));
+                .then(data => {
+                    if(data && data.listGraphs) {
+                        setGraphs(data.listGraphs.graphs);
+                    }
+                })
+                .catch(err => {
+                    console.error(err);
+                    setError("Failed to load graph list: " + err.message);
+                });
         }, []);
 
         const loadGraph = (id) => {
             setSelected(id);
+            setError(null); // Clear previous errors
+
             fetchGraphQL(VIEW_QUERY, { graphId: id })
                 .then(data => {
-                    const rawNodes = data.getGraphView.nodes.map(n => {
+                    if (!data || !data.getGraphView) throw new Error("No data returned");
+
+                    const view = data.getGraphView;
+
+                    const rawNodes = view.nodes.map(n => {
                         let cls = 'node-action';
                         if (n.nodeType === 'START') cls = 'node-start';
                         if (n.nodeType === 'END') cls = 'node-end';
                         if (n.nodeType === 'HUMAN') cls = 'node-human';
 
-                        // Use position from backend if exists (x!=0 or y!=0)
+                        // Check if we have valid non-zero coordinates from backend
                         const hasPos = n.position && (n.position.x || n.position.y);
 
                         return {
@@ -199,11 +235,12 @@
                         };
                     });
 
-                    const rawEdges = data.getGraphView.edges.map((e, i) => ({
+                    const rawEdges = view.edges.map((e, i) => ({
                         id: `e${i}`,
                         source: e.source,
                         target: e.target,
-                        label: e.condition || e.label || '',
+                        // Use condition as the visual label
+                        label: e.condition || '',
                         animated: true,
                         markerEnd: { type: MarkerType.ArrowClosed }
                     }));
@@ -219,6 +256,10 @@
                     }
 
                     setEdges(rawEdges);
+                })
+                .catch(err => {
+                    console.error(err);
+                    setError("Failed to load graph view: " + err.message);
                 });
         };
 
@@ -226,17 +267,20 @@
             e.stopPropagation();
             if (!window.confirm(`Delete graph ${graphId}?`)) return;
 
-            const data = await fetchGraphQL(DELETE_MUTATION, { graphId });
-            if (data.deleteGraph.success) {
-                setGraphs(prev => prev.filter(g => g.graphId !== graphId));
-                if (selected === graphId) setNodes([]);
+            try {
+                const data = await fetchGraphQL(DELETE_MUTATION, { graphId });
+                if (data.deleteGraph.success) {
+                    setGraphs(prev => prev.filter(g => g.graphId !== graphId));
+                    if (selected === graphId) setNodes([]);
+                }
+            } catch (err) {
+                alert("Error deleting: " + err.message);
             }
         };
 
         const handleSaveLayout = async () => {
             if (!selected) return;
 
-            // Transform React Flow nodes to Input Type format
             const positions = nodes.map(n => ({
                 nodeId: n.id,
                 x: n.position.x,
@@ -250,7 +294,7 @@
                 });
 
                 if (data.saveGraphCoordinates.success) {
-                    alert("Layout saved successfully!");
+                    alert("Layout saved!");
                 } else {
                     alert("Failed to save layout.");
                 }
@@ -298,6 +342,11 @@
                 </div>
 
                 <div className="canvas">
+                    {error && (
+                        <div className="error-overlay">
+                            <strong>Error:</strong> {error}
+                        </div>
+                    )}
                     <ReactFlow
                         nodes={nodes}
                         edges={edges}
