@@ -3,71 +3,268 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LangGraph Visualizer</title>
+    <title>LangGraph Studio</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reactflow@11.10.1/dist/style.css">
     <style>
-        body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; height: 100vh; background: #f9f9f9; }
+        body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; height: 100vh; background: #f0f2f5; }
 
-        /* Main Container */
         #root { display: flex; width: 100%; height: 100%; }
 
-        /* Sidebar Styling */
+        /* --- Sidebar --- */
         .sidebar {
-            width: 300px;
+            width: 320px;
             background: #fff;
             border-right: 1px solid #e0e0e0;
             display: flex;
             flex-direction: column;
-            box-shadow: 2px 0 5px rgba(0,0,0,0.05);
+            transition: width 0.3s ease;
+            position: relative;
+            z-index: 10;
         }
+        .sidebar.collapsed { width: 60px; }
+
         .sidebar-header {
-            padding: 20px;
+            padding: 15px;
             border-bottom: 1px solid #eee;
             background: #fafafa;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            height: 56px;
+            box-sizing: border-box;
         }
-        .sidebar-header h3 { margin: 0; color: #333; font-size: 18px; }
+        .sidebar-header h3 { margin: 0; color: #333; font-size: 16px; white-space: nowrap; overflow: hidden; }
+        .sidebar.collapsed .sidebar-header h3 { display: none; }
 
-        .graph-list {
-            flex-grow: 1;
-            overflow-y: auto;
+        .toggle-btn {
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 20px;
+            color: #666;
+            padding: 5px;
         }
+
+        .graph-list { flex-grow: 1; overflow-y: auto; overflow-x: hidden; }
 
         .graph-item {
-            padding: 15px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 15px;
             cursor: pointer;
             border-bottom: 1px solid #f0f0f0;
-            transition: background 0.2s;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         .graph-item:hover { background: #f5f5f5; }
-        .graph-item.active { background: #e3f2fd; border-left: 4px solid #2196f3; padding-left: 16px; }
+        .graph-item.active { background: #e3f2fd; border-left: 4px solid #2196f3; }
 
-        .graph-item .name { font-weight: 600; color: #333; margin-bottom: 4px; }
-        .graph-item .meta { font-size: 11px; color: #888; display: flex; justify-content: space-between; }
+        .sidebar.collapsed .graph-item { padding: 12px; justify-content: center; }
+        .sidebar.collapsed .graph-item.active { padding-left: 12px; border-left-width: 4px; }
 
-        /* Error/Status Styling */
-        .status-box { padding: 20px; margin: 20px; background: #ffebee; color: #c62828; border-radius: 4px; font-size: 13px; }
+        .graph-info { flex-grow: 1; margin-right: 10px; overflow: hidden; }
+        .sidebar.collapsed .graph-info { display: none; }
 
-        /* Canvas Styling */
-        .canvas { flex-grow: 1; height: 100%; position: 'relative'; }
+        .graph-item .name { font-weight: 600; color: #333; font-size: 13px; }
+        .graph-item .meta { font-size: 10px; color: #888; margin-top: 2px; }
 
-        /* React Flow Node Styling */
+        .graph-icon-mini {
+            display: none;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #2196f3;
+        }
+        .sidebar.collapsed .graph-icon-mini { display: block; }
+
+        .delete-btn {
+            background: transparent;
+            border: 1px solid #e0e0e0;
+            color: #999;
+            padding: 4px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 10px;
+        }
+        .sidebar.collapsed .delete-btn { display: none; }
+        .delete-btn:hover { background: #ffebee; color: #c62828; }
+
+        /* --- Main Content Area --- */
+        .main-area {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            position: relative;
+        }
+
+        /* --- Graph Canvas --- */
+        .canvas-container {
+            flex-grow: 1;
+            position: 'relative';
+            background: #fff;
+            border-bottom: 1px solid #ddd;
+        }
+
+        /* --- Nodes --- */
         .react-flow__node {
             font-size: 12px;
-            border-radius: 4px;
-            padding: 10px;
-            width: 150px;
-            text-align: center;
-            border: 1px solid #ddd;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            border-radius: 8px;
+            padding: 0;
+            width: 220px;
+            text-align: left;
+            border: 1px solid rgba(0,0,0,0.1);
+            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+            background: #fff; /* Default */
         }
-        .node-start { background: #e8f5e9; border-color: #c8e6c9; color: #2e7d32; }
-        .node-end { background: #ffebee; border-color: #ffcdd2; color: #c62828; }
-        .node-action { background: #e3f2fd; border-color: #bbdefb; color: #1565c0; }
-        .node-human { background: #fff3e0; border-color: #ffe0b2; color: #ef6c00; }
+
+        /* COLOR FIXES */
+        .react-flow__node.node-start { background: #e8f5e9; border-color: #c8e6c9; }
+        .react-flow__node.node-end { background: #ffebee; border-color: #ffcdd2; }
+        .react-flow__node.node-action { background: #e3f2fd; border-color: #bbdefb; }
+        .react-flow__node.node-human { background: #fff3e0; border-color: #ffe0b2; }
+
+        .node-header {
+            padding: 8px 12px;
+            border-bottom: 1px solid rgba(0,0,0,0.05);
+            font-weight: bold;
+            font-size: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .node-start .node-header { color: #2e7d32; }
+        .node-end .node-header { color: #c62828; }
+        .node-action .node-header { color: #1565c0; }
+        .node-human .node-header { color: #ef6c00; }
+
+        .node-type-badge {
+            font-size: 9px;
+            background: rgba(255,255,255,0.6);
+            padding: 2px 6px;
+            border-radius: 4px;
+            text-transform: uppercase;
+            font-weight: normal;
+        }
+
+        .node-body {
+            padding: 8px 12px;
+            max-height: 80px;
+            overflow-y: auto;
+            background: rgba(255,255,255,0.3);
+        }
+
+        /* FIX: Hide body if empty */
+        .node-body:empty { display: none; }
+
+        .node-prompt {
+            font-size: 10px;
+            color: #444;
+            line-height: 1.4;
+        }
+
+        /* --- Chat Panel --- */
+        .chat-panel {
+            height: 300px;
+            background: #fafafa;
+            display: flex;
+            flex-direction: column;
+            border-top: 1px solid #ddd;
+        }
+
+        .chat-header {
+            padding: 8px 15px;
+            border-bottom: 1px solid #eee;
+            font-size: 12px;
+            font-weight: bold;
+            color: #666;
+            display: flex;
+            justify-content: space-between;
+            background: #fff;
+        }
+
+        .chat-messages {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .msg {
+            max-width: 80%;
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 13px;
+            line-height: 1.4;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        }
+        .msg-user {
+            align-self: flex-end;
+            background: #2196f3;
+            color: white;
+        }
+        .msg-bot {
+            align-self: flex-start;
+            background: white;
+            border: 1px solid #e0e0e0;
+            color: #333;
+        }
+        .msg-error {
+            background: #ffebee;
+            color: #c62828;
+            border: 1px solid #ffcdd2;
+            font-size: 11px;
+        }
+
+        .chat-input-area {
+            padding: 10px;
+            background: #fff;
+            display: flex;
+            gap: 10px;
+            border-top: 1px solid #eee;
+        }
+
+        .chat-input {
+            flex-grow: 1;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 8px 12px;
+            font-size: 13px;
+            outline: none;
+        }
+        .chat-input:focus { border-color: #2196f3; }
+
+        .send-btn {
+            background: #2196f3;
+            color: white;
+            border: none;
+            padding: 0 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .send-btn:disabled { background: #ccc; }
+
+        .save-layout-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 5;
+            background: white;
+            border: 1px solid #ccc;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
     </style>
 </head>
 <body>
-<!-- React will render into here -->
 <div id="root"></div>
 
 <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
@@ -77,14 +274,14 @@
 <script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
 
 <script type="text/babel">
-    const { useState, useEffect } = React;
-    const { ReactFlow, Background, Controls, MarkerType } = window.ReactFlow;
+    const { useState, useEffect, useRef } = React;
+    const { ReactFlow, Background, Controls, MarkerType, useNodesState, useEdgesState } = window.ReactFlow;
 
-    // --- Configuration ---
+    // --- Config ---
     const API_URL = "http://localhost:9191/graphql";
 
-    // --- GraphQL Helper (Using Native Fetch) ---
-    async function fetchGraphQL(query, variables = {}) {
+    // --- Helpers ---
+    const fetchGraphQL = async (query, variables) => {
         const response = await fetch(API_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -93,131 +290,286 @@
         const json = await response.json();
         if (json.errors) throw new Error(json.errors[0].message);
         return json.data;
-    }
+    };
 
     // --- Queries ---
-    const LIST_QUERY = `
-        query ListGraphs {
-            listGraphs(pageSize: 100) {
-                graphs { graphId graphName nodeCount status }
-            }
-        }
-    `;
+    const LIST_QUERY = `query { listGraphs(pageSize: 100) { graphs { graphId graphName nodeCount } } }`;
+    const VIEW_QUERY = `query Get($graphId: String!) { getGraphView(graphId: $graphId) { nodes { nodeId nodeType metadata position { x y } } edges { source target condition } } }`;
 
-    const VIEW_QUERY = `
-        query GetGraphView($graphId: String!) {
-            getGraphView(graphId: $graphId) {
-                graphId graphName
-                nodes { nodeId nodeType position { x y } }
-                edges { source target condition label }
+    // FIX: Removed 'eventType'. Used 'output', 'state', 'errorMessage' as per your schema.
+    const EXECUTE_MUTATION = `
+        mutation Exec($input: ExecuteGraphInput!) {
+            executeGraph(input: $input) {
+                output
+                state
+                errorMessage
             }
-        }
-    `;
+        }`;
 
-    // --- Layout Helper (Dagre) ---
+    const SAVE_MUTATION = `mutation Save($graphId: String!, $positions: [NodePositionInput!]!) { saveGraphCoordinates(graphId: $graphId, positions: $positions) { success } }`;
+    const DELETE_MUTATION = `mutation Del($graphId: String!) { deleteGraph(graphId: $graphId) { success } }`;
+
+    // --- Layout Logic ---
     const layoutGraph = (nodes, edges) => {
         const g = new dagre.graphlib.Graph();
-        g.setGraph({ rankdir: 'TB', nodesep: 100, ranksep: 80 });
+        g.setGraph({ rankdir: 'TB', nodesep: 150, ranksep: 120 });
         g.setDefaultEdgeLabel(() => ({}));
-
-        nodes.forEach(n => g.setNode(n.id, { width: 150, height: 50 }));
+        nodes.forEach(n => g.setNode(n.id, { width: 220, height: 80 }));
         edges.forEach(e => g.setEdge(e.source, e.target));
-
         dagre.layout(g);
-
         return nodes.map(n => {
             const pos = g.node(n.id);
-            return { ...n, position: { x: pos.x - 75, y: pos.y - 25 } };
+            return { ...n, position: { x: pos.x - 110, y: pos.y - 40 } };
         });
     };
 
     // --- Main App ---
     function App() {
         const [graphs, setGraphs] = useState([]);
-        const [error, setError] = useState(null);
         const [selected, setSelected] = useState(null);
-        const [nodes, setNodes] = useState([]);
-        const [edges, setEdges] = useState([]);
+        const [collapsed, setCollapsed] = useState(false);
 
-        // 1. Load List
+        const [nodes, setNodes, onNodesChange] = useNodesState([]);
+        const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+
+        const [messages, setMessages] = useState([]);
+        const [input, setInput] = useState("");
+        const [threadId, setThreadId] = useState(Date.now().toString());
+        const [loading, setLoading] = useState(false);
+        const chatEndRef = useRef(null);
+
+        // Load Graph List
         useEffect(() => {
-            fetchGraphQL(LIST_QUERY)
-                .then(data => setGraphs(data.listGraphs.graphs))
-                .catch(err => setError(`Connection Failed: ${err.message}. Ensure CORS is enabled on backend.`));
+            fetchGraphQL(LIST_QUERY).then(d => setGraphs(d.listGraphs.graphs)).catch(console.error);
         }, []);
 
-        // 2. Load Graph Detail
+        // Scroll chat to bottom
+        useEffect(() => {
+            chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+        }, [messages]);
+
         const loadGraph = (id) => {
             setSelected(id);
-            fetchGraphQL(VIEW_QUERY, { graphId: id })
-                .then(data => {
-                    const rawNodes = data.getGraphView.nodes.map(n => {
-                        let cls = 'node-action';
-                        if (n.nodeType === 'START') cls = 'node-start';
-                        if (n.nodeType === 'END') cls = 'node-end';
-                        if (n.nodeType === 'HUMAN') cls = 'node-human';
+            fetchGraphQL(VIEW_QUERY, { graphId: id }).then(d => {
+                const view = d.getGraphView;
+                const rN = view.nodes.map(n => {
+                    const hasPos = n.position && (n.position.x || n.position.y);
+                    const prompt = n.metadata?.system_prompt || "";
 
-                        return {
-                            id: n.nodeId,
-                            data: { label: `${n.nodeId}\n(${n.nodeType})` },
-                            position: n.position || { x: 0, y: 0 },
-                            className: cls
-                        };
-                    });
+                    return {
+                        id: n.nodeId,
+                        className: `node-${n.nodeType.toLowerCase()}`,
+                        data: {
+                            label: (
+                                <div>
+                                    <div className="node-header">
+                                        <span>{n.nodeId}</span>
+                                        <span className="node-type-badge">{n.nodeType}</span>
+                                    </div>
+                                    {prompt && (
+                                        <div className="node-body">
+                                            <div className="node-prompt">{prompt}</div>
+                                        </div>
+                                    )}
+                                </div>
+                            )
+                        },
+                        position: hasPos ? n.position : { x: 0, y: 0 }
+                    };
+                });
+                const rE = view.edges.map((e, i) => ({
+                    id: `e${i}`, source: e.source, target: e.target,
+                    label: e.condition, animated: true, markerEnd: { type: MarkerType.ArrowClosed }
+                }));
 
-                    const rawEdges = data.getGraphView.edges.map((e, i) => ({
-                        id: `e${i}`,
-                        source: e.source,
-                        target: e.target,
-                        label: e.condition || e.label || '',
-                        animated: true,
-                        markerEnd: { type: MarkerType.ArrowClosed }
-                    }));
-
-                    // Apply Layout
-                    const layoutedNodes = layoutGraph(rawNodes, rawEdges);
-                    setNodes(layoutedNodes);
-                    setEdges(rawEdges);
-                })
-                .catch(err => alert("Failed to load graph: " + err.message));
+                const needsLayout = rN.every(n => n.position.x === 0 && n.position.y === 0);
+                setNodes(needsLayout ? layoutGraph(rN, rE) : rN);
+                setEdges(rE);
+            });
         };
 
-        if (error) return <div className="status-box">{error}</div>;
+        const handleExecute = async () => {
+            if (!input.trim() || !selected) return;
+
+            const userText = input;
+            setMessages(prev => [...prev, { type: 'user', text: userText }]);
+            setInput("");
+            setLoading(true);
+
+            try {
+                const data = await fetchGraphQL(EXECUTE_MUTATION, {
+                    input: { graphId: selected, threadId: threadId, input: userText }
+                });
+
+                const result = data.executeGraph;
+                let outputText = "Graph executed successfully.";
+                let errorText = null;
+
+                if (Array.isArray(result)) {
+                    // Handle Flux List
+                    const lastEvent = result[result.length - 1] || {};
+                    // Prioritize state.output
+                    outputText = lastEvent.state?.output || lastEvent.output || outputText;
+                    errorText = lastEvent.errorMessage;
+                } else if (result) {
+                    // Handle Single Object
+                    // FIX: Prioritize state.output (AI Response) over output (Status Message)
+                    if (result.state && result.state.output) {
+                        outputText = result.state.output;
+                    } else if (result.output) {
+                        outputText = result.output;
+                    }
+                    errorText = result.errorMessage;
+                }
+
+                if (errorText) {
+                    setMessages(prev => [...prev, { type: 'error', text: errorText }]);
+                } else {
+                    setMessages(prev => [...prev, { type: 'bot', text: outputText }]);
+                }
+
+            } catch (err) {
+                setMessages(prev => [...prev, { type: 'error', text: "Error: " + err.message }]);
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        const handleSaveLayout = async () => {
+            if(!selected) return;
+            const positions = nodes.map(n => ({ nodeId: n.id, x: n.position.x, y: n.position.y }));
+            await fetchGraphQL(SAVE_MUTATION, { graphId: selected, positions });
+            alert("Layout Saved!");
+        };
+
+        const handleDelete = async (e, id) => {
+            e.stopPropagation();
+            if(!window.confirm("Delete?")) return;
+            await fetchGraphQL(DELETE_MUTATION, { graphId: id });
+            setGraphs(prev => prev.filter(g => g.graphId !== id));
+        };
+
+        const resetThread = () => {
+            setThreadId(Date.now().toString());
+            setMessages([]);
+        };
 
         return (
             <React.Fragment>
                 {/* Sidebar */}
-                <div className="sidebar">
+                <div className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
                     <div className="sidebar-header">
-                        <h3>Graphs ({graphs.length})</h3>
+                        <a href="help.html" style={{textDecoration: 'none', color: 'inherit'}}>
+                            <h3>LangGraph</h3>
+                        </a>
+                        <button
+                            onClick={() => window.location.href = 'builder.html?isNew=true'}
+                            style={{
+                                background: '#2196f3', color: 'white', border: 'none',
+                                padding: '5px 10px', borderRadius: '4px', cursor: 'pointer',
+                                fontSize: '12px', marginRight: '10px'
+                            }}>
+                            + New
+                        </button>
+                        <button className="toggle-btn" onClick={() => setCollapsed(!collapsed)}>
+                            {collapsed ? '»' : '«'}
+                        </button>
                     </div>
                     <div className="graph-list">
                         {graphs.map(g => (
-                            <div key={g.graphId}
-                                 className={`graph-item ${g.graphId === selected ? 'active' : ''}`}
-                                 onClick={() => loadGraph(g.graphId)}>
-                                <div className="name">{g.graphName}</div>
-                                <div className="meta">
-                                    <span>{g.graphId}</span>
-                                    <span>{g.nodeCount} Nodes</span>
+                            <div
+                                key={g.graphId}
+                                className={`graph-item ${g.graphId === selected ? 'active' : ''}`}
+                                onClick={() => loadGraph(g.graphId)}
+                            >
+                                <div className="graph-icon-mini"></div>
+
+                                <div className="graph-info">
+                                    <div className="name">{g.graphName}</div>
+                                    <div className="meta">{g.nodeCount} Nodes</div>
+                                </div>
+
+                                {/* BUTTON GROUP */}
+                                <div style={{ display: 'flex', gap: '5px' }}>
+                                    <button
+                                        style={{
+                                            background: 'transparent',
+                                            border: '1px solid #2196f3',
+                                            color: '#2196f3',
+                                            padding: '4px 8px',
+                                            borderRadius: '4px',
+                                            cursor: 'pointer',
+                                            fontSize: '10px',
+                                            fontWeight: 'bold'
+                                        }}
+                                        onClick={(e) => {
+                                            e.stopPropagation();
+                                            // CORRECTED URL FORMATION
+                                            window.location.href = `builder.html?graphId=${g.graphId}&graphName=${g.graphName}`;
+                                        }}>
+                                        Edit
+                                    </button>
+
+                                    <button
+                                        className="delete-btn"
+                                        onClick={(e) => handleDelete(e, g.graphId)}>
+                                        ✕
+                                    </button>
                                 </div>
                             </div>
                         ))}
                     </div>
                 </div>
 
-                {/* Canvas */}
-                <div className="canvas">
-                    <ReactFlow nodes={nodes} edges={edges} fitView>
-                        <Background />
-                        <Controls />
-                    </ReactFlow>
+                {/* Main Content */}
+                <div className="main-area">
+
+                    {/* Graph Area */}
+                    <div className="canvas-container">
+                        <button className="save-layout-btn" onClick={handleSaveLayout}>Save Layout</button>
+                        <ReactFlow
+                            nodes={nodes}
+                            edges={edges}
+                            onNodesChange={onNodesChange}
+                            fitView
+                        >
+                            <Background />
+                            <Controls />
+                        </ReactFlow>
+                    </div>
+
+                    {/* Chat Area */}
+                    <div className="chat-panel">
+                        <div className="chat-header">
+                            <span>Thread: {threadId}</span>
+                            <button onClick={resetThread} style={{border:'none', background:'none', cursor:'pointer', color:'#2196f3'}}>New Chat</button>
+                        </div>
+                        <div className="chat-messages">
+                            {messages.map((m, i) => (
+                                <div key={i} className={`msg msg-${m.type}`}>
+                                    {m.text}
+                                </div>
+                            ))}
+                            {loading && <div className="msg msg-bot">Thinking...</div>}
+                            <div ref={chatEndRef} />
+                        </div>
+                        <div className="chat-input-area">
+                            <input
+                                className="chat-input"
+                                placeholder="Send message..."
+                                value={input}
+                                onChange={e => setInput(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && handleExecute()}
+                                disabled={loading}
+                            />
+                            <button className="send-btn" onClick={handleExecute} disabled={loading}>Send</button>
+                        </div>
+                    </div>
                 </div>
             </React.Fragment>
         );
     }
 
-    // Render
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(<App />);
 </script>
