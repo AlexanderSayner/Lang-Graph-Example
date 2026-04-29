@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-This document provides a deep architectural analysis and comprehensive user guide for building a production-ready GraphQL API in Java using Spring Boot 4, based on the `spring-langgraph-app` reference implementation. This gateway application exposes a GraphQL interface on top of a LangGraph gRPC backend, enabling graph creation, execution, state management, and real-time streaming capabilities.
+This document provides a deep architectural analysis and comprehensive user guide for building a production-ready GraphQL API in Java using Spring Boot 4, based on the `spring-langgraph-app` reference implementation. This gateway application exposes a GraphQL interface on top of a LangGraph gRPC backend, enabling graph creation, execution, state management, real-time streaming capabilities, and graph visualization with coordinate storage.
 
 ---
 
@@ -41,7 +41,8 @@ This document provides a deep architectural analysis and comprehensive user guid
                                               ▼
                                      ┌──────────────────────┐
                                      │      Redis           │
-                                     │  (Graph Metadata)    │
+                                     │  - Graph Metadata    │
+                                     │  - Coordinates       │
                                      └──────────────────────┘
 ```
 
@@ -50,8 +51,9 @@ This document provides a deep architectural analysis and comprehensive user guid
 1. **API Gateway Pattern**: The Spring Boot application acts as a GraphQL gateway, abstracting the underlying gRPC microservice.
 2. **Reactive Programming**: Built on Project Reactor (Mono/Flux) for non-blocking I/O operations.
 3. **DTO Layer Separation**: Clear separation between GraphQL input/output types and gRPC messages.
-4. **Mapper Pattern**: MapStruct for efficient object mapping between layers.
+4. **Mapper Pattern**: MapStruct and manual mappers for efficient object mapping between layers.
 5. **Exception Translation**: Centralized exception handling with proper GraphQL error type mapping.
+6. **Service Separation**: Distinct services for gRPC communication, Redis graph viewing, and coordinate management.
 
 ---
 
@@ -95,6 +97,7 @@ java {
 
 ## Core Components Deep Dive
 
+
 ### 1. GraphQL Controller Layer
 
 **File**: `LangGraphController.java`
@@ -105,25 +108,21 @@ The controller serves as the entry point for all GraphQL operations:
 @Controller
 @Validated
 public class LangGraphController {
-    
-    @QueryMapping
-    public Mono<@NonNull GraphListPayload> listGraphs(
-            @Argument int pageSize,
-            @Argument String pageToken) {
-        return langGraphService.listGraphs(pageSize, pageToken);
-    }
-    
-    @MutationMapping
-    public Mono<@NonNull BuildGraphPayload> buildGraph(
-            @Valid @Argument BuildGraphInput input) {
-        return langGraphService.buildGraph(input);
-    }
-    
-    @SubscriptionMapping
-    public Publisher<GraphExecutionEventPayload> executeGraphStream(
-            @Valid @Argument ExecuteGraphInput input) {
-        return langGraphService.executeGraphStream(input, true);
-    }
+
+    // Query mappings
+    public Mono<@NonNull GraphListPayload> listGraphs(int pageSize, String pageToken);
+    public Mono<@NonNull GraphStatePayload> getGraphState(String graphId, String threadId);
+    public Mono<@NonNull GraphViewPayload> getGraphView(String graphId);
+
+    // Mutation mappings
+    public Mono<@NonNull BuildGraphPayload> buildGraph(BuildGraphInput input);
+    public Mono<@NonNull ExecuteGraphPayload> executeGraph(ExecuteGraphInput input);
+    public Mono<@NonNull UpdateGraphStatePayload> updateGraphState(UpdateGraphStateInput input);
+    public Mono<@NonNull DeleteGraphPayload> deleteGraph(String graphId);
+    public Mono<@NonNull GraphViewPayload> saveGraphCoordinates(String graphId, List<NodePositionInput> positions);
+
+    // Subscription mappings
+    public Publisher<GraphExecutionEventPayload> executeGraphStream(ExecuteGraphInput input);
 }
 ```
 
@@ -131,6 +130,7 @@ public class LangGraphController {
 - Uses `@Validated` for automatic input validation
 - Returns reactive types (`Mono`, `Publisher`) for non-blocking operations
 - Implements accumulator pattern for stream aggregation in synchronous execution
+- Handles graph visualization queries and coordinate saving mutations
 
 ### 2. Service Layer (gRPC Integration)
 
@@ -141,37 +141,16 @@ Handles communication with the backend gRPC service:
 ```java
 @Service
 public class LangGraphGrpcService {
-    
-    private final LangGraphServiceGrpc.LangGraphServiceFutureStub futureStub;
-    private final LangGraphServiceGrpc.LangGraphServiceStub asyncStub;
-    private final GraphGrpcMapper mapper;
-    
-    public Flux<@NonNull GraphExecutionEventPayload> executeGraphStream(
-            ExecuteGraphInput input, boolean stream) {
-        
-        ExecuteGraphRequest request = stream
-                ? mapper.toStreamExecuteGraphRequest(input)
-                : mapper.toExecuteGraphRequest(input);
-        
-        return Flux.<ExecuteGraphResponse>create(emitter -> {
-            asyncStub.executeGraph(request, new StreamObserver<>() {
-                @Override
-                public void onNext(ExecuteGraphResponse value) {
-                    emitter.next(value);
-                }
-                @Override
-                public void onError(Throwable t) {
-                    emitter.error(t);
-                }
-                @Override
-                public void onCompleted() {
-                    emitter.complete();
-                }
-            });
-        })
-        .map(mapper::toGraphExecutionEventPayload)
-        .subscribeOn(Schedulers.boundedElastic());
-    }
+
+    // Unary operations (using futureStub)
+    public Mono<@NonNull BuildGraphPayload> buildGraph(BuildGraphInput input);
+    public Mono<@NonNull GraphStatePayload> getGraphState(String graphId, String threadId);
+    public Mono<@NonNull UpdateGraphStatePayload> updateGraphState(UpdateGraphStateInput input);
+    public Mono<@NonNull GraphListPayload> listGraphs(int pageSize, String pageToken);
+    public Mono<@NonNull DeleteGraphPayload> deleteGraph(String graphId);
+
+    // Streaming operations (using asyncStub)
+    public Flux<@NonNull GraphExecutionEventPayload> executeGraphStream(ExecuteGraphInput input, boolean stream);
 }
 ```
 
@@ -179,6 +158,115 @@ public class LangGraphGrpcService {
 - Separate stubs for unary (futureStub) and streaming (asyncStub) calls
 - Proper error translation from gRPC Status codes to domain exceptions
 - Uses `boundedElastic()` scheduler for blocking gRPC operations
+
+### 3. Redis Services
+
+**File**: `RedisGraphViewService.java`
+
+Provides read-only access to graph visualization data from Redis:
+
+```java
+@Service
+public class RedisGraphViewService {
+
+    public Mono<@NonNull GraphViewData> getGraphViewData(String graphId);
+}
+```
+
+**File**: `RedisGraphCoordinatesService.java`
+
+Manages graph node coordinates storage in Redis:
+
+```java
+@Service
+public class RedisGraphCoordinatesService {
+
+    public Mono<@NonNull Boolean> saveCoordinates(String graphId, Map<String, Map<String, Double>> coordinates);
+    public Mono<@NonNull Map<String, Map<String, Double>>> getCoordinates(String graphId);
+}
+```
+
+### 4. Mapper Layer
+
+**File**: `GraphGrpcMapper.java` (MapStruct)
+
+Handles conversion between GraphQL DTOs and gRPC messages:
+
+```java
+@Mapper(componentModel = "spring")
+public interface GraphGrpcMapper {
+
+    // GraphQL Input -> gRPC Request
+    BuildGraphRequest toBuildGraphRequest(BuildGraphInput input);
+    NodeDefinition toNodeDefinition(NodeInput node);
+    EdgeDefinition toEdgeDefinition(EdgeInput edge);
+    ExecuteGraphRequest toExecuteGraphRequest(ExecuteGraphInput input);
+    ExecuteGraphRequest toStreamExecuteGraphRequest(ExecuteGraphInput input);
+    GetGraphStateRequest toGetGraphStateRequest(String graphId, String threadId);
+    UpdateGraphStateRequest toUpdateGraphStateRequest(UpdateGraphStateInput input);
+    ListGraphsRequest toListGraphsRequest(int pageSize, String pageToken);
+    DeleteGraphRequest toDeleteGraphRequest(String graphId);
+
+    // gRPC Response -> GraphQL Payload
+    GraphListPayload toGraphListPayload(ListGraphsResponse response);
+    GraphSummary toGraphSummary(GraphInfo graph);
+    GraphStatePayload toGraphStatePayload(GetGraphStateResponse response);
+    BuildGraphPayload toBuildGraphPayload(BuildGraphResponse response);
+    GraphExecutionEventPayload toGraphExecutionEventPayload(ExecuteGraphResponse response);
+    UpdateGraphStatePayload toUpdateGraphStatePayload(UpdateGraphStateResponse response);
+    DeleteGraphPayload toDeleteGraphPayload(DeleteGraphResponse response);
+
+    // Helper methods
+    Map<String, String> convertToStringMap(Map<String, Object> map);
+}
+```
+
+**File**: `RedisGraphStorageMapper.java` (Manual mapper)
+
+Converts Redis graph data to GraphQL payload:
+
+```java
+@Component
+public class RedisGraphStorageMapper {
+
+    public GraphViewPayload toPayload(GraphViewData data);
+}
+```
+
+### 5. Exception Handling
+
+**File**: `GraphQlExceptionHandler.java`
+
+Centralized exception resolution with proper GraphQL error types:
+
+```java
+@Component
+public class GraphQlExceptionHandler extends DataFetcherExceptionResolverAdapter {
+
+    @Override
+    protected GraphQLError resolveToSingleError(Throwable ex, DataFetchingEnvironment env);
+}
+```
+
+**Custom Exception Hierarchy** (`LangGraphException.java`):
+
+```java
+@Getter
+public sealed class LangGraphException extends RuntimeException permits
+        GraphNotFoundException,
+        GraphBuildException,
+        GraphExecutionException,
+        GraphStateException {
+
+    private final String errorCode;
+}
+```
+
+**Exception Types**:
+- `GraphNotFoundException`: Thrown when a requested graph does not exist
+- `GraphBuildException`: Thrown when graph building fails
+- `GraphExecutionException`: Thrown when graph execution encounters an error
+- `GraphStateException`: Thrown when state operations fail
 
 ### 3. Mapper Layer (MapStruct)
 
