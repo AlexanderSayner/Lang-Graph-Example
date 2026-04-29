@@ -459,7 +459,9 @@
                 {/* Sidebar */}
                 <div className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
                     <div className="sidebar-header">
-                        <h3>LangGraph</h3>
+                        <a href="help.html" style={{textDecoration: 'none', color: 'inherit'}}>
+                            <h3>LangGraph</h3>
+                        </a>
                         <button
                             onClick={() => window.location.href = 'builder.html?isNew=true'}
                             style={{

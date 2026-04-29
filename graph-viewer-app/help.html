@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>LangGraph Builder Guide</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #f4f4f4; margin: 0; padding: 0; color: #333; }
+        .container { max-width: 800px; margin: 40px auto; background: #fff; padding: 40px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #2196f3; margin-top: 0; }
+        h2 { color: #333; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+        code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; font-family: monospace; }
+        .back-link { display: inline-block; margin-top: 20px; text-decoration: none; color: #2196f3; font-weight: bold; }
+        .back-link:hover { text-decoration: underline; }
+        .tip { background: #e3f2fd; padding: 15px; border-left: 4px solid #2196f3; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>LangGraph Flow Builder Guide</h1>
+
+    <div class="tip">
+        This builder allows you to visually design conversational AI flows powered by LangGraph.
+    </div>
+
+    <h2>1. Core Concepts</h2>
+    <p>LangGraph flows are <strong>State Machines</strong>. They don't just run linearly; they loop, branch, and remember context.</p>
+    <ul>
+        <li><strong>State</strong>: The memory of the graph (variables, history).</li>
+        <li><strong>Nodes</strong>: The logic blocks (LLM calls or pauses).</li>
+        <li><strong>Edges</strong>: The transitions between nodes.</li>
+    </ul>
+
+    <h2>2. Node Types</h2>
+    <ul>
+        <li><strong>🚀 Start</strong>: The entry point. Required. Only one allowed.</li>
+        <li><strong>🤖 Action</strong>: An LLM step. It processes input and updates state.</li>
+        <li><strong>👤 Human</strong>: Pauses execution to wait for user input.</li>
+        <li><strong>🛑 End</strong>: Stops the flow and returns the final result.</li>
+    </ul>
+
+    <h2>3. Routing & Conditions</h2>
+    <p>To create a "Router" (a decision point):</p>
+    <ol>
+        <li>Drag an <strong>Action Node</strong> (e.g., <code>intent_router</code>).</li>
+        <li>Connect it to multiple targets.</li>
+        <li>Click the connection lines and add <strong>Conditions</strong> (e.g., <code>intent == 'billing'</code>).</li>
+        <li>The Action Node will automatically become a Router if it has conditional outputs.</li>
+    </ol>
+
+    <h2>4. Best Practices</h2>
+    <ul>
+        <li><strong>Router Prompts</strong>: Instruct the LLM to output JSON that matches your edge conditions.
+            <br><em>Example Prompt:</em> "Extract 'intent'. Output JSON like <code>{'intent': 'billing'}</code>."
+        </li>
+        <li><strong>Human Nodes</strong>: Always place a Human Node after asking a question. This ensures the graph pauses and waits for the user's answer before continuing.</li>
+        <li><strong>Loops</strong>: Connect a node back to a previous Router to create a loop (e.g., "Ask for clarification -> Router").</li>
+    </ul>
+
+    <a href="index.html" class="back-link">← Back to Studio</a>
+</div>
+</body>
+</html>
