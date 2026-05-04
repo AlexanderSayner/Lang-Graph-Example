@@ -16,8 +16,6 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_started
     networks:
@@ -29,6 +27,25 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+
+  # Spring LangGraph Application
+  spring-service:
+    build:
+      context: ./spring-langgraph-app
+      dockerfile: Dockerfile
+    container_name: spring-langgraph-app
+    ports:
+      - "9191:9191"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - SPRING_REDIS_HOST=redis
+      - SPRING_REDIS_PORT=6379
+    depends_on:
+      redis:
+        condition: service_started
+    networks:
+      - langgraph-network
+    restart: unless-stopped
 
   # PostgreSQL Database
   postgres:
