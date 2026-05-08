@@ -13,6 +13,8 @@ from langgraph.graph import StateGraph
 from app.clients.yandex_client import YandexGPTClient
 from app.config import settings
 from app.generated import langgraph_pb2_grpc, langgraph_pb2
+from app.graph_engine.graph_utils import parse_condition, extract_json_from_response, JsonGenerationError, GraphState
+from app.graph_engine.node_handlers import NodeHandler
 from app.services.graph_store import GraphStore, GraphDefinition
 
 logger = logging.getLogger(__name__)
@@ -55,47 +57,6 @@ def _serialize_state(state: Dict[str, Any]) -> Dict[str, str]:
     return serialized
 
 
-def _parse_condition(condition_str: str) -> tuple:
-    """
-    Safely parses a condition string like "key == 'value'".
-    Returns (key, expected_value).
-    """
-    if "==" not in condition_str:
-        return None, None
-
-    key_part, val_part = condition_str.split("==", 1)
-
-    # Clean key: strip whitespace
-    key = key_part.strip()
-
-    # Clean value: strip whitespace and surrounding quotes
-    val = val_part.strip()
-    if (val.startswith("'") and val.endswith("'")) or \
-            (val.startswith('"') and val.endswith('"')):
-        val = val[1:-1]
-
-    return key, val
-
-
-# --- Reducer for Variables ---
-# This function ensures that we MERGE new variables with old ones,
-# preventing the "amnesia" issue where the LLM drops previous values.
-def merge_dicts(left: Dict[str, Any], right: Dict[str, Any]) -> Dict[str, Any]:
-    if left is None: left = {}
-    if right is None: right = {}
-    return {**left, **right}
-
-
-# --- State Definition ---
-class GraphState(TypedDict):
-    input: str
-    context: Dict[str, Any]
-    timestamp: float
-    last_node: str
-    output: str
-    # Automatically append new history items
-    variables: Annotated[Dict[str, Any], merge_dicts]
-    history: Annotated[List[Dict[str, Any]], operator.add]
 
 
 # --- Servicer ---
@@ -110,22 +71,21 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
 
         self._checkpointer = checkpointer
 
-        # Initialize our custom client
         self._llm_client = YandexGPTClient(
             api_key=settings.YC_API_KEY,
             folder_id=settings.YC_FOLDER_ID
         )
 
+        self.node_handler=NodeHandler(self._llm_client)
+
     def _build_langgraph(self, graph_data: GraphDefinition) -> Runnable:
         """Internal method to build and compile the graph."""
         # Use GraphState TypedDict for type safety
         workflow = StateGraph(GraphState)
-        llm = self._llm_client  # Access instance client
 
-        # --- 1. Pre-process Edges to handle Conditions ---
         from collections import defaultdict
 
-        # --- 1. Pre-process Edges ---
+        # --- 1. Pre-process Edges to handle Conditions ---
         # We separate conditional and unconditional edges for cleaner logic.
         conditional_map = defaultdict(list)
         unconditional_edges = []
@@ -157,7 +117,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             expected_keys = set()
             if is_router:
                 for _, cond_str in conditional_map[node_id]:
-                    key, _ = _parse_condition(cond_str)
+                    key, _ = parse_condition(cond_str)
                     if key:
                         expected_keys.add(str(key))
 
@@ -167,153 +127,22 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                     n_id: str,
                     n_meta: Dict[str, Any],
                     is_router_node: bool,
-                    router_keys: set):
+                    router_keys: set,
+                    processor: NodeHandler):
                 async def handler(state: GraphState) -> Dict[str, Any]:
                     logger.info(f"Executing node: {n_id}")
-
-                    user_input = state.get("input") or ""
-
-                    # We MUST show the LLM the current variables so it knows what is already filled.
-                    current_vars = state.get("variables", {}) or {}
-                    vars_json_str = json.dumps(current_vars, indent=2)
-
-                    # Dynamic History (Conversation memory)
-                    # This is CRITICAL. Without this, the LLM doesn't know what happened before.
-                    history = state.get("history") or []
-                    history_str = ""
-                    if history:
-                        # Format: "Node Name: Output"
-                        history_str = "Conversation History:\n" + "\n".join(
-                            [f"- {h.get('node')}: {h.get('output')}" for h in history if h.get('output')]
-                        )
-
-                    # Utilize context by injecting it into the prompt.
-                    context_data = state.get("context") or {}
-                    context_str = ""
-                    if context_data:
-                        context_str = f"Static Context: {json.dumps(context_data, indent=2)}"
-
-                    # If no prompt and not a router, just pass input through (e.g., wait nodes)
-                    if not is_router_node and not n_meta.get("system_prompt"):
-                        logger.info(f"Node {n_id} is pass-through. Skipping LLM.")
-                        return {"last_node": n_id, "output": user_input}
-
-                    # Safety: Don't call LLM on empty input if not router
-                    if not user_input.strip() and not is_router_node:
-                        return {"last_node": n_id, "output": "No input provided."}
-
-                    # A. The System Prompt (Logic)
-                    # We rely on the GraphQL prompt for logic.
-                    # We simply append the Current State so the LLM knows what is filled.
-                    system_prompt = n_meta.get("system_prompt", "You are a helpful assistant.")
-
-                    # We create a clear "Data Block" so the LLM cannot hallucinate state.
-                    data_block = (
-                        f"=== CURRENT STATE VARIABLES ===\n{vars_json_str}\n\n"
-                        f"=== CURRENT USER INPUT ===\n{user_input}"
-                    )
-
-                    # Append History to the data block if it exists
-                    if history_str:
-                        data_block = f"=== CONVERSATION HISTORY ===\n{history_str}\n\n" + data_block
-
-                    # --- Router Logic ---
-                    # If it's a router node, we instruct the LLM to classify the intent
-                    # For Routers, we explicitly remind them to output the full state
-                    if is_router_node:
-                        system_prompt += (
-                            "\n\nIMPORTANT: You must output a valid JSON object merging the CURRENT STATE VARIABLES "
-                            "with any new variables extracted from the input. "
-                            "Do NOT drop existing variables."
-                        )
-                        final_user_input = data_block
-                    else:
-                        # Regular nodes get a conversational format
-                        final_user_input = data_block
-                        if context_str:
-                            final_user_input += f"\n\n{context_str}"
-
-                    try:
-                        # Call our custom async client
-                        logger.debug(f"Calling YandexGPT for node {n_id}...")
-
-                        # Add context to the LLM call
-                        response_text = await llm.generate(
-                            user_message=final_user_input,
-                            system_message=system_prompt,
-                            # context=context_data # Uncomment when yandex client will support it, GraphQL already has it in the contract
-                        )
-                        logger.info(f"Node {n_id} response received.")
-
-                        # Try to parse JSON from router nodes to update state variables
-                        if is_router_node:
-                            import re
-
-                            try:
-                                # Robust Markdown Stripping
-                                # Remove ```json and ``` wrappers explicitly
-                                clean_response = response_text.strip()
-                                if clean_response.startswith("```"):
-                                    # Remove first line (```json) and last line (```)
-                                    lines = clean_response.splitlines()
-                                    if len(lines) > 2:
-                                        clean_response = "\n".join(lines[1:-1])
-
-                                # Looks for text between { and }
-                                json_match = re.search(r'\{.*}', clean_response, re.DOTALL)
-
-                                if json_match:
-                                    json_str = json_match.group(0)
-                                    raw_data = json.loads(json_str)
-                                    parsed_data = {str(k): v for k, v in raw_data.items()}
-
-                                    logger.info(f"Router {n_id} extracted data: {parsed_data}")
-
-                                    # Merge: Existing Vars + New Data
-                                    merged_vars = {**current_vars, **parsed_data}
-
-                                    logger.info(f"Router {n_id} corrected intent: {merged_vars}")
-
-                                    return {
-                                        "last_node": n_id,
-                                        "output": response_text,
-                                        "variables": merged_vars
-                                    }
-                                else:
-                                    logger.warning(f"Router {n_id}: No JSON found in response.")
-                                    # Fallback: keep state as is
-                                    return {"last_node": n_id, "output": response_text}
-
-                            except json.JSONDecodeError:
-                                logger.error(f"Router {n_id} failed to parse JSON.")
-                                # Return state unchanged on error to avoid corruption
-                                return {
-                                    "last_node": n_id,
-                                    "output": response_text,
-                                    "error": "JSON parse error"
-                                }
-
-                        # --- Regular Node Logic ---
-                        return {
-                            "last_node": n_id,
-                            "output": response_text,
-                            # Append to history safely
-                            "history": [{"node": n_id, "output": response_text}]
-                        }
-
-                    except Exception as e:
-                        logger.error(f"Node execution failed: {e}", exc_info=True)
-                        return {
-                            "last_node": n_id,
-                            "output": f"Error: {str(e)}",
-                            "history": [{"node": n_id, "output": f"Error: {str(e)}"}]
-                        }
+                    return await processor.process(
+                        n_id=n_id,
+                        n_meta=n_meta,
+                        is_router_node=is_router_node,
+                        router_keys=router_keys,
+                        state=state)
 
                 return handler
 
             workflow.add_node(
                 node_id,
-                create_node_handler(node_id, metadata, is_router, expected_keys)  # type: ignore[arg-type]
+                create_node_handler(node_id, metadata, is_router, expected_keys, self.node_handler)  # type: ignore[arg-type]
             )
 
         # --- 3. Add Unconditional Edges ---
@@ -329,7 +158,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
 
                     # Check each condition
                     for target, condition_str in condition_list:
-                        parsed_key, expected_val = _parse_condition(condition_str)
+                        parsed_key, expected_val = parse_condition(condition_str)
                         if not parsed_key:
                             continue
 
