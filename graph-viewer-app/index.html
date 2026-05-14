@@ -126,6 +126,13 @@
         .react-flow__node.node-action { background: #e3f2fd; border-color: #bbdefb; }
         .react-flow__node.node-human { background: #fff3e0; border-color: #ffe0b2; }
 
+        /* NEW: Subgraph Node Style */
+        .react-flow__node.node-graph {
+            background: #f3e5f5;
+            border-color: #e1bee7;
+            border-style: 'dashed';
+        }
+
         .node-header {
             padding: 8px 12px;
             border-bottom: 1px solid rgba(0,0,0,0.05);
@@ -140,6 +147,7 @@
         .node-end .node-header { color: #c62828; }
         .node-action .node-header { color: #1565c0; }
         .node-human .node-header { color: #ef6c00; }
+        .node-graph .node-header { color: #7b1fa2; } /* Purple */
 
         .node-type-badge {
             font-size: 9px;
@@ -164,6 +172,25 @@
             font-size: 10px;
             color: #444;
             line-height: 1.4;
+        }
+
+        /* --- Subgraph Link Button --- */
+        .subgraph-link {
+            display: block;
+            margin-top: 8px;
+            font-size: 10px;
+            color: #7b1fa2;
+            background: rgba(255,255,255,0.5);
+            padding: 4px 8px;
+            border-radius: 4px;
+            text-decoration: none;
+            text-align: center;
+            border: 1px solid #ce93d8;
+            cursor: pointer;
+        }
+        .subgraph-link:hover {
+            background: #e1bee7;
+            color: #4a148c;
         }
 
         /* --- Chat Panel --- */
@@ -296,7 +323,6 @@
     const LIST_QUERY = `query { listGraphs(pageSize: 100) { graphs { graphId graphName nodeCount } } }`;
     const VIEW_QUERY = `query Get($graphId: String!) { getGraphView(graphId: $graphId) { nodes { nodeId nodeType metadata position { x y } } edges { source target condition } } }`;
 
-    // FIX: Removed 'eventType'. Used 'output', 'state', 'errorMessage' as per your schema.
     const EXECUTE_MUTATION = `
         mutation Exec($input: ExecuteGraphInput!) {
             executeGraph(input: $input) {
@@ -352,13 +378,19 @@
             setSelected(id);
             fetchGraphQL(VIEW_QUERY, { graphId: id }).then(d => {
                 const view = d.getGraphView;
+
+                // Map Backend Nodes to React Flow Nodes
                 const rN = view.nodes.map(n => {
                     const hasPos = n.position && (n.position.x || n.position.y);
                     const prompt = n.metadata?.system_prompt || "";
+                    const subgraphId = n.metadata?.subgraph_id;
+
+                    // Find name from sidebar list if available
+                    const subgraphName = graphs.find(g => g.graphId === subgraphId)?.graphName || "Unknown Graph";
 
                     return {
                         id: n.nodeId,
-                        className: `node-${n.nodeType.toLowerCase()}`,
+                        className: `node-${n.nodeType.toLowerCase()}`, // node-graph style applies here
                         data: {
                             label: (
                                 <div>
@@ -366,17 +398,37 @@
                                         <span>{n.nodeId}</span>
                                         <span className="node-type-badge">{n.nodeType}</span>
                                     </div>
-                                    {prompt && (
-                                        <div className="node-body">
+
+                                    {/* Render Prompt or Subgraph Info */}
+                                    <div className="node-body">
+                                        {n.nodeType === 'GRAPH' ? (
+                                            <div>
+                                                <div style={{marginBottom: '5px'}}>
+                                                    <strong>Subgraph:</strong><br/>
+                                                    {subgraphName}
+                                                </div>
+                                                {/* Clickable Link to load subgraph */}
+                                                <div
+                                                    className="subgraph-link"
+                                                    onClick={(e) => {
+                                                        e.stopPropagation(); // Prevent node drag
+                                                        if(subgraphId) loadGraph(subgraphId);
+                                                    }}
+                                                >
+                                                    View Subgraph &rarr;
+                                                </div>
+                                            </div>
+                                        ) : (
                                             <div className="node-prompt">{prompt}</div>
-                                        </div>
-                                    )}
+                                        )}
+                                    </div>
                                 </div>
                             )
                         },
                         position: hasPos ? n.position : { x: 0, y: 0 }
                     };
                 });
+
                 const rE = view.edges.map((e, i) => ({
                     id: `e${i}`, source: e.source, target: e.target,
                     label: e.condition, animated: true, markerEnd: { type: MarkerType.ArrowClosed }
@@ -406,14 +458,10 @@
                 let errorText = null;
 
                 if (Array.isArray(result)) {
-                    // Handle Flux List
                     const lastEvent = result[result.length - 1] || {};
-                    // Prioritize state.output
                     outputText = lastEvent.state?.output || lastEvent.output || outputText;
                     errorText = lastEvent.errorMessage;
                 } else if (result) {
-                    // Handle Single Object
-                    // FIX: Prioritize state.output (AI Response) over output (Status Message)
                     if (result.state && result.state.output) {
                         outputText = result.state.output;
                     } else if (result.output) {
@@ -489,7 +537,6 @@
                                     <div className="meta">{g.nodeCount} Nodes</div>
                                 </div>
 
-                                {/* BUTTON GROUP */}
                                 <div style={{ display: 'flex', gap: '5px' }}>
                                     <button
                                         style={{
@@ -504,7 +551,6 @@
                                         }}
                                         onClick={(e) => {
                                             e.stopPropagation();
-                                            // CORRECTED URL FORMATION
                                             window.location.href = `builder.html?graphId=${g.graphId}&graphName=${g.graphName}`;
                                         }}>
                                         Edit
