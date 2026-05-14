@@ -1,19 +1,18 @@
 import functools
 import json
 import logging
-import operator
 import time
-from typing import Dict, Any, Callable, TypedDict, List, Annotated
+from typing import Dict, Any, Callable
 
 import grpc
-from langchain_core.runnables import Runnable
+from langchain_core.runnables import Runnable, RunnableConfig
 from langgraph.constants import END
 from langgraph.graph import StateGraph
 
 from app.clients.yandex_client import YandexGPTClient
 from app.config import settings
 from app.generated import langgraph_pb2_grpc, langgraph_pb2
-from app.graph_engine.graph_utils import parse_condition, extract_json_from_response, JsonGenerationError, GraphState
+from app.graph_engine.graph_utils import parse_condition, GraphState
 from app.graph_engine.node_handlers import NodeHandler
 from app.services.graph_store import GraphStore, GraphDefinition
 
@@ -57,8 +56,6 @@ def _serialize_state(state: Dict[str, Any]) -> Dict[str, str]:
     return serialized
 
 
-
-
 # --- Servicer ---
 # TODO: that's a service layer which manages there graphs are saved. Provide a repository for Redis/In-memory persistence control
 class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
@@ -76,7 +73,20 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             folder_id=settings.YC_FOLDER_ID
         )
 
-        self.node_handler=NodeHandler(self._llm_client)
+        async def graph_loader(graph_id: str):
+            if graph_id in self._compiled_graphs:
+                return self._compiled_graphs[graph_id]
+
+            data = await self.store.get_graph(graph_id)
+            if not data:
+                raise ValueError(f"Subgraph not found: {graph_id}")
+
+            validated = GraphDefinition(**data)
+            compiled = self._build_langgraph(validated)
+            self._compiled_graphs[graph_id] = compiled
+            return compiled
+
+        self.node_handler = NodeHandler(self._llm_client, graph_loader)
 
     def _build_langgraph(self, graph_data: GraphDefinition) -> Runnable:
         """Internal method to build and compile the graph."""
@@ -121,28 +131,33 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                     if key:
                         expected_keys.add(str(key))
 
+            node_type = node.node_type
+
             # Use default arguments in closure to capture loop variables safely.
             # Without `n_id=node_id`, closures might reference the *last* node_id in the loop.
             def create_node_handler(
                     n_id: str,
                     n_meta: Dict[str, Any],
+                    n_type: str,
                     is_router_node: bool,
                     router_keys: set,
                     processor: NodeHandler):
-                async def handler(state: GraphState) -> Dict[str, Any]:
+                async def handler(state: GraphState, config: RunnableConfig) -> Dict[str, Any]:
                     logger.info(f"Executing node: {n_id}")
                     return await processor.process(
                         n_id=n_id,
                         n_meta=n_meta,
+                        node_type=n_type,
                         is_router_node=is_router_node,
                         router_keys=router_keys,
-                        state=state)
+                        state=state,
+                        config=config)
 
                 return handler
 
             workflow.add_node(
                 node_id,
-                create_node_handler(node_id, metadata, is_router, expected_keys, self.node_handler)  # type: ignore[arg-type]
+                create_node_handler(node_id, metadata, node_type, is_router, expected_keys, self.node_handler)
             )
 
         # --- 3. Add Unconditional Edges ---
@@ -283,7 +298,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                 await context.abort(grpc.StatusCode.INTERNAL, f"Failed to rebuild graph: {e}")
                 return
 
-        config = {
+        config: RunnableConfig = {
             "configurable": {
                 "thread_id": request.thread_id if getattr(request, "thread_id", None) else "default_session"
             }
@@ -366,7 +381,10 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                     timestamp=int(time.time() * 1000)
                 )
 
+            # --- POST-STREAM CHECK ---
             # After the stream finishes, check the state to see if we are paused
+            # If the subgraph raised GraphInterrupt, the loop above finishes.
+            # We must check the state to see if we are paused.
             final_snapshot = await compiled_graph.aget_state(config)
             final_next = getattr(final_snapshot, "next", None) or []
             final_values = getattr(final_snapshot, "values", {}) or {}
@@ -396,6 +414,31 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                 )
 
         except Exception as exec_error:
+            # If GraphInterrupt bubbled all the way here (unlikely with astream but possible)
+            from langgraph.errors import GraphInterrupt
+            if isinstance(exec_error, GraphInterrupt):
+                logger.warning("Graph Interrupted (Pause). Checking state for WAITING event.")
+
+                # Fetch the state to find out WHERE we are waiting
+                snapshot = await compiled_graph.aget_state(config)
+                next_nodes = getattr(snapshot, "next", None) or []
+                values = getattr(snapshot, "values", {}) or {}
+
+                if next_nodes:
+                    waiting_node = next_nodes[0] if isinstance(next_nodes, (list, tuple)) else next_nodes
+                    logger.info(f"Graph paused at node: {waiting_node}")
+
+                    # YIELD the waiting event so the client knows to pause
+                    yield langgraph_pb2.ExecuteGraphResponse(
+                        event_type="WAITING_FOR_INPUT",
+                        node_id=waiting_node,
+                        output="Action required. Waiting for user input.",
+                        state=_serialize_state(values),
+                        timestamp=int(time.time() * 1000)
+                    )
+
+                return
+
             logger.error(f"Execution error: {exec_error}", exc_info=True)
             yield langgraph_pb2.ExecuteGraphResponse(
                 event_type="ERROR",

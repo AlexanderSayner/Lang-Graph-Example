@@ -379,3 +379,120 @@ mutation BuildPlaylistGraphFinal {
     }
 }
 ```
+### Sub graphs
+#### Car dealer simple example
+```graphql
+mutation BuildSalesWorkerV8 {
+  buildGraph(
+    input: {
+      graphId: "sales-worker-v8"
+      graphName: "Sales Worker - Strict Expert"
+      nodes: [
+        { nodeId: "worker_entry", nodeType: "START", handlerName: "workerStart" }
+        
+        # 1. The "Strict" Ask Node
+        {
+          nodeId: "ask_model",
+          nodeType: "ACTION",
+          handlerName: "askModelHandler",
+          metadata: {
+            system_prompt: "You are an expert Car Sales Agent. Your goal is to secure a specific car model.\n\nRules:\n1. If the user mentions a BRAND only (e.g., 'Honda'), you MUST ask for the specific MODEL (e.g., 'Accord' or 'Civic'). Do NOT accept the brand as a final answer.\n2. If the user mentions a specific MODEL (e.g., 'Accord'), acknowledge it and pass to the next step.\n3. Be helpful but persistent about getting the exact model.\n\nCurrent Conversation Context: {input}"
+          }
+        }
+        
+        # 2. Wait for User Input
+        { nodeId: "wait_model", nodeType: "HUMAN", handlerName: "waitModel" }
+        
+        # 3. The Confirmation Node
+        {
+          nodeId: "confirm_sale",
+          nodeType: "ACTION",
+          handlerName: "confirmHandler",
+          metadata: {
+            system_prompt: "You are a sales closer. Check the conversation history.\n\n1. If a specific MODEL (e.g., 'Accord') is confirmed, thank the user and ask 'Are you ready to finalize the deal?'.\n2. If the user was vague or you are unsure of the exact model, ask for clarification instead of confirming.\n\nDo not confirm unless a specific model is clearly stated."
+          }
+        }
+        
+        # 4. Wait for Confirmation
+        { nodeId: "wait_confirmation", nodeType: "HUMAN", handlerName: "waitConfirmation" }
+        
+        # 5. Router
+        {
+          nodeId: "check_change_request",
+          nodeType: "ACTION",
+          handlerName: "checkChangeHandler",
+          metadata: {
+            system_prompt: "Analyze the user's last input.\n- If they want to change their choice or add something, output JSON: {\"decision\": \"change\"}.\n- If they agree, say 'yes', or 'okay', output JSON: {\"decision\": \"done\"}.\n- Output ONLY the JSON."
+          }
+        }
+        
+        # 6. Finalize
+        {
+          nodeId: "finalize_sale",
+          nodeType: "END",
+          handlerName: "finalizeHandler",
+          metadata: {
+            system_prompt: "The deal is closed. Congratulate the user on their new specific car model mentioned in the history and provide a brief, friendly closing statement."
+          }
+        }
+      ],
+      edges: [
+        { source: "worker_entry", target: "ask_model" },
+        { source: "ask_model", target: "wait_model" },
+        { source: "wait_model", target: "confirm_sale" },
+        { source: "confirm_sale", target: "wait_confirmation" },
+        { source: "wait_confirmation", target: "check_change_request" },
+        
+        # Loop back if change requested
+        { source: "check_change_request", target: "ask_model", condition: "decision == 'change'" },
+        
+        # End if done
+        { source: "check_change_request", target: "finalize_sale", condition: "decision == 'done'" }
+      ]
+    }
+  ) {
+    success
+    graphId
+  }
+}
+mutation BuildManager {
+  buildGraph(
+    input: {
+      graphId: "manager-main-v8"
+      graphName: "Dealership Manager "
+      nodes: [
+        { nodeId: "entry", nodeType: "START", handlerName: "entryHandler" },
+        {
+          nodeId: "intent_router",
+          nodeType: "ACTION",
+          handlerName: "routerHandler",
+          metadata: {
+            system_prompt: "You are a classifier. If the user wants to buy a car, output JSON: {\"intent\": \"sales\"}. Otherwise output {\"intent\": \"support\"}. Output ONLY JSON."
+          }
+        },
+        {
+          nodeId: "handle_sales",
+          nodeType: "GRAPH",
+          handlerName: "salesSubgraphHandler",
+          metadata: {
+            subgraph_id: "sales-worker-v8" # Points to the new worker
+          }
+        },
+        {
+          nodeId: "support_node",
+          nodeType: "END",
+          handlerName: "supportHandler",
+          metadata: { system_prompt: "Transferring to support..." }
+        }
+      ],
+      edges: [
+        { source: "entry", target: "intent_router" },
+        { source: "intent_router", target: "handle_sales", condition: "intent == 'sales'" },
+        { source: "intent_router", target: "support_node", condition: "intent == 'support'" }
+      ]
+    }
+  ) {
+    success
+  }
+}
+```

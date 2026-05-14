@@ -54,12 +54,12 @@ public class LangGraphGrpcService {
                 : mapper.toExecuteGraphRequest(input);
 
         // Explicitly use the gRPC generated ExecuteGraphResponse inside the Flux
-        return Flux.<org.sandbox.langgraph.grpc.ExecuteGraphResponse>create(emitter -> {
+        return Flux.<ExecuteGraphResponse>create(emitter -> {
                     log.debug("Executing graph: {} (stream={})", input.graphId(), stream);
 
                     asyncStub.executeGraph(request, new StreamObserver<>() {
                         @Override
-                        public void onNext(org.sandbox.langgraph.grpc.ExecuteGraphResponse value) {
+                        public void onNext(ExecuteGraphResponse value) {
                             log.trace("Received event: {} for node: {}", value.getEventType(), value.getNodeId());
                             emitter.next(value);
                         }
