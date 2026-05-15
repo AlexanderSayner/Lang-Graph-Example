@@ -47,6 +47,7 @@
         .form-label { font-size: 11px; color: #666; text-transform: uppercase; margin-bottom: 4px; display: block; }
         .form-input { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; box-sizing: border-box; }
         .form-textarea { height: 60px; resize: none; }
+        .form-select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; background: white; }
 
         /* Nodes */
         .react-flow__node { padding: 0; border-radius: 6px; width: 160px; font-size: 12px; text-align: center; border: 2px solid #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
@@ -54,6 +55,8 @@
         .node-end { background: #ffebee; border-color: #f44336; }
         .node-action { background: #e3f2fd; border-color: #2196f3; }
         .node-human { background: #fff3e0; border-color: #ff9800; }
+        .node-graph { background: #f3e5f5; border-color: #9c27b0; border-style: dashed; }
+
         .node-label { padding: 10px; font-weight: bold; }
         .node-type { font-size: 10px; opacity: 0.8; font-weight: normal; display: block; margin-top: 2px; }
     </style>
@@ -96,6 +99,7 @@
         if (data.type === 'START') bgClass = 'node-start';
         if (data.type === 'END') bgClass = 'node-end';
         if (data.type === 'HUMAN') bgClass = 'node-human';
+        if (data.type === 'GRAPH') bgClass = 'node-graph';
 
         return (
             <div className={`react-flow__node ${bgClass}`} style={{ borderWidth: selected ? 3 : 2 }}>
@@ -117,6 +121,9 @@
         const [selectedElement, setSelectedElement] = useState(null);
         const [loading, setLoading] = useState(false);
 
+        // State for available graphs to link
+        const [availableGraphs, setAvailableGraphs] = useState([]);
+
         const [graphId, setGraphId] = useState(IS_NEW ? `graph-${Date.now()}` : URL_ID);
         const [graphName, setGraphName] = useState(URL_NAME || "Untitled Graph");
 
@@ -128,8 +135,16 @@
 
         // Init
         useEffect(() => {
+            // Load available graphs for the dropdown
+            const LIST_QUERY = `query { listGraphs(pageSize: 100) { graphs { graphId graphName } } }`;
+            fetchGraphQL(LIST_QUERY).then(data => {
+                // Filter out the current graph to prevent self-reference
+                const others = data.listGraphs.graphs.filter(g => g.graphId !== graphId);
+                setAvailableGraphs(others);
+            }).catch(console.error);
+
+            // Load current graph if editing
             if (IS_NEW) {
-                // Don't add start automatically, let user drag it (or add if you prefer)
                 setNodes([]);
             } else if (URL_ID) {
                 const Q = `query Get($id: String!) { getGraphView(graphId: $id) { nodes { nodeId nodeType metadata position { x y } } edges { source target condition } } }`;
@@ -137,7 +152,12 @@
                     if (!data.getGraphView) return;
                     setNodes(data.getGraphView.nodes.map(n => ({
                         id: n.nodeId, type: 'designNode', position: n.position || { x: 0, y: 0 },
-                        data: { label: n.nodeId, type: n.nodeType, prompt: n.metadata?.system_prompt || "" }
+                        data: {
+                            label: n.nodeId,
+                            type: n.nodeType,
+                            prompt: n.metadata?.system_prompt || "",
+                            subgraphId: n.metadata?.subgraph_id || null // Load subgraph ID
+                        }
                     })));
                     setEdges(data.getGraphView.edges.map((e, i) => ({
                         id: `e-${i}`, source: e.source, target: e.target,
@@ -180,7 +200,7 @@
             const id = `node_${Date.now()}`;
             setNodes(nds => nds.concat({
                 id, type: 'designNode', position,
-                data: { label: id, type: type, prompt: "" }
+                data: { label: id, type: type, prompt: "", subgraphId: null }
             }));
         }, [hasStartNode]);
 
@@ -192,7 +212,6 @@
             if (window.confirm(`Delete ${selectedElement.type === 'designNode' ? 'Node' : 'Edge'}?`)) {
                 if (selectedElement.type === 'designNode') {
                     setNodes(nds => nds.filter(n => n.id !== selectedElement.id));
-                    // Also remove connected edges
                     setEdges(eds => eds.filter(e => e.source !== selectedElement.id && e.target !== selectedElement.id));
                 } else {
                     setEdges(eds => eds.filter(e => e.id !== selectedElement.id));
@@ -210,10 +229,19 @@
                 if (!nodes.find(n => n.data.type === 'START')) throw new Error("Graph needs a START node");
                 if (!nodes.find(n => n.data.type === 'END')) throw new Error("Graph needs an END node");
 
-                const payloadNodes = nodes.map(n => ({
-                    nodeId: n.id, nodeType: n.data.type, handlerName: `${n.id}Handler`,
-                    metadata: { system_prompt: n.data.prompt || "" }
-                }));
+                const payloadNodes = nodes.map(n => {
+                    const meta = { system_prompt: n.data.prompt || "" };
+                    // Add subgraph_id if it's a GRAPH node
+                    if (n.data.type === 'GRAPH' && n.data.subgraphId) {
+                        meta.subgraph_id = n.data.subgraphId;
+                    }
+                    return {
+                        nodeId: n.id,
+                        nodeType: n.data.type,
+                        handlerName: `${n.id}Handler`,
+                        metadata: meta
+                    };
+                });
 
                 const payloadEdges = edges.map(e => ({
                     source: e.source, target: e.target, condition: e.label || null
@@ -284,6 +312,7 @@
                         </div>
                         <div className="palette-node" title="Action Node" draggable onDragStart={(e) => onDragStart(e, 'ACTION')}>🤖</div>
                         <div className="palette-node" title="Human Node" draggable onDragStart={(e) => onDragStart(e, 'HUMAN')}>👤</div>
+                        <div className="palette-node" title="Subgraph Node" draggable onDragStart={(e) => onDragStart(e, 'GRAPH')}>🧩</div>
                         <div className="palette-node" title="End Node" draggable onDragStart={(e) => onDragStart(e, 'END')}>🛑</div>
                     </div>
 
@@ -300,7 +329,7 @@
                             defaultViewport={{ x: 0, y: 0, zoom: 1.0 }}
                             snapToGrid={true}
                             snapGrid={[10, 10]}
-                            deleteKeyCode={['Backspace', 'Delete']} /* Enable Delete Key */
+                            deleteKeyCode={['Backspace', 'Delete']}
                         >
                             <Background gap={10} size={1} />
                             <Controls />
@@ -326,10 +355,28 @@
                                         <label className="form-label">Type</label>
                                         <input className="form-input" value={selectedElement.data.type} disabled />
                                     </div>
-                                    <div className="form-group" style={{flex: 2}}>
-                                        <label className="form-label">System Prompt</label>
-                                        <textarea className="form-input form-textarea" value={selectedElement.data.prompt || ""} onChange={(e) => updateNode('prompt', e.target.value)} />
-                                    </div>
+
+                                    {/* Conditional Rendering for Specific Types */}
+                                    {selectedElement.data.type === 'GRAPH' ? (
+                                        <div className="form-group" style={{flex: 2}}>
+                                            <label className="form-label">Link to Subgraph</label>
+                                            <select
+                                                className="form-select"
+                                                value={selectedElement.data.subgraphId || ""}
+                                                onChange={(e) => updateNode('subgraphId', e.target.value)}
+                                            >
+                                                <option value="" disabled>-- Select a Graph --</option>
+                                                {availableGraphs.map(g => (
+                                                    <option key={g.graphId} value={g.graphId}>{g.graphName} ({g.graphId})</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    ) : (
+                                        <div className="form-group" style={{flex: 2}}>
+                                            <label className="form-label">System Prompt</label>
+                                            <textarea className="form-input form-textarea" value={selectedElement.data.prompt || ""} onChange={(e) => updateNode('prompt', e.target.value)} />
+                                        </div>
+                                    )}
                                 </div>
                             ) : (
                                 <div className="form-row">
