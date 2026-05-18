@@ -2,43 +2,38 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>LangGraph Builder Guide</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LangGraph Studio Help</title>
     <style>
-        body { font-family: 'Segoe UI', sans-serif; background: #f4f4f4; margin: 0; padding: 0; color: #333; }
-        .container { max-width: 800px; margin: 40px auto; background: #fff; padding: 40px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        h1 { color: #2196f3; margin-top: 0; }
-        h2 { color: #333; border-bottom: 1px solid #eee; padding-bottom: 10px; }
-        code { background: #f0f0f0; padding: 2px 6px; border-radius: 4px; font-family: monospace; }
-        .back-link { display: inline-block; margin-top: 20px; text-decoration: none; color: #2196f3; font-weight: bold; }
-        .back-link:hover { text-decoration: underline; }
-        .tip { background: #e3f2fd; padding: 15px; border-left: 4px solid #2196f3; margin-bottom: 20px; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 900px; margin: 0 auto; padding: 20px; background: #f9f9f9; }
+        h1, h2, h3 { color: #2c3e50; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+        pre { background: #2d2d2d; color: #f8f8f2; padding: 20px; border-radius: 8px; overflow-x: auto; position: relative; }
+        code { font-family: 'Consolas', 'Monaco', monospace; font-size: 13px; }
+        .copy-btn { position: absolute; top: 10px; right: 10px; background: #555; color: white; border: none; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+        .copy-btn:hover { background: #888; }
+        .example-box { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); margin-bottom: 20px; }
+        .tag { display: inline-block; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; margin-right: 5px; }
+        .tag-graphql { background: #e10098; color: white; }
+        .tag-concept { background: #2196f3; color: white; }
     </style>
 </head>
 <body>
+
+<h1>LangGraph Studio Documentation</h1>
+<p>Welcome to the visual builder for LangGraph. This guide will help you construct complex agentic workflows using GraphQL mutations.</p>
+
+<div class="example-box">
+    <h2>Core Concepts</h2>
+    <ul>
+        <li><strong>Nodes</strong>: Processing units (Actions, Routers, Human inputs).</li>
+        <li><strong>Edges</strong>: Connections between nodes. Can be conditional.</li>
+        <li><strong>Subgraphs</strong>: Nodes that link to another entire graph, allowing for modular design.</li>
+    </ul>
+</div>
+
 <div class="container">
-    <h1>LangGraph Flow Builder Guide</h1>
 
-    <div class="tip">
-        This builder allows you to visually design conversational AI flows powered by LangGraph.
-    </div>
-
-    <h2>1. Core Concepts</h2>
-    <p>LangGraph flows are <strong>State Machines</strong>. They don't just run linearly; they loop, branch, and remember context.</p>
-    <ul>
-        <li><strong>State</strong>: The memory of the graph (variables, history).</li>
-        <li><strong>Nodes</strong>: The logic blocks (LLM calls or pauses).</li>
-        <li><strong>Edges</strong>: The transitions between nodes.</li>
-    </ul>
-
-    <h2>2. Node Types</h2>
-    <ul>
-        <li><strong>🚀 Start</strong>: The entry point. Required. Only one allowed.</li>
-        <li><strong>🤖 Action</strong>: An LLM step. It processes input and updates state.</li>
-        <li><strong>👤 Human</strong>: Pauses execution to wait for user input.</li>
-        <li><strong>🛑 End</strong>: Stops the flow and returns the final result.</li>
-    </ul>
-
-    <h2>3. Routing & Conditions</h2>
+    <h2>Routing & Conditions</h2>
     <p>To create a "Router" (a decision point):</p>
     <ol>
         <li>Drag an <strong>Action Node</strong> (e.g., <code>intent_router</code>).</li>
@@ -47,7 +42,7 @@
         <li>The Action Node will automatically become a Router if it has conditional outputs.</li>
     </ol>
 
-    <h2>4. Best Practices</h2>
+    <h2>Best Practices</h2>
     <ul>
         <li><strong>Router Prompts</strong>: Instruct the LLM to output JSON that matches your edge conditions.
             <br><em>Example Prompt:</em> "Extract 'intent'. Output JSON like <code>{'intent': 'billing'}</code>."
@@ -58,5 +53,230 @@
 
     <a href="index.html" class="back-link">← Back to Studio</a>
 </div>
+
+<div class="example-box">
+    <h2>Advanced Example: The "Smart Dealership"</h2>
+    <p>This example demonstrates a tiered architecture:</p>
+    <ol>
+        <li><strong>Main Graph</strong>: A router that directs traffic to Sales or Support.</li>
+        <li><strong>Sales Subgraph</strong>: A conversational bot that ensures specific car models are captured before confirming a sale.</li>
+    </ol>
+
+    <h3>Step 1: Build the "Sales Worker" Subgraph</h3>
+    <p>This graph handles the logic of asking for a car model and confirming the purchase. It loops back if the user changes their mind.</p>
+    <span class="tag tag-graphql">GraphQL</span> <span class="tag tag-concept">Subgraph</span>
+    <pre><code id="code1">mutation BuildSalesWorker {
+  buildGraph(
+    input: {
+      graphId: "dealership-sales-v1"
+      graphName: "Sales Negotiation Worker"
+      nodes: [
+        { nodeId: "sales_start", nodeType: "START", handlerName: "salesStartHandler" }
+        {
+          nodeId: "ask_model",
+          nodeType: "ACTION",
+          handlerName: "askModelHandler",
+          metadata: {
+            system_prompt: "You are a car sales expert. If the user mentions only a brand (e.g., 'Honda'), ask for the specific model (e.g., 'Accord'). If they provide a model, acknowledge it."
+          }
+        }
+        { nodeId: "wait_model", nodeType: "HUMAN", handlerName: "waitModel" }
+        {
+          nodeId: "confirm_deal",
+          nodeType: "ACTION",
+          handlerName: "confirmDealHandler",
+          metadata: {
+            system_prompt: "If the user confirms the purchase, thank them. If they want to change the model, acknowledge that."
+          }
+        }
+        { nodeId: "wait_confirmation", nodeType: "HUMAN", handlerName: "waitConfirm" }
+        {
+          nodeId: "check_done",
+          nodeType: "ACTION",
+          handlerName: "checkDoneHandler",
+          metadata: {
+            system_prompt: "Analyze the last message. If the user agrees/confirmed, output JSON: {\"decision\": \"done\"}. If they want to change/other intent, output JSON: {\"decision\": \"change\"}. Output ONLY JSON."
+          }
+        }
+        {
+          nodeId: "finalize_sale",
+          nodeType: "END",
+          handlerName: "finalizeHandler",
+          metadata: { system_prompt: "Congratulate the user on their new car." }
+        }
+      ],
+      edges: [
+        { source: "sales_start", target: "ask_model" },
+        { source: "ask_model", target: "wait_model" },
+        { source: "wait_model", target: "confirm_deal" },
+        { source: "confirm_deal", target: "wait_confirmation" },
+        { source: "wait_confirmation", target: "check_done" },
+
+        # Loop back if user wants to change model
+        { source: "check_done", target: "ask_model", condition: "decision == 'change'" },
+
+        # Finish if done
+        { source: "check_done", target: "finalize_sale", condition: "decision == 'done'" }
+      ]
+    }
+  ) {
+    success
+    graphId
+  }
+}</code><button class="copy-btn" onclick="copyCode('code1')">Copy</button></pre>
+
+    <h3>Step 2: Build the Main "Manager" Graph</h3>
+    <p>This graph acts as the entry point. It routes to the Sales Subgraph or a Support node.</p>
+    <span class="tag tag-graphql">GraphQL</span> <span class="tag tag-concept">Parent Graph</span>
+    <pre><code id="code2">mutation BuildManager {
+  buildGraph(
+    input: {
+      graphId: "dealership-main-v1"
+      graphName: "Dealership Orchestrator"
+      nodes: [
+        { nodeId: "entry", nodeType: "START", handlerName: "entryHandler" }
+        {
+          nodeId: "intent_router",
+          nodeType: "ACTION",
+          handlerName: "routerHandler",
+          metadata: {
+            system_prompt: "Analyze intent. If user wants to buy/car -> 'sales'. If help/issue -> 'support'. Output JSON: {\"intent\": \"sales\"}."
+          }
+        }
+
+        # THE SUBGRAPH NODE
+        {
+          nodeId: "handle_sales",
+          nodeType: "GRAPH",
+          handlerName: "salesSubgraphHandler",
+          metadata: {
+            subgraph_id: "dealership-sales-v1" # Links to the graph built in Step 1
+          }
+        }
+
+        {
+          nodeId: "handle_support",
+          nodeType: "END",
+          handlerName: "supportHandler",
+          metadata: { system_prompt: "Connecting you to a support agent..." }
+        }
+      ],
+      edges: [
+        { source: "entry", target: "intent_router" },
+
+        # Conditional Routing
+        { source: "intent_router", target: "handle_sales", condition: "intent == 'sales'" },
+        { source: "intent_router", target: "handle_support", condition: "intent == 'support'" }
+      ]
+    }
+  ) {
+    success
+  }
+}</code><button class="copy-btn" onclick="copyCode('code2')">Copy</button></pre>
+</div>
+
+<div class="example-box">
+    <h2>Example 2: Context-Aware Router (Mood Reader)</h2>
+    <p>This example builds a "Smart Assistant" that doesn't just route based on topic, but also analyzes the user's <strong>mood</strong>. This metadata is passed down to the subgraphs so the AI can adjust its tone (e.g., being extra polite if the user is angry).</p>
+
+    <h3>Architecture</h3>
+    <ul>
+        <li><strong>Parent Graph</strong>: Analyzes intent and mood. Routes to Subgraphs.</li>
+        <li><strong>Subgraphs</strong>: Receive the <code>variables</code> object containing the mood and act accordingly.</li>
+    </ul>
+
+    <h3>Step 1: The Parent Graph (Mood Analyzer)</h3>
+    <span class="tag tag-graphql">GraphQL</span> <span class="tag tag-concept">AI Routing</span>
+    <pre><code id="code3">mutation BuildMoodRouter {
+  buildGraph(
+    input: {
+      graphId: "mood-router-main-v1"
+      graphName: "Sentiment Analysis Router"
+      nodes: [
+        { nodeId: "entry", nodeType: "START", handlerName: "entryHandler" }
+        {
+          nodeId: "mood_reader",
+          nodeType: "ACTION",
+          handlerName: "moodReaderHandler",
+          metadata: {
+            system_prompt: "Analyze the user input. Determine: 1. 'intent' ('chat' or 'q&a'). 2. 'mood' ('happy', 'angry', 'neutral'). Output ONLY JSON: {\"intent\": \"chat\", \"mood\": \"happy\"}."
+          }
+        }
+
+        # Reference your existing Chat Graph
+        {
+          nodeId: "chat_subgraph",
+          nodeType: "GRAPH",
+          handlerName: "chatSubHandler",
+          metadata: { subgraph_id: "graph-1779111595004" }
+        }
+
+        # Reference your existing Q&A Graph
+        {
+          nodeId: "qa_subgraph",
+          nodeType: "GRAPH",
+          handlerName: "qaSubHandler",
+          metadata: { subgraph_id: "graph-1779111557381" }
+        }
+
+        { nodeId: "end_chat", nodeType: "END", handlerName: "endChat" }
+        { nodeId: "end_qa", nodeType: "END", handlerName: "endQa" }
+      ],
+      edges: [
+        { source: "entry", target: "mood_reader" },
+
+        # Route based on Intent extracted by Mood Reader
+        { source: "mood_reader", target: "chat_subgraph", condition: "intent == 'chat'" },
+        { source: "mood_reader", target: "qa_subgraph", condition: "intent == 'q&a'" },
+
+        { source: "chat_subgraph", target: "end_chat" },
+        { source: "qa_subgraph", target: "end_qa" }
+      ]
+    }
+  ) {
+    success
+  }
+}</code><button class="copy-btn" onclick="copyCode('code3')">Copy</button></pre>
+
+    <p><strong>Note:</strong> The subgraphs defined in your previous steps will automatically receive the <code>mood</code> variable in their state. You can update their System Prompts to: <em>"The user is currently {mood}. Adjust your tone accordingly."</em></p>
+</div>
+
+<div class="example-box" style="background: #e8f5e9; border-left: 5px solid #4caf50;">
+    <h2>🎨 Prefer Visual Building?</h2>
+    <p>You don't have to write code to build these graphs! LangGraph Studio includes a fully interactive <strong>Visual Builder</strong>.</p>
+
+    <h3>How to use the UI Builder</h3>
+    <ol>
+        <li>Navigate to the <strong>Graph List</strong> on the main dashboard.</li>
+        <li>Click the <strong>"+ New"</strong> button in the sidebar.</li>
+        <li><strong>Drag and Drop</strong> nodes from the left palette onto the canvas:
+            <ul>
+                <li>🚀 <strong>Start</strong>: The entry point of your graph.</li>
+                <li>🤖 <strong>Action</strong>: Standard AI processing nodes.</li>
+                <li>👤 <strong>Human</strong>: Pauses execution for user input (Human-in-the-loop).</li>
+                <li>🧩 <strong>Graph</strong>: Embeds an existing subgraph.</li>
+                <li>🛑 <strong>End</strong>: The termination point.</li>
+            </ul>
+        </li>
+        <li><strong>Connect</strong> nodes by dragging from the bottom handle of one to the top handle of another.</li>
+        <li><strong>Click</strong> any node to edit its ID, System Prompt, or select a Subgraph ID (for Graph nodes).</li>
+        <li>Click <strong>"Save Graph"</strong> when finished.</li>
+    </ol>
+    <p>The Visual Builder is perfect for prototyping flows rapidly before exporting them to code.</p>
+</div>
+
+<script>
+    function copyCode(id) {
+        const text = document.getElementById(id).innerText;
+        navigator.clipboard.writeText(text).then(() => {
+            const btn = document.querySelector(`#${id} + .copy-btn`);
+            const originalText = btn.innerText;
+            btn.innerText = "Copied!";
+            setTimeout(() => btn.innerText = originalText, 2000);
+        });
+    }
+</script>
+
+
 </body>
 </html>

@@ -126,7 +126,7 @@ class NodeHandler:
         if not system_prompt:
             logger.info(f"Node {n_id} is pass-through (no prompt).")
             # RETURN DICTIONARY
-            return {"last_node": n_id, "output": user_input}
+            return {"last_node": n_id}
 
         # Cooking prompt
         data_block = format_state_context(state)
