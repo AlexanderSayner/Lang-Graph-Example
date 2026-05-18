@@ -182,10 +182,13 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                         # Check variables first, then top level
                         current_val = vars_dict.get(parsed_key) or state.get(parsed_key)
 
-                        logger.debug(
-                            f"Router Check: Key='{parsed_key}', Expected='{expected_val}', Actual='{current_val}'")
+                        match = str(current_val).strip() == str(expected_val).strip()
 
-                        if current_val is not None and str(current_val) == str(expected_val):
+                        logger.debug(
+                            f"Router Check: Key='{parsed_key}', Expected='{expected_val}', Actual='{current_val}', Match='{match}'")
+
+                        # if current_val is not None and str(current_val) == str(expected_val):
+                        if match:
                             return target
 
                     # If no condition matches, go to END (or a default fallback)
