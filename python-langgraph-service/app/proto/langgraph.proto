@@ -21,6 +21,9 @@ service LangGraphService {
 
     // Delete a graph
     rpc DeleteGraph (DeleteGraphRequest) returns (DeleteGraphResponse);
+
+    // Get a graph history
+    rpc GetExecutionHistory (GraphHistoryRequest) returns (GraphHistoryResponse);
 }
 
 // Message for building a graph
@@ -121,4 +124,20 @@ message DeleteGraphRequest {
 message DeleteGraphResponse {
     bool success = 1;
     string message = 2;
+}
+
+// Message for a graph history
+message GraphHistoryRequest {
+    string graph_id = 1;
+    string thread_id = 2;
+}
+
+message StateSnapshot {
+    string node_id = 1;       // The node that was just executed or is about to run
+    string state_json = 2;    // The full state variables as a JSON string
+    string timestamp = 3;     // When this step occurred
+}
+
+message GraphHistoryResponse {
+    repeated StateSnapshot history = 1;
 }

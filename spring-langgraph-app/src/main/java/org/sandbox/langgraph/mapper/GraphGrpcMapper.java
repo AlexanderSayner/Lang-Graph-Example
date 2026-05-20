@@ -106,6 +106,18 @@ public interface GraphGrpcMapper {
         return DeleteGraphRequest.newBuilder().setGraphId(graphId).build();
     }
 
+    default GraphHistoryRequest toGraphHistoryRequest(String graphId, String threadId) {
+        GraphHistoryRequest.Builder builder = GraphHistoryRequest.newBuilder()
+                .setGraphId(graphId);
+
+        if (threadId != null && !threadId.isBlank()) {
+            builder.setThreadId(threadId);
+        } else {
+            builder.setThreadId("");
+        }
+
+        return builder.build();
+    }
     // ============== gRPC Response -> GraphQL Payload ==============
 
     default GraphListPayload toGraphListPayload(org.sandbox.langgraph.grpc.ListGraphsResponse response) {
@@ -113,8 +125,9 @@ public interface GraphGrpcMapper {
                 .map(this::toGraphSummary)
                 .toList();
 
+        response.getNextPageToken();
         PageInfo pageInfo = new PageInfo(
-                response.getNextPageToken() != null && !response.getNextPageToken().isEmpty(),
+                !response.getNextPageToken().isEmpty(),
                 response.getNextPageToken()
         );
 

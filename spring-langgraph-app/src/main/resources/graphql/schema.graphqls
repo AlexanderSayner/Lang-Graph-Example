@@ -4,6 +4,7 @@ type Query {
     listGraphs(pageSize: Int! = 10, pageToken: String): GraphListPayload!
     getGraphState(graphId: String!, threadId: String): GraphStatePayload!
     getGraphView(graphId: String!): GraphViewPayload!
+    getExecutionHistory(graphId: String!, threadId: String!): GraphHistoryPayload!
 }
 
 type Mutation {
@@ -106,6 +107,18 @@ type GraphExecutionEventPayload {
     state: JSON
     timestamp: Long!
     errorMessage: String
+}
+
+type GraphHistoryPayload {
+    success: Boolean!
+    history: [StateSnapshot!]!
+    errorMessage: String
+}
+
+type StateSnapshot {
+    nodeId: String!
+    stateJson: JSON!
+    timestamp: String!
 }
 
 # ============== Graph View Types (for visualization) ==============
