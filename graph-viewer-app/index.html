@@ -330,6 +330,25 @@
             cursor: pointer;
             font-size: 12px;
         }
+
+        /* Copy Button Animation */
+        .copy-btn-icon {
+            margin-left: 5px;
+            cursor: pointer;
+            opacity: 0.7;
+            font-size: 12px;
+        }
+        .copy-btn-icon:hover { opacity: 1; }
+
+        .icon-btn {
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            padding: 0 5px;
+            opacity: 0.6;
+        }
+        .icon-btn:hover { opacity: 1; }
     </style>
 </head>
 <body>
@@ -364,7 +383,6 @@
     const LIST_QUERY = `query { listGraphs(pageSize: 100) { graphs { graphId graphName nodeCount } } }`;
     const VIEW_QUERY = `query Get($graphId: String!) { getGraphView(graphId: $graphId) { nodes { nodeId nodeType metadata position { x y } } edges { source target condition } } }`;
 
-    // NEW: History Query
     const HISTORY_QUERY = `query History($graphId: String!, $threadId: String!) {
         getExecutionHistory(graphId: $graphId, threadId: $threadId) {
             success
@@ -418,9 +436,12 @@
         const [loading, setLoading] = useState(false);
         const chatEndRef = useRef(null);
 
-        // NEW: History State
-        const [activeTab, setActiveTab] = useState('chat'); // 'chat' or 'history'
+        const [activeTab, setActiveTab] = useState('chat');
         const [historyItems, setHistoryItems] = useState([]);
+
+        // Copy States
+        const [copiedThread, setCopiedThread] = useState(false);
+        const [copiedGraph, setCopiedGraph] = useState(false);
 
         // Load Graph List
         useEffect(() => {
@@ -432,7 +453,7 @@
             chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
         }, [messages]);
 
-        // NEW: Load History when tab switches or thread changes
+        // Load History
         useEffect(() => {
             if (activeTab === 'history' && selected && threadId) {
                 loadHistory();
@@ -459,13 +480,11 @@
             fetchGraphQL(VIEW_QUERY, { graphId: id }).then(d => {
                 const view = d.getGraphView;
 
-                // Map Backend Nodes to React Flow Nodes
                 const rN = view.nodes.map(n => {
                     const hasPos = n.position && (n.position.x || n.position.y);
                     const prompt = n.metadata?.system_prompt || "";
                     const subgraphId = n.metadata?.subgraph_id;
 
-                    // Find name from sidebar list if available
                     const subgraphName = graphs.find(g => g.graphId === subgraphId)?.graphName || "Unknown Graph";
 
                     return {
@@ -578,7 +597,21 @@
         const resetThread = () => {
             setThreadId(Date.now().toString());
             setMessages([]);
-            setHistoryItems([]); // Clear history on new thread
+            setHistoryItems([]);
+        };
+
+        const copyThreadId = () => {
+            navigator.clipboard.writeText(threadId).then(() => {
+                setCopiedThread(true);
+                setTimeout(() => setCopiedThread(false), 2000);
+            });
+        };
+
+        const copyGraphId = (id) => {
+            navigator.clipboard.writeText(id).then(() => {
+                setCopiedGraph(id);
+                setTimeout(() => setCopiedGraph(null), 2000);
+            });
         };
 
         return (
@@ -616,7 +649,16 @@
                                     <div className="meta">{g.nodeCount} Nodes</div>
                                 </div>
 
-                                <div style={{ display: 'flex', gap: '5px' }}>
+                                <div style={{ display: 'flex', gap: '5px', alignItems: 'center' }}>
+                                    {/* Copy ID Button in Sidebar */}
+                                    <button
+                                        className="icon-btn"
+                                        title="Copy ID"
+                                        onClick={(e) => { e.stopPropagation(); copyGraphId(g.graphId); }}
+                                    >
+                                        {copiedGraph === g.graphId ? '✅' : '📋'}
+                                    </button>
+
                                     <button
                                         style={{
                                             background: 'transparent',
@@ -681,8 +723,26 @@
                                 History
                             </div>
                             <div style={{flexGrow: 1}}></div>
-                            <div style={{padding: '10px 15px', fontSize: '11px', color: '#999'}}>
-                                Thread: ...{threadId.slice(-6)}
+                            <div style={{padding: '10px 15px', fontSize: '11px', color: '#999', display: 'flex', alignItems: 'center'}}>
+                                {selected && (
+                                    <>
+                                        <span title={selected}>Graph: ...{selected.slice(-6)}</span>
+                                        <span
+                                            className="copy-btn-icon"
+                                            onClick={() => copyGraphId(selected)}
+                                        >
+                                            {copiedGraph === selected ? '✅' : '📋'}
+                                        </span>
+                                        <span style={{margin: '0 8px', color: '#ddd'}}>|</span>
+                                    </>
+                                )}
+                                <span title={threadId}>Thread: ...{threadId.slice(-6)}</span>
+                                <span
+                                    className="copy-btn-icon"
+                                    onClick={copyThreadId}
+                                >
+                                    {copiedThread ? '✅' : '📋'}
+                                </span>
                                 <button
                                     onClick={resetThread}
                                     style={{border:'none', background:'none', cursor:'pointer', color:'#2196f3', marginLeft: '10px', fontSize: '11px'}}
