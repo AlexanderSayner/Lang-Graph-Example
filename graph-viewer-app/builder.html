@@ -101,11 +101,13 @@
         if (data.type === 'HUMAN') bgClass = 'node-human';
         if (data.type === 'GRAPH') bgClass = 'node-graph';
 
+        const displayText = data.friendlyName || data.label;
+
         return (
             <div className={`react-flow__node ${bgClass}`} style={{ borderWidth: selected ? 3 : 2 }}>
                 {data.type !== 'START' && <Handle type="target" position={Position.Top} style={{ background: '#555' }} />}
                 <div className="node-label">
-                    {data.label}
+                    {displayText}
                     <span className="node-type">{data.type}</span>
                 </div>
                 {data.type !== 'END' && <Handle type="source" position={Position.Bottom} style={{ background: '#555' }} />}
@@ -156,6 +158,7 @@
                             label: n.nodeId,
                             type: n.nodeType,
                             prompt: n.metadata?.system_prompt || "",
+                            friendlyName: n.metadata?.label || "",
                             subgraphId: n.metadata?.subgraph_id || null // Load subgraph ID
                         }
                     })));
@@ -200,7 +203,7 @@
             const id = `node_${Date.now()}`;
             setNodes(nds => nds.concat({
                 id, type: 'designNode', position,
-                data: { label: id, type: type, prompt: "", subgraphId: null }
+                data: { label: id, type: type, prompt: "", subgraphId: null, friendlyName: null }
             }));
         }, [hasStartNode]);
 
@@ -230,7 +233,10 @@
                 if (!nodes.find(n => n.data.type === 'END')) throw new Error("Graph needs an END node");
 
                 const payloadNodes = nodes.map(n => {
-                    const meta = { system_prompt: n.data.prompt || "" };
+                    const meta = {
+                        system_prompt: n.data.prompt || "",
+                        label: n.data.friendlyName || ""
+                    };
                     // Add subgraph_id if it's a GRAPH node
                     if (n.data.type === 'GRAPH' && n.data.subgraphId) {
                         meta.subgraph_id = n.data.subgraphId;
@@ -350,6 +356,15 @@
                                     <div className="form-group">
                                         <label className="form-label">Node ID</label>
                                         <input className="form-input" value={selectedElement.id} onChange={(e) => updateNode('id', e.target.value)} />
+                                    </div>
+                                    <div className="form-group">
+                                        <label className="form-label">Node Name</label>
+                                        <input
+                                            className="form-input"
+                                            value={selectedElement.data.friendlyName || ""}
+                                            onChange={(e) => updateNode('friendlyName', e.target.value)}
+                                            placeholder="e.g. 'Greeting Agent'"
+                                        />
                                     </div>
                                     <div className="form-group">
                                         <label className="form-label">Type</label>
