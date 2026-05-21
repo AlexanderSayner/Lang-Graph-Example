@@ -527,3 +527,69 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             success=success,
             message=f"Graph {request.graph_id} deleted" if success else "Not found"
         )
+
+    @handle_grpc_errors
+    async def GetExecutionHistory(self, request, context):
+        graph_id = request.graph_id
+        thread_id = request.thread_id or "default"
+
+        # 1. Retrieve the compiled graph
+        compiled_graph = self._compiled_graphs.get(graph_id)
+
+        # 2. If not in memory, load from store and compile (Same logic as ExecuteGraph)
+        if compiled_graph is None:
+            logger.info(f"Graph {graph_id} not in memory. Loading for history...")
+            stored_data = await self.store.get_graph(graph_id)
+
+            if not stored_data:
+                raise ValueError(f"Graph {graph_id} not found")
+
+            try:
+                # Handle dict vs pydantic model
+                if hasattr(stored_data, 'model_dump'):
+                    graph_dict = stored_data.model_dump()
+                elif hasattr(stored_data, 'dict'):
+                    graph_dict = stored_data.dict()
+                else:
+                    graph_dict = stored_data
+
+                validated_graph_data = GraphDefinition(**graph_dict)
+                compiled_graph = self._build_langgraph(validated_graph_data)
+
+                # Cache it for future use
+                self._compiled_graphs[graph_id] = compiled_graph
+            except Exception as e:
+                logger.error(f"Failed to rebuild graph {graph_id}: {e}", exc_info=True)
+                raise ValueError(f"Failed to rebuild graph: {e}")
+
+        config = {"configurable": {"thread_id": thread_id}}
+        history_list = []
+
+        try:
+            # 3. Iterate through history (This works now because compiled_graph is a Pregel object)
+            async for snapshot in compiled_graph.aget_state_history(config):
+
+                # Extract state variables safely
+                state_values = snapshot.values or {}
+
+                # Determine node_id
+                # We look for 'last_node' which your nodes are setting, or fallback to 'next'
+                node_id = state_values.get("last_node")
+                if not node_id and snapshot.next:
+                    node_id = f"Pending: {snapshot.next}"
+                elif not node_id:
+                    node_id = "start"
+
+                # Create the Proto message
+                history_list.append(langgraph_pb2.StateSnapshot(
+                    node_id=str(node_id),
+                    state_json=json.dumps(state_values, default=str),
+                    timestamp=str(snapshot.created_at)
+                ))
+
+            return langgraph_pb2.GraphHistoryResponse(history=history_list)
+
+        except Exception as e:
+            logger.error(f"History fetch error: {e}", exc_info=True)
+            # Raising the exception lets the @handle_grpc_errors decorator handle the gRPC response
+            raise e

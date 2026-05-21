@@ -9,6 +9,7 @@ import org.sandbox.langgraph.dto.graphql.input.NodePositionInput;
 import org.sandbox.langgraph.dto.graphql.input.UpdateGraphStateInput;
 import org.sandbox.langgraph.dto.graphql.payload.*;
 import org.sandbox.langgraph.dto.graphql.payload.redis.GraphViewPayload;
+import org.sandbox.langgraph.grpc.GraphHistoryResponse;
 import org.sandbox.langgraph.mapper.RedisGraphStorageMapper;
 import org.sandbox.langgraph.service.LangGraphGrpcService;
 import org.sandbox.langgraph.service.RedisGraphViewService;
@@ -72,6 +73,12 @@ public class LangGraphController {
                     log.error("Error loading graph view for {}: {}", graphId, e.getMessage());
                     return Mono.just(GraphViewPayload.error("Failed to load graph: " + e.getMessage()));
                 });
+    }
+
+    @QueryMapping
+    public Mono<@NonNull GraphHistoryPayload> getExecutionHistory(@Argument String graphId, @Argument String threadId) {
+        log.info("Getting execution history for: '{}'-'{}'", graphId, threadId);
+        return langGraphService.getExecutionHistory(graphId, threadId);
     }
 
     @MutationMapping
