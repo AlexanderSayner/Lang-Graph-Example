@@ -36,14 +36,7 @@
         .sidebar-header h3 { margin: 0; color: #333; font-size: 16px; white-space: nowrap; overflow: hidden; }
         .sidebar.collapsed .sidebar-header h3 { display: none; }
 
-        .toggle-btn {
-            background: none;
-            border: none;
-            cursor: pointer;
-            font-size: 20px;
-            color: #666;
-            padding: 5px;
-        }
+        .toggle-btn { background: none; border: none; cursor: pointer; font-size: 20px; color: #666; padding: 5px; }
 
         .graph-list { flex-grow: 1; overflow-y: auto; overflow-x: hidden; }
 
@@ -70,285 +63,114 @@
         .graph-item .name { font-weight: 600; color: #333; font-size: 13px; }
         .graph-item .meta { font-size: 10px; color: #888; margin-top: 2px; }
 
-        .graph-icon-mini {
-            display: none;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #2196f3;
-        }
+        .graph-icon-mini { display: none; width: 8px; height: 8px; border-radius: 50%; background: #2196f3; }
         .sidebar.collapsed .graph-icon-mini { display: block; }
 
-        .delete-btn {
-            background: transparent;
-            border: 1px solid #e0e0e0;
-            color: #999;
-            padding: 4px 8px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 10px;
-        }
+        .delete-btn { background: transparent; border: 1px solid #e0e0e0; color: #999; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 10px; }
         .sidebar.collapsed .delete-btn { display: none; }
         .delete-btn:hover { background: #ffebee; color: #c62828; }
 
         /* --- Main Content Area --- */
-        .main-area {
-            flex-grow: 1;
-            display: flex;
-            flex-direction: column;
-            height: 100%;
-            position: relative;
-        }
+        .main-area { flex-grow: 1; display: flex; flex-direction: column; height: 100%; position: relative; }
 
         /* --- Graph Canvas --- */
-        .canvas-container {
-            flex-grow: 1;
-            position: 'relative';
-            background: #fff;
-            border-bottom: 1px solid #ddd;
-        }
+        .canvas-container { flex-grow: 1; position: 'relative'; background: #fff; border-bottom: 1px solid #ddd; }
 
         /* --- Nodes --- */
-        .react-flow__node {
-            font-size: 12px;
-            border-radius: 8px;
-            padding: 0;
-            width: 220px;
-            text-align: left;
-            border: 1px solid rgba(0,0,0,0.1);
-            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
-            background: #fff; /* Default */
-        }
-
-        /* COLOR FIXES */
+        .react-flow__node { font-size: 12px; border-radius: 8px; padding: 0; width: 220px; text-align: left; border: 1px solid rgba(0,0,0,0.1); box-shadow: 0 2px 6px rgba(0,0,0,0.1); background: #fff; }
         .react-flow__node.node-start { background: #e8f5e9; border-color: #c8e6c9; }
         .react-flow__node.node-end { background: #ffebee; border-color: #ffcdd2; }
         .react-flow__node.node-action { background: #e3f2fd; border-color: #bbdefb; }
         .react-flow__node.node-human { background: #fff3e0; border-color: #ffe0b2; }
         .react-flow__node.node-graph { background: #f3e5f5; border-color: #e1bee7; border-style: dashed; }
 
-        .node-header {
-            padding: 8px 12px;
-            border-bottom: 1px solid rgba(0,0,0,0.05);
-            font-weight: bold;
-            font-size: 12px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
+        .node-header { padding: 8px 12px; border-bottom: 1px solid rgba(0,0,0,0.05); font-weight: bold; font-size: 12px; display: flex; justify-content: space-between; align-items: center; }
         .node-start .node-header { color: #2e7d32; }
         .node-end .node-header { color: #c62828; }
         .node-action .node-header { color: #1565c0; }
         .node-human .node-header { color: #ef6c00; }
         .node-graph .node-header { color: #7b1fa2; }
+        .node-type-badge { font-size: 9px; background: rgba(255,255,255,0.6); padding: 2px 6px; border-radius: 4px; text-transform: uppercase; font-weight: normal; }
 
-        .node-type-badge {
-            font-size: 9px;
-            background: rgba(255,255,255,0.6);
-            padding: 2px 6px;
-            border-radius: 4px;
-            text-transform: uppercase;
-            font-weight: normal;
-        }
-
-        .node-body {
-            padding: 8px 12px;
-            max-height: 80px;
-            overflow-y: auto;
-            background: rgba(255,255,255,0.3);
-        }
+        .node-body { padding: 8px 12px; max-height: 80px; overflow-y: auto; background: rgba(255,255,255,0.3); }
         .node-body:empty { display: none; }
+        .node-prompt { font-size: 10px; color: #444; line-height: 1.4; }
 
-        .node-prompt {
-            font-size: 10px;
-            color: #444;
-            line-height: 1.4;
-        }
-
-        .subgraph-link {
-            display: block;
-            margin-top: 8px;
-            font-size: 10px;
-            color: #7b1fa2;
-            background: rgba(255,255,255,0.5);
-            padding: 4px 8px;
-            border-radius: 4px;
-            text-decoration: none;
-            text-align: center;
-            border: 1px solid #ce93d8;
-            cursor: pointer;
-        }
-        .subgraph-link:hover {
-            background: #e1bee7;
-            color: #4a148c;
-        }
+        .subgraph-link { display: block; margin-top: 8px; font-size: 10px; color: #7b1fa2; background: rgba(255,255,255,0.5); padding: 4px 8px; border-radius: 4px; text-decoration: none; text-align: center; border: 1px solid #ce93d8; cursor: pointer; }
+        .subgraph-link:hover { background: #e1bee7; color: #4a148c; }
 
         /* --- Chat Panel --- */
         .chat-panel {
-            height: 300px;
+            min-height: 150px;
             background: #fafafa;
             display: flex;
             flex-direction: column;
             border-top: 1px solid #ddd;
         }
 
-        /* Tabs */
-        .chat-tabs {
+        /* Custom Resizer */
+        .resizer {
+            height: 6px;
+            background: #eee;
+            cursor: ns-resize;
+            border-bottom: 1px solid #ddd;
             display: flex;
-            background: #fff;
-            border-bottom: 1px solid #eee;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
         }
-        .chat-tab {
-            padding: 10px 20px;
-            cursor: pointer;
-            font-size: 12px;
-            font-weight: 600;
-            color: #666;
-            border-bottom: 2px solid transparent;
+        .resizer::after {
+            content: '';
+            width: 30px;
+            height: 3px;
+            background: #ccc;
+            border-radius: 2px;
         }
-        .chat-tab.active {
-            color: #2196f3;
-            border-bottom-color: #2196f3;
-        }
+        .resizer:hover { background: #e0e0e0; }
+
+        /* Tabs */
+        .chat-tabs { display: flex; background: #fff; border-bottom: 1px solid #eee; flex-shrink: 0; }
+        .chat-tab { padding: 10px 20px; cursor: pointer; font-size: 12px; font-weight: 600; color: #666; border-bottom: 2px solid transparent; }
+        .chat-tab.active { color: #2196f3; border-bottom-color: #2196f3; }
         .chat-tab:hover { background: #f5f5f5; }
 
-        .chat-header {
-            padding: 8px 15px;
-            border-bottom: 1px solid #eee;
-            font-size: 12px;
-            font-weight: bold;
-            color: #666;
-            display: flex;
-            justify-content: space-between;
-            background: #fff;
-        }
+        .chat-messages { flex-grow: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; gap: 10px; }
 
-        .chat-messages {
-            flex-grow: 1;
-            overflow-y: auto;
-            padding: 15px;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-
-        .msg {
-            max-width: 80%;
-            padding: 8px 12px;
-            border-radius: 8px;
-            font-size: 13px;
-            line-height: 1.4;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-        }
-        .msg-user {
-            align-self: flex-end;
-            background: #2196f3;
-            color: white;
-        }
-        .msg-bot {
-            align-self: flex-start;
-            background: white;
-            border: 1px solid #e0e0e0;
-            color: #333;
-        }
-        .msg-error {
-            background: #ffebee;
-            color: #c62828;
-            border: 1px solid #ffcdd2;
-            font-size: 11px;
-        }
+        .msg { max-width: 80%; padding: 8px 12px; border-radius: 8px; font-size: 13px; line-height: 1.4; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+        .msg-user { align-self: flex-end; background: #2196f3; color: white; }
+        .msg-bot { align-self: flex-start; background: white; border: 1px solid #e0e0e0; color: #333; }
+        .msg-error { background: #ffebee; color: #c62828; border: 1px solid #ffcdd2; font-size: 11px; }
 
         /* History List */
-        .history-list {
-            flex-grow: 1;
-            overflow-y: auto;
-            padding: 10px;
-        }
-        .history-item {
-            background: white;
-            border: 1px solid #e0e0e0;
-            padding: 10px;
-            margin-bottom: 8px;
-            border-radius: 6px;
-            cursor: pointer;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .history-item:hover { background: #f5f5f5; }
+        .history-list { flex-grow: 1; overflow-y: auto; padding: 10px; }
+        .history-item { background: white; border: 1px solid #e0e0e0; padding: 10px; margin-bottom: 8px; border-radius: 6px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+        .history-item:hover { background: #f5f5f5; border-color: #bdbdbd; }
         .history-node-name { font-weight: bold; font-size: 13px; color: #333; }
         .history-timestamp { font-size: 10px; color: #999; }
-        .history-state-preview {
-            font-size: 11px;
-            color: #666;
-            margin-top: 5px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            max-width: 250px;
-        }
 
-        .chat-input-area {
-            padding: 10px;
-            background: #fff;
-            display: flex;
-            gap: 10px;
-            border-top: 1px solid #eee;
-        }
+        .chat-input-area { padding: 10px; background: #fff; display: flex; gap: 10px; border-top: 1px solid #eee; flex-shrink: 0; }
 
-        .chat-input {
-            flex-grow: 1;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            padding: 8px 12px;
-            font-size: 13px;
-            outline: none;
-        }
+        .chat-input { flex-grow: 1; border: 1px solid #ddd; border-radius: 4px; padding: 8px 12px; font-size: 13px; outline: none; }
         .chat-input:focus { border-color: #2196f3; }
 
-        .send-btn {
-            background: #2196f3;
-            color: white;
-            border: none;
-            padding: 0 20px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-weight: bold;
-        }
+        .send-btn { background: #2196f3; color: white; border: none; padding: 0 20px; border-radius: 4px; cursor: pointer; font-weight: bold; }
         .send-btn:disabled { background: #ccc; }
 
-        .save-layout-btn {
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            z-index: 5;
-            background: white;
-            border: 1px solid #ccc;
-            padding: 5px 10px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 12px;
-        }
+        .save-layout-btn { position: absolute; top: 10px; right: 10px; z-index: 5; background: white; border: 1px solid #ccc; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
 
-        /* Copy Button Animation */
-        .copy-btn-icon {
-            margin-left: 5px;
-            cursor: pointer;
-            opacity: 0.7;
-            font-size: 12px;
-        }
+        .copy-btn-icon { margin-left: 5px; cursor: pointer; opacity: 0.7; font-size: 12px; }
         .copy-btn-icon:hover { opacity: 1; }
-
-        .icon-btn {
-            background: transparent;
-            border: none;
-            cursor: pointer;
-            font-size: 14px;
-            padding: 0 5px;
-            opacity: 0.6;
-        }
+        .icon-btn { background: transparent; border: none; cursor: pointer; font-size: 14px; padding: 0 5px; opacity: 0.6; }
         .icon-btn:hover { opacity: 1; }
+
+        /* --- Modal Styles --- */
+        .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center; }
+        .modal-content { background: white; padding: 20px; border-radius: 8px; width: 80%; height: 80%; display: flex; flex-direction: column; box-shadow: 0 4px 20px rgba(0,0,0,0.15); }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+        .modal-title { font-size: 16px; font-weight: bold; }
+        .modal-close { background: none; border: none; font-size: 20px; cursor: pointer; color: #666; }
+        .modal-body { flex-grow: 1; overflow: auto; background: #f8f9fa; border-radius: 4px; padding: 10px; }
+        .json-viewer { white-space: pre-wrap; font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; color: #333; }
     </style>
 </head>
 <body>
@@ -361,7 +183,7 @@
 <script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
 
 <script type="text/babel">
-    const { useState, useEffect, useRef } = React;
+    const { useState, useEffect, useRef, useCallback } = React;
     const { ReactFlow, Background, Controls, MarkerType, useNodesState, useEdgesState } = window.ReactFlow;
 
     // --- Config ---
@@ -439,9 +261,51 @@
         const [activeTab, setActiveTab] = useState('chat');
         const [historyItems, setHistoryItems] = useState([]);
 
+        // Map for NodeID -> Friendly Name
+        const [nodeLabels, setNodeLabels] = useState({});
+
         // Copy States
         const [copiedThread, setCopiedThread] = useState(false);
         const [copiedGraph, setCopiedGraph] = useState(false);
+
+        // Modal State
+        const [modalData, setModalData] = useState(null);
+
+        // --- Custom Resizer State ---
+        const [panelHeight, setPanelHeight] = useState(300);
+        const panelRef = useRef(null);
+        const isResizing = useRef(false);
+
+        // Resizer Handlers
+        const startResizing = useCallback((e) => {
+            e.preventDefault();
+            isResizing.current = true;
+            document.addEventListener('mousemove', stopResizing);
+            document.addEventListener('mouseup', stopResizing);
+        }, []);
+
+        const stopResizing = useCallback((e) => {
+            if (!isResizing.current) return;
+
+            // Calculate new height based on mouse position relative to window bottom
+            const newHeight = window.innerHeight - e.clientY;
+
+            // Clamp height between min and max
+            if (newHeight >= 150 && newHeight <= 800) {
+                setPanelHeight(newHeight);
+            } else if (newHeight < 150) {
+                setPanelHeight(150);
+            } else {
+                setPanelHeight(800);
+            }
+
+            // Cleanup
+            if (e.type === 'mouseup') {
+                isResizing.current = false;
+                document.removeEventListener('mousemove', stopResizing);
+                document.removeEventListener('mouseup', stopResizing);
+            }
+        }, []);
 
         // Load Graph List
         useEffect(() => {
@@ -480,10 +344,20 @@
             fetchGraphQL(VIEW_QUERY, { graphId: id }).then(d => {
                 const view = d.getGraphView;
 
+                // Create Label Map
+                const labels = {};
+                view.nodes.forEach(n => {
+                    if(n.metadata && n.metadata.label) {
+                        labels[n.nodeId] = n.metadata.label;
+                    }
+                });
+                setNodeLabels(labels);
+
                 const rN = view.nodes.map(n => {
                     const hasPos = n.position && (n.position.x || n.position.y);
                     const prompt = n.metadata?.system_prompt || "";
                     const subgraphId = n.metadata?.subgraph_id;
+                    const label = n.metadata?.label; // Get label
 
                     const subgraphName = graphs.find(g => g.graphId === subgraphId)?.graphName || "Unknown Graph";
 
@@ -494,7 +368,8 @@
                             label: (
                                 <div>
                                     <div className="node-header">
-                                        <span>{n.nodeId}</span>
+                                        {/* Use Label if exists, else ID */}
+                                        <span>{label || n.nodeId}</span>
                                         <span className="node-type-badge">{n.nodeType}</span>
                                     </div>
 
@@ -614,8 +489,51 @@
             });
         };
 
+
+        // --- Time & Format Helpers ---
+        const formatTimestamp = (ts) => {
+            try {
+                return new Date(ts).toLocaleString();
+            } catch {
+                return ts;
+            }
+        };
+
+        // Use Labels in History
+        const getNodeDisplayName = (id) => {
+            if (!id) return "Start";
+            if (id.startsWith("Pending:")) {
+                const match = id.match(/'([^']+)'/);
+                const nodeId = match ? match[1] : id;
+                return `Next: ${nodeLabels[nodeId] || nodeId}`;
+            }
+            return nodeLabels[id] || id;
+        };
+
         return (
             <React.Fragment>
+                {/* Modal */}
+                {modalData && (
+                    <div className="modal-overlay" onClick={() => setModalData(null)}>
+                        <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+                            <div className="modal-header">
+                                <div className="modal-title">
+                                    State Snapshot: <strong>{getNodeDisplayName(modalData.nodeId)}</strong>
+                                    <span style={{fontWeight: 'normal', marginLeft: '10px', fontSize: '12px', color: '#666'}}>
+                                        {formatTimestamp(modalData.timestamp)}
+                                    </span>
+                                </div>
+                                <button className="modal-close" onClick={() => setModalData(null)}>&times;</button>
+                            </div>
+                            <div className="modal-body">
+                                <pre className="json-viewer">
+                                    {JSON.stringify(modalData.json, null, 2)}
+                                </pre>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
                 {/* Sidebar */}
                 <div className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
                     <div className="sidebar-header">
@@ -643,45 +561,20 @@
                                 onClick={() => loadGraph(g.graphId)}
                             >
                                 <div className="graph-icon-mini"></div>
-
                                 <div className="graph-info">
                                     <div className="name">{g.graphName}</div>
                                     <div className="meta">{g.nodeCount} Nodes</div>
                                 </div>
 
                                 <div style={{ display: 'flex', gap: '5px', alignItems: 'center' }}>
-                                    {/* Copy ID Button in Sidebar */}
-                                    <button
-                                        className="icon-btn"
-                                        title="Copy ID"
-                                        onClick={(e) => { e.stopPropagation(); copyGraphId(g.graphId); }}
-                                    >
+                                    <button className="icon-btn" title="Copy ID" onClick={(e) => { e.stopPropagation(); copyGraphId(g.graphId); }}>
                                         {copiedGraph === g.graphId ? '✅' : '📋'}
                                     </button>
-
-                                    <button
-                                        style={{
-                                            background: 'transparent',
-                                            border: '1px solid #2196f3',
-                                            color: '#2196f3',
-                                            padding: '4px 8px',
-                                            borderRadius: '4px',
-                                            cursor: 'pointer',
-                                            fontSize: '10px',
-                                            fontWeight: 'bold'
-                                        }}
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            window.location.href = `builder.html?graphId=${g.graphId}&graphName=${g.graphName}`;
-                                        }}>
+                                    <button style={{ background: 'transparent', border: '1px solid #2196f3', color: '#2196f3', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '10px', fontWeight: 'bold' }}
+                                            onClick={(e) => { e.stopPropagation(); window.location.href = `builder.html?graphId=${g.graphId}&graphName=${g.graphName}`; }}>
                                         Edit
                                     </button>
-
-                                    <button
-                                        className="delete-btn"
-                                        onClick={(e) => handleDelete(e, g.graphId)}>
-                                        ✕
-                                    </button>
+                                    <button className="delete-btn" onClick={(e) => handleDelete(e, g.graphId)}>✕</button>
                                 </div>
                             </div>
                         ))}
@@ -690,65 +583,40 @@
 
                 {/* Main Content */}
                 <div className="main-area">
-
-                    {/* Graph Area */}
                     <div className="canvas-container">
                         <button className="save-layout-btn" onClick={handleSaveLayout}>Save Layout</button>
-                        <ReactFlow
-                            nodes={nodes}
-                            edges={edges}
-                            onNodesChange={onNodesChange}
-                            fitView
-                        >
+                        <ReactFlow nodes={nodes} edges={edges} onNodesChange={onNodesChange} fitView>
                             <Background />
                             <Controls />
                         </ReactFlow>
                     </div>
 
-                    {/* Chat Area */}
-                    <div className="chat-panel">
+                    {/* Chat Area with Custom Resizer */}
+                    <div className="chat-panel" style={{ height: `${panelHeight}px` }} ref={panelRef}>
+
+                        {/* The Resizer Handle */}
+                        <div className="resizer" onMouseDown={startResizing}></div>
 
                         {/* Tabs Header */}
                         <div className="chat-tabs">
-                            <div
-                                className={`chat-tab ${activeTab === 'chat' ? 'active' : ''}`}
-                                onClick={() => setActiveTab('chat')}
-                            >
-                                Chat
-                            </div>
-                            <div
-                                className={`chat-tab ${activeTab === 'history' ? 'active' : ''}`}
-                                onClick={() => setActiveTab('history')}
-                            >
-                                History
-                            </div>
+                            <div className={`chat-tab ${activeTab === 'chat' ? 'active' : ''}`} onClick={() => setActiveTab('chat')}>Chat</div>
+                            <div className={`chat-tab ${activeTab === 'history' ? 'active' : ''}`} onClick={() => setActiveTab('history')}>History</div>
                             <div style={{flexGrow: 1}}></div>
                             <div style={{padding: '10px 15px', fontSize: '11px', color: '#999', display: 'flex', alignItems: 'center'}}>
                                 {selected && (
                                     <>
                                         <span title={selected}>Graph: ...{selected.slice(-6)}</span>
-                                        <span
-                                            className="copy-btn-icon"
-                                            onClick={() => copyGraphId(selected)}
-                                        >
+                                        <span className="copy-btn-icon" onClick={() => copyGraphId(selected)}>
                                             {copiedGraph === selected ? '✅' : '📋'}
                                         </span>
                                         <span style={{margin: '0 8px', color: '#ddd'}}>|</span>
                                     </>
                                 )}
                                 <span title={threadId}>Thread: ...{threadId.slice(-6)}</span>
-                                <span
-                                    className="copy-btn-icon"
-                                    onClick={copyThreadId}
-                                >
+                                <span className="copy-btn-icon" onClick={copyThreadId}>
                                     {copiedThread ? '✅' : '📋'}
                                 </span>
-                                <button
-                                    onClick={resetThread}
-                                    style={{border:'none', background:'none', cursor:'pointer', color:'#2196f3', marginLeft: '10px', fontSize: '11px'}}
-                                >
-                                    New
-                                </button>
+                                <button onClick={resetThread} style={{border:'none', background:'none', cursor:'pointer', color:'#2196f3', marginLeft: '10px', fontSize: '11px'}}>New</button>
                             </div>
                         </div>
 
@@ -757,22 +625,13 @@
                             <>
                                 <div className="chat-messages">
                                     {messages.map((m, i) => (
-                                        <div key={i} className={`msg msg-${m.type}`}>
-                                            {m.text}
-                                        </div>
+                                        <div key={i} className={`msg msg-${m.type}`}>{m.text}</div>
                                     ))}
                                     {loading && <div className="msg msg-bot">Thinking...</div>}
                                     <div ref={chatEndRef} />
                                 </div>
                                 <div className="chat-input-area">
-                                    <input
-                                        className="chat-input"
-                                        placeholder="Send message..."
-                                        value={input}
-                                        onChange={e => setInput(e.target.value)}
-                                        onKeyDown={e => e.key === 'Enter' && handleExecute()}
-                                        disabled={loading}
-                                    />
+                                    <input className="chat-input" placeholder="Send message..." value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleExecute()} disabled={loading} />
                                     <button className="send-btn" onClick={handleExecute} disabled={loading}>Send</button>
                                 </div>
                             </>
@@ -784,14 +643,12 @@
                                     </div>
                                 )}
                                 {historyItems.map((h, idx) => (
-                                    <div key={idx} className="history-item">
+                                    <div key={idx} className="history-item" onClick={() => setModalData({ nodeId: h.nodeId, timestamp: h.timestamp, json: h.stateJson })}>
                                         <div>
-                                            <div className="history-node-name">{h.nodeId || 'Start'}</div>
-                                            <div className="history-timestamp">{h.timestamp}</div>
-                                            <div className="history-state-preview">
-                                                {JSON.stringify(h.stateJson).substring(0, 50)}...
-                                            </div>
+                                            <div className="history-node-name">{getNodeDisplayName(h.nodeId)}</div>
+                                            <div className="history-timestamp">{formatTimestamp(h.timestamp)}</div>
                                         </div>
+                                        <div style={{fontSize: '10px', color: '#2196f3'}}>View JSON</div>
                                     </div>
                                 ))}
                             </div>
