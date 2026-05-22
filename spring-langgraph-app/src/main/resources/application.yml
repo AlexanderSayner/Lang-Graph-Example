@@ -26,6 +26,8 @@ spring:
       timeout: 2000ms
 
   grpc:
+    server:
+      port: 9090
     client:
       channels:
         langgraph-service:
