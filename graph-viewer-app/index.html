@@ -83,6 +83,7 @@
         .react-flow__node.node-action { background: #e3f2fd; border-color: #bbdefb; }
         .react-flow__node.node-human { background: #fff3e0; border-color: #ffe0b2; }
         .react-flow__node.node-graph { background: #f3e5f5; border-color: #e1bee7; border-style: dashed; }
+        .react-flow__node.node-tool { background: #e0f2f1; border-color: #80cbc4; }
 
         .node-header { padding: 8px 12px; border-bottom: 1px solid rgba(0,0,0,0.05); font-weight: bold; font-size: 12px; display: flex; justify-content: space-between; align-items: center; }
         .node-start .node-header { color: #2e7d32; }
@@ -353,11 +354,13 @@
                 });
                 setNodeLabels(labels);
 
+                // Map Backend Nodes to React Flow Nodes
                 const rN = view.nodes.map(n => {
                     const hasPos = n.position && (n.position.x || n.position.y);
                     const prompt = n.metadata?.system_prompt || "";
                     const subgraphId = n.metadata?.subgraph_id;
-                    const label = n.metadata?.label; // Get label
+                    const label = n.metadata?.label;
+                    const toolUrl = n.metadata?.url || "";
 
                     const subgraphName = graphs.find(g => g.graphId === subgraphId)?.graphName || "Unknown Graph";
 
@@ -389,6 +392,11 @@
                                                 >
                                                     View Subgraph &rarr;
                                                 </div>
+                                            </div>
+                                        ) : n.nodeType === 'TOOL' ? (
+                                            <div>
+                                                <strong>Tool:</strong> {n.metadata?.method || 'GET'}<br/>
+                                                <span style={{fontSize: '9px', color: '#666'}}>{toolUrl}</span>
                                             </div>
                                         ) : (
                                             <div className="node-prompt">{prompt}</div>

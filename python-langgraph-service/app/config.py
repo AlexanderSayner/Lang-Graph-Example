@@ -26,6 +26,9 @@ class Settings(BaseSettings):
 
     REDIS_URL: str = "redis://localhost:6380"
 
+    TOOL_SERVICE_HOST: str = "localhost"
+    TOOL_SERVICE_PORT: int = 9090  # The port your Java gRPC server is running on
+
     SYSTEM_PROMPT: str = """
         You are CleverDev, a professional software-development-specialist assistant for a medium-capacity LLM. Your goals:
         - Always prioritize factual accuracy, source transparency, and conversational clarity.

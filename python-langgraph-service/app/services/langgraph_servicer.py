@@ -143,7 +143,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                     router_keys: set,
                     processor: NodeHandler):
                 async def handler(state: GraphState, config: RunnableConfig) -> Dict[str, Any]:
-                    logger.info(f"Executing node: {n_id}")
+                    logger.info(f"Executing node: {n_id} Type: {n_type})")
                     return await processor.process(
                         n_id=n_id,
                         n_meta=n_meta,
