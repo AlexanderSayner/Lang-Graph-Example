@@ -2,10 +2,13 @@ import json
 import logging
 from typing import Dict, Set, Callable, Awaitable, Any
 
+import grpc
 from langchain_core.runnables import RunnableConfig
 from langgraph.errors import GraphInterrupt
 from langgraph.pregel import Pregel
 
+from app.config import settings
+from app.generated import langgraph_pb2_grpc, langgraph_pb2
 from app.graph_engine.graph_utils import format_state_context, extract_json_from_response, JsonGenerationError, \
     GraphState
 
@@ -19,6 +22,17 @@ class NodeHandler:
     def __init__(self, llm_client, graph_loader: GraphLoader):
         self.llm = llm_client
         self.graph_loader = graph_loader
+
+        # --- Initialize gRPC Client for Tools ---
+        try:
+            self.tool_channel = grpc.aio.insecure_channel(
+                f'{settings.TOOL_SERVICE_HOST}:{settings.TOOL_SERVICE_PORT}'
+            )
+            self.tool_stub = langgraph_pb2_grpc.ToolServiceStub(self.tool_channel)
+            logger.info(f"Connected to Tool Service at {settings.TOOL_SERVICE_HOST}:{settings.TOOL_SERVICE_PORT}")
+        except Exception as e:
+            logger.error(f"Failed to connect to Tool Service: {e}")
+            self.tool_stub = None
 
     async def process(self,
                       n_id: str,
@@ -37,6 +51,9 @@ class NodeHandler:
 
         if node_type == "GRAPH":
             return await self._process_subgraph(n_id, n_meta, state, config)
+
+        if node_type == "TOOL":
+            return await self._process_tool(n_id, n_meta, state)
 
         return await self._process_action(n_id, n_meta, state)
 
@@ -245,3 +262,94 @@ class NodeHandler:
         except Exception as e:
             logger.error(f"Subgraph execution failed in {n_id}: {e}", exc_info=True)
             return {"last_node": n_id, "output": f"Subgraph Error: {str(e)}", "error": str(e)}
+
+    async def _process_tool(self, n_id: str, n_meta: Dict, state: GraphState) -> Dict:
+        """Calls the Java gRPC Tool Service to execute an HTTP request."""
+
+        if not self.tool_stub:
+            return {
+                "last_node": n_id,
+                "output": "Error: Tool Service is not connected.",
+                "error": "Tool Service Unavailable"
+            }
+
+        logger.info(f"Node {n_id}: Executing Tool...")
+
+        try:
+            # 1. Extract Config from Metadata
+            # Note: Metadata values might be strings or dicts depending on how they were saved.
+            method = n_meta.get("method", "GET").upper()
+            url = n_meta.get("url", "")
+
+            # Headers might be a JSON string or a Dict
+            raw_headers = n_meta.get("headers", "{}")
+            if isinstance(raw_headers, str):
+                try:
+                    headers_dict = json.loads(raw_headers)
+                except json.JSONDecodeError:
+                    headers_dict = {}
+            else:
+                headers_dict = raw_headers
+
+            body = n_meta.get("body", "")
+
+            # 2. Prepare State for Templating
+            # We send the current variables to Java so it can inject {{key}}
+            variables = state.get("variables", {})
+            state_json_str = json.dumps(variables)
+
+            # 3. Build gRPC Request
+            request = langgraph_pb2.HttpRequestInput(
+                method=method,
+                url=url,
+                headers=headers_dict,
+                body=body,
+                state_json=state_json_str
+            )
+
+            # 4. Call Java Service
+            response = await self.tool_stub.ExecuteHttpRequest(request)
+
+            # 5. Process Response
+            if response.success:
+                logger.info(f"Node {n_id}: Tool Success (Status {response.status_code})")
+
+                # Try to parse body as JSON for structured data
+                result_data = {}
+                try:
+                    if response.body:
+                        result_data = json.loads(response.body)
+                except json.JSONDecodeError:
+                    # If not JSON, store as raw string
+                    result_data = {"raw_response": response.body}
+
+                # Merge result into 'tool_result' variable
+                new_vars = {**variables, "tool_result": result_data}
+
+                return {
+                    "last_node": n_id,
+                    "output": f"Tool executed successfully. Status: {response.status_code}",
+                    "variables": new_vars
+                }
+            else:
+                logger.error(f"Node {n_id}: Tool Failed - {response.error_message}")
+                return {
+                    "last_node": n_id,
+                    "output": f"Tool Error: {response.error_message}",
+                    "error": response.error_message
+                }
+
+        except grpc.RpcError as e:
+            logger.error(f"Node {n_id}: gRPC Communication Error - {e.code()}: {e.details()}")
+            return {
+                "last_node": n_id,
+                "output": f"System Error: Could not reach Tool Service ({e.code()}).",
+                "error": str(e.details())
+            }
+        except Exception as e:
+            logger.error(f"Node {n_id}: Unexpected Tool Error - {e}", exc_info=True)
+            return {
+                "last_node": n_id,
+                "output": "Unexpected error during tool execution.",
+                "error": str(e)
+            }

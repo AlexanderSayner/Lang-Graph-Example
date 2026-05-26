@@ -13,6 +13,7 @@ type Mutation {
     updateGraphState(input: UpdateGraphStateInput!): UpdateGraphStatePayload!
     deleteGraph(graphId: String!): DeleteGraphPayload!
     saveGraphCoordinates(graphId: String!, positions: [NodePositionInput!]!): GraphViewPayload!
+    debugTool(input: ToolDebugInput!): ToolDebugPayload!
 }
 
 type Subscription {
@@ -59,6 +60,23 @@ input NodePositionInput {
     nodeId: String!
     x: Float!
     y: Float!
+}
+
+# ============== Tool Debug Types ==============
+
+input ToolDebugInput {
+    method: String!         # GET, POST, etc.
+    url: String!            # The URL to hit
+    headers: JSON           # Key-Value pairs
+    body: String            # Raw body string
+    variables: JSON         # The state variables to inject (e.g. { "user_id": "123" })
+}
+
+type ToolDebugPayload {
+    success: Boolean!
+    statusCode: Int
+    body: String
+    errorMessage: String
 }
 
 # ============== Output Payloads (Match Controller Return Types) ==============

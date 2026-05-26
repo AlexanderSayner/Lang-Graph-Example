@@ -30,6 +30,14 @@ service LangGraphService {
     rpc GetExecutionHistory (GraphHistoryRequest) returns (GraphHistoryResponse);
 }
 
+// ==========================================
+// Tool Service (Execution)
+// ==========================================
+service ToolService {
+  // Execute an HTTP Request Tool
+  rpc ExecuteHttpRequest (HttpRequestInput) returns (HttpRequestOutput);
+}
+
 // Message for building a graph
 message BuildGraphRequest {
     string graph_id = 1;
@@ -144,4 +152,24 @@ message StateSnapshot {
 
 message GraphHistoryResponse {
   repeated StateSnapshot history = 1;
+}
+
+// ==========================================
+// Tool Messages
+// ==========================================
+
+message HttpRequestInput {
+  string method = 1;                // GET, POST, PUT, DELETE
+  string url = 2;                   // URL with potential {{variable}} placeholders
+  map<string, string> headers = 3;  // Request Headers
+  string body = 4;                  // Request Body (JSON string)
+  string state_json = 5;            // Current Graph State variables (JSON string)
+}
+
+message HttpRequestOutput {
+  int32 status_code = 1;            // HTTP Status Code
+  string body = 2;                  // Response Body
+  map<string, string> headers = 3;  // Response Headers
+  bool success = 4;                 // True if network call succeeded
+  string error_message = 5;         // Error details if success is false
 }

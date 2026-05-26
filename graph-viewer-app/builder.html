@@ -56,9 +56,14 @@
         .node-action { background: #e3f2fd; border-color: #2196f3; }
         .node-human { background: #fff3e0; border-color: #ff9800; }
         .node-graph { background: #f3e5f5; border-color: #9c27b0; border-style: dashed; }
+        .node-tool { background: #e0f2f1; border-color: #009688; }
 
         .node-label { padding: 10px; font-weight: bold; }
         .node-type { font-size: 10px; opacity: 0.8; font-weight: normal; display: block; margin-top: 2px; }
+
+        /* Tool Test Button */
+        .btn-test-tool { background: #009688; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: bold; width: 100%; margin-top: 10px; }
+        .result-box { margin-top: 10px; padding: 10px; background: #f5f5f5; border-radius: 4px; font-size: 12px; border: 1px solid #ddd; }
     </style>
 </head>
 <body>
@@ -100,6 +105,7 @@
         if (data.type === 'END') bgClass = 'node-end';
         if (data.type === 'HUMAN') bgClass = 'node-human';
         if (data.type === 'GRAPH') bgClass = 'node-graph';
+        if (data.type === 'TOOL') bgClass = 'node-tool';
 
         const displayText = data.friendlyName || data.label;
 
@@ -122,6 +128,7 @@
         const [edges, setEdges, onEdgesChange] = useEdgesState([]);
         const [selectedElement, setSelectedElement] = useState(null);
         const [loading, setLoading] = useState(false);
+        const [testResult, setTestResult] = useState(null);
 
         // State for available graphs to link
         const [availableGraphs, setAvailableGraphs] = useState([]);
@@ -159,7 +166,12 @@
                             type: n.nodeType,
                             prompt: n.metadata?.system_prompt || "",
                             friendlyName: n.metadata?.label || "",
-                            subgraphId: n.metadata?.subgraph_id || null // Load subgraph ID
+                            subgraphId: n.metadata?.subgraph_id || null,
+                            // Load Tool Config
+                            method: n.metadata?.method || "GET",
+                            url: n.metadata?.url || "",
+                            headers: n.metadata?.headers || "{}",
+                            body: n.metadata?.body || ""
                         }
                     })));
                     setEdges(data.getGraphView.edges.map((e, i) => ({
@@ -203,11 +215,18 @@
             const id = `node_${Date.now()}`;
             setNodes(nds => nds.concat({
                 id, type: 'designNode', position,
-                data: { label: id, type: type, prompt: "", subgraphId: null, friendlyName: null }
+                data: {
+                    label: id, type: type, prompt: "", subgraphId: null, friendlyName: null,
+                    // Default Tool Config
+                    method: "GET", url: "", headers: "{}", body: ""
+                }
             }));
         }, [hasStartNode]);
 
-        const onElementClick = (e, el) => setSelectedElement(el);
+        const onElementClick = (e, el) => {
+            setSelectedElement(el);
+            setTestResult(null);
+        };
 
         // --- Deletion ---
         const deleteSelected = () => {
@@ -237,10 +256,20 @@
                         system_prompt: n.data.prompt || "",
                         label: n.data.friendlyName || ""
                     };
+
                     // Add subgraph_id if it's a GRAPH node
                     if (n.data.type === 'GRAPH' && n.data.subgraphId) {
                         meta.subgraph_id = n.data.subgraphId;
                     }
+
+                    // Add Tool Config if it's a TOOL node
+                    if (n.data.type === 'TOOL') {
+                        meta.method = n.data.method || "GET";
+                        meta.url = n.data.url || "";
+                        meta.headers = n.data.headers || "{}";
+                        meta.body = n.data.body || "";
+                    }
+
                     return {
                         nodeId: n.id,
                         nodeType: n.data.type,
@@ -293,6 +322,35 @@
             setSelectedElement(el => ({...el, label: value}));
         };
 
+        // --- Tool Debug Logic ---
+        const testTool = async () => {
+            if (!selectedElement) return;
+            setLoading(true);
+            setTestResult(null);
+            try {
+                const MUTATION = `
+                    mutation Debug($input: ToolDebugInput!) {
+                        debugTool(input: $input) { success statusCode body errorMessage }
+                    }
+                `;
+                const mockVariables = { "user_id": "123" };
+                const result = await fetchGraphQL(MUTATION, {
+                    input: {
+                        method: selectedElement.data.method,
+                        url: selectedElement.data.url,
+                        headers: selectedElement.data.headers,
+                        body: selectedElement.data.body,
+                        variables: JSON.stringify(mockVariables)
+                    }
+                });
+                setTestResult(result.debugTool);
+            } catch (e) {
+                setTestResult({ success: false, errorMessage: e.message });
+            } finally {
+                setLoading(false);
+            }
+        };
+
         return (
             <div className="layout-wrapper">
                 <div className="top-bar">
@@ -319,6 +377,7 @@
                         <div className="palette-node" title="Action Node" draggable onDragStart={(e) => onDragStart(e, 'ACTION')}>🤖</div>
                         <div className="palette-node" title="Human Node" draggable onDragStart={(e) => onDragStart(e, 'HUMAN')}>👤</div>
                         <div className="palette-node" title="Subgraph Node" draggable onDragStart={(e) => onDragStart(e, 'GRAPH')}>🧩</div>
+                        <div className="palette-node" title="Tool Node (HTTP)" draggable onDragStart={(e) => onDragStart(e, 'TOOL')}>🔧</div>
                         <div className="palette-node" title="End Node" draggable onDragStart={(e) => onDragStart(e, 'END')}>🛑</div>
                     </div>
 
@@ -385,6 +444,44 @@
                                                     <option key={g.graphId} value={g.graphId}>{g.graphName} ({g.graphId})</option>
                                                 ))}
                                             </select>
+                                        </div>
+                                    ) : selectedElement.data.type === 'TOOL' ? (
+                                        <div className="form-group" style={{flex: 2}}>
+                                            <div className="form-row">
+                                                <div className="form-group" style={{flex: 0.3}}>
+                                                    <label className="form-label">Method</label>
+                                                    <select className="form-select" value={selectedElement.data.method || "GET"} onChange={(e) => updateNode('method', e.target.value)}>
+                                                        <option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option>
+                                                    </select>
+                                                </div>
+                                                <div className="form-group" style={{flex: 1.7}}>
+                                                    <label className="form-label">URL</label>
+                                                    <input className="form-input" value={selectedElement.data.url || ""} onChange={(e) => updateNode('url', e.target.value)} placeholder="https://api.example.com/{{id}}"/>
+                                                </div>
+                                            </div>
+                                            <div className="form-row">
+                                                <div className="form-group">
+                                                    <label className="form-label">Headers (JSON)</label>
+                                                    <textarea className="form-input form-textarea" style={{height: '40px'}} value={selectedElement.data.headers || "{}"} onChange={(e) => updateNode('headers', e.target.value)} />
+                                                </div>
+                                                <div className="form-group">
+                                                    <label className="form-label">Body</label>
+                                                    <textarea className="form-input form-textarea" style={{height: '40px'}} value={selectedElement.data.body || ""} onChange={(e) => updateNode('body', e.target.value)} />
+                                                </div>
+                                            </div>
+
+                                            <button className="btn-test-tool" onClick={testTool} disabled={loading}>
+                                                {loading ? "Testing..." : "🛠️ Test Tool"}
+                                            </button>
+
+                                            {testResult && (
+                                                <div className="result-box">
+                                                    <strong>Result (Status {testResult.statusCode}):</strong>
+                                                    <pre style={{whiteSpace: 'pre-wrap', maxHeight: '60px', overflowY: 'auto', margin: 0}}>
+                                                        {testResult.success ? testResult.body : testResult.errorMessage}
+                                                    </pre>
+                                                </div>
+                                            )}
                                         </div>
                                     ) : (
                                         <div className="form-group" style={{flex: 2}}>
