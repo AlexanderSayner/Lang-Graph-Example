@@ -270,7 +270,8 @@ class NodeHandler:
             return {
                 "last_node": n_id,
                 "output": "Error: Tool Service is not connected.",
-                "error": "Tool Service Unavailable"
+                "error": "Tool Service Unavailable",
+                "variables": {**state.get("variables", {}), "tool_success": False, "tool_error": "Service Unavailable"}
             }
 
         logger.info(f"Node {n_id}: Executing Tool...")
@@ -296,6 +297,8 @@ class NodeHandler:
             # 2. Prepare State for Templating
             # We send the current variables to Java so it can inject {{key}}
             variables = state.get("variables", {})
+            logger.info(f"Node {n_id}: Injecting variables: {json.dumps(variables, default=str)}")
+
             state_json_str = json.dumps(variables)
 
             # 3. Build gRPC Request
@@ -324,7 +327,8 @@ class NodeHandler:
                     result_data = {"raw_response": response.body}
 
                 # Merge result into 'tool_result' variable
-                new_vars = {**variables, "tool_result": result_data}
+                new_vars = {**variables, "tool_result": result_data,
+                            "tool_success": True, "tool_status_code": response.status_code}
 
                 return {
                     "last_node": n_id,
@@ -333,17 +337,34 @@ class NodeHandler:
                 }
             else:
                 logger.error(f"Node {n_id}: Tool Failed - {response.error_message}")
+
+                new_vars = {
+                    **variables,
+                    "tool_success": False,
+                    "tool_error": response.error_message,
+                    "tool_status_code": response.status_code  # Might be 0 for network errors
+                }
+
                 return {
                     "last_node": n_id,
                     "output": f"Tool Error: {response.error_message}",
+                    "variables": new_vars,
                     "error": response.error_message
                 }
 
         except grpc.RpcError as e:
             logger.error(f"Node {n_id}: gRPC Communication Error - {e.code()}: {e.details()}")
+
+            new_vars = {
+                **state.get("variables", {}),
+                "tool_success": False,
+                "tool_error": f"gRPC Error: {e.code()}"
+            }
+
             return {
                 "last_node": n_id,
                 "output": f"System Error: Could not reach Tool Service ({e.code()}).",
+                "variables": new_vars,
                 "error": str(e.details())
             }
         except Exception as e:
