@@ -153,6 +153,22 @@ public class LangGraphGrpcService {
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
+    public Mono<@NonNull RewindGraphPayload> rewindGraph(String graphId, String threadId, String stateJson) {
+        return Mono.fromCallable(() -> {
+                    RewindGraphRequest request = RewindGraphRequest.newBuilder()
+                            .setGraphId(graphId)
+                            .setThreadId(threadId)
+                            .setTargetStateJson(stateJson)
+                            .build();
+                    return futureStub.rewindGraph(request).get();
+                })
+                .map(response -> RewindGraphPayload.newBuilder()
+                        .setSuccess(response.getSuccess())
+                        .setMessage(response.getMessage())
+                        .build())
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
     private void logAndWrapGrpcError(Throwable error) {
         if (error instanceof StatusRuntimeException sre) {
             Status status = sre.getStatus();

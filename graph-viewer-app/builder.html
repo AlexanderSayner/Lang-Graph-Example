@@ -9,16 +9,10 @@
         html, body, #root { height: 100%; width: 100%; margin: 0; overflow: hidden; font-family: 'Segoe UI', sans-serif; }
 
         /* Top Bar */
-        .top-bar {
-            height: 50px; background: #fff; border-bottom: 1px solid #ddd; display: flex;
-            align-items: center; padding: 0 20px; justify-content: space-between; z-index: 100;
-        }
+        .top-bar { height: 50px; background: #fff; border-bottom: 1px solid #ddd; display: flex; align-items: center; padding: 0 20px; justify-content: space-between; z-index: 100; }
         .btn-save { background: #4caf50; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: bold; }
         .btn-back { background: transparent; color: #333; text-decoration: none; margin-right: 15px; border: 1px solid #ddd; padding: 6px 12px; border-radius: 4px; }
-        .name-input {
-            font-size: 16px; font-weight: bold; border: 1px solid #ddd; padding: 5px 10px;
-            border-radius: 4px; background: #f9f9f9; margin-left: 10px;
-        }
+        .name-input { font-size: 16px; font-weight: bold; border: 1px solid #ddd; padding: 5px 10px; border-radius: 4px; background: #f9f9f9; margin-left: 10px; }
 
         /* Layout */
         .layout-wrapper { display: flex; flex-direction: column; height: 100%; }
@@ -26,11 +20,7 @@
 
         /* Palette */
         .palette { width: 50px; background: #f9f9f9; border-right: 1px solid #ddd; padding: 10px 5px; display: flex; flex-direction: column; align-items: center; gap: 10px; }
-        .palette-node {
-            width: 40px; height: 40px; background: #fff; border: 1px solid #ccc; border-radius: 8px;
-            cursor: grab; display: flex; align-items: center; justify-content: center; font-size: 20px;
-            transition: all 0.2s;
-        }
+        .palette-node { width: 40px; height: 40px; background: #fff; border: 1px solid #ccc; border-radius: 8px; cursor: grab; display: flex; align-items: center; justify-content: center; font-size: 20px; transition: all 0.2s; }
         .palette-node:hover { border-color: #2196f3; }
         .palette-node.disabled { opacity: 0.4; cursor: not-allowed; background: #f0f0f0; }
 
@@ -63,7 +53,12 @@
 
         /* Tool Test Button */
         .btn-test-tool { background: #009688; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: bold; width: 100%; margin-top: 10px; }
-        .result-box { margin-top: 10px; padding: 10px; background: #f5f5f5; border-radius: 4px; font-size: 12px; border: 1px solid #ddd; }
+        .result-box { margin-top: 10px; padding: 10px; background: #f5f5f5; borderRadius: 4px; fontSize: 12px; border: 1px solid #ddd; }
+
+        /* Prompt Library Buttons */
+        .prompt-lib-bar { display: flex; gap: 5px; alignItems: center; marginBottom: '4px' }
+        .btn-sm { background: #f0f0f0; border: 1px solid #ddd; padding: 2px 6px; border-radius: 3px; font-size: 10px; cursor: pointer; color: #555; }
+        .btn-sm:hover { background: #e0e0e0; color: #000; }
     </style>
 </head>
 <body>
@@ -128,7 +123,6 @@
         const [edges, setEdges, onEdgesChange] = useEdgesState([]);
         const [selectedElement, setSelectedElement] = useState(null);
         const [loading, setLoading] = useState(false);
-        const [testResult, setTestResult] = useState(null);
 
         // State for available graphs to link
         const [availableGraphs, setAvailableGraphs] = useState([]);
@@ -139,10 +133,10 @@
         const reactFlowWrapper = useRef(null);
         const { project } = useReactFlow();
 
-        // Check if Start Node already exists
-        const hasStartNode = nodes.some(n => n.data.type === 'START');
+        const [testResult, setTestResult] = useState(null);
 
-        // Init
+        const hasStartNode = nodes.some(n => n.data?.type === 'START');
+
         useEffect(() => {
             // Load available graphs for the dropdown
             const LIST_QUERY = `query { listGraphs(pageSize: 100) { graphs { graphId graphName } } }`;
@@ -162,8 +156,7 @@
                     setNodes(data.getGraphView.nodes.map(n => ({
                         id: n.nodeId, type: 'designNode', position: n.position || { x: 0, y: 0 },
                         data: {
-                            label: n.nodeId,
-                            type: n.nodeType,
+                            label: n.nodeId, type: n.nodeType,
                             prompt: n.metadata?.system_prompt || "",
                             friendlyName: n.metadata?.label || "",
                             subgraphId: n.metadata?.subgraph_id || null,
@@ -194,108 +187,54 @@
             e.dataTransfer.effectAllowed = 'move';
         };
 
-        const onDragOver = useCallback((e) => {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = 'move';
-        }, []);
-
+        const onDragOver = useCallback((e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }, []);
         const onDrop = useCallback((e) => {
             e.preventDefault();
             const type = e.dataTransfer.getData('application/reactflow');
-            if (!type) return;
-
-            if (type === 'START' && hasStartNode) {
-                alert("Only one Start node allowed.");
-                return;
-            }
-
+            if (!type || (type === 'START' && hasStartNode)) return;
             const bounds = reactFlowWrapper.current.getBoundingClientRect();
             const position = project({ x: e.clientX - bounds.left, y: e.clientY - bounds.top });
 
             const id = `node_${Date.now()}`;
             setNodes(nds => nds.concat({
                 id, type: 'designNode', position,
-                data: {
-                    label: id, type: type, prompt: "", subgraphId: null, friendlyName: null,
-                    // Default Tool Config
-                    method: "GET", url: "", headers: "{}", body: ""
-                }
+                data: { label: id, type: type, prompt: "", subgraphId: null, friendlyName: null, method: "GET", url: "", headers: "{}", body: "" }
             }));
         }, [hasStartNode]);
 
-        const onElementClick = (e, el) => {
-            setSelectedElement(el);
-            setTestResult(null);
-        };
-
-        // --- Deletion ---
+        const onElementClick = (e, el) => { setSelectedElement(el); setTestResult(null); };
         const deleteSelected = () => {
-            if (!selectedElement) return;
-            if (window.confirm(`Delete ${selectedElement.type === 'designNode' ? 'Node' : 'Edge'}?`)) {
-                if (selectedElement.type === 'designNode') {
-                    setNodes(nds => nds.filter(n => n.id !== selectedElement.id));
-                    setEdges(eds => eds.filter(e => e.source !== selectedElement.id && e.target !== selectedElement.id));
-                } else {
-                    setEdges(eds => eds.filter(e => e.id !== selectedElement.id));
-                }
-                setSelectedElement(null);
-            }
+            if (!selectedElement || !window.confirm(`Delete?`)) return;
+            if (selectedElement.type === 'designNode') {
+                setNodes(nds => nds.filter(n => n.id !== selectedElement.id));
+                setEdges(eds => eds.filter(e => e.source !== selectedElement.id && e.target !== selectedElement.id));
+            } else { setEdges(eds => eds.filter(e => e.id !== selectedElement.id)); }
+            setSelectedElement(null);
         };
-
-        // --- Save Logic ---
 
         const handleSave = async () => {
             if (!graphName.trim()) { alert("Please enter a graph name."); return; }
             setLoading(true);
             try {
-                if (!nodes.find(n => n.data.type === 'START')) throw new Error("Graph needs a START node");
-                if (!nodes.find(n => n.data.type === 'END')) throw new Error("Graph needs an END node");
+                if (!nodes.find(n => n.data?.type === 'START')) throw new Error("Graph needs a START node");
+                if (!nodes.find(n => n.data?.type === 'END')) throw new Error("Graph needs an END node");
 
                 const payloadNodes = nodes.map(n => {
-                    const meta = {
-                        system_prompt: n.data.prompt || "",
-                        label: n.data.friendlyName || ""
-                    };
-
-                    // Add subgraph_id if it's a GRAPH node
-                    if (n.data.type === 'GRAPH' && n.data.subgraphId) {
-                        meta.subgraph_id = n.data.subgraphId;
-                    }
-
-                    // Add Tool Config if it's a TOOL node
-                    if (n.data.type === 'TOOL') {
-                        meta.method = n.data.method || "GET";
-                        meta.url = n.data.url || "";
-                        meta.headers = n.data.headers || "{}";
-                        meta.body = n.data.body || "";
-                    }
-
-                    return {
-                        nodeId: n.id,
-                        nodeType: n.data.type,
-                        handlerName: `${n.id}Handler`,
-                        metadata: meta
-                    };
+                    const meta = { system_prompt: n.data?.prompt || "", label: n.data?.friendlyName || "" };
+                    if (n.data?.type === 'GRAPH' && n.data.subgraphId) meta.subgraph_id = n.data.subgraphId;
+                    if (n.data?.type === 'TOOL') { meta.method = n.data.method || "GET"; meta.url = n.data.url || ""; meta.headers = n.data.headers || "{}"; meta.body = n.data.body || ""; }
+                    return { nodeId: n.id, nodeType: n.data?.type, handlerName: `${n.id}Handler`, metadata: meta };
                 });
 
-                const payloadEdges = edges.map(e => ({
-                    source: e.source, target: e.target, condition: e.label || null
-                }));
-
+                const payloadEdges = edges.map(e => ({ source: e.source, target: e.target, condition: e.label || null }));
                 const BUILD_MUTATION = `mutation Build($input: BuildGraphInput!) { buildGraph(input: $input) { success } }`;
-                await fetchGraphQL(BUILD_MUTATION, { input: { graphId: graphId, graphName: graphName, nodes: payloadNodes, edges: payloadEdges }});
+                await fetchGraphQL(BUILD_MUTATION, { input: { graphId: graphId, graphName: graphName, nodes: payloadNodes, edges: payloadEdges } });
 
                 const LAYOUT_MUTATION = `mutation Save($gid: String!, $pos: [NodePositionInput!]!) { saveGraphCoordinates(graphId: $gid, positions: $pos) { success } }`;
-                const positions = nodes.map(n => ({ nodeId: n.id, x: n.position.x, y: n.position.y }));
-                await fetchGraphQL(LAYOUT_MUTATION, { gid: graphId, pos: positions });
-
+                await fetchGraphQL(LAYOUT_MUTATION, { gid: graphId, pos: nodes.map(n => ({ nodeId: n.id, x: n.position.x, y: n.position.y })) });
                 alert("Saved Successfully!");
                 window.location.href = 'index.html';
-            } catch (err) {
-                alert("Error: " + err.message);
-            } finally {
-                setLoading(false);
-            }
+            } catch (err) { alert("Error: " + err.message); } finally { setLoading(false); }
         };
 
         // --- Panel Updates ---
@@ -305,11 +244,7 @@
                 const oldId = selectedElement.id;
                 if (nodes.find(n => n.id === value)) { alert("ID already exists"); return; }
                 setNodes(nds => nds.map(n => n.id === oldId ? {...n, id: value, data: {...n.data, label: value}} : n));
-                setEdges(eds => eds.map(e => ({
-                    ...e,
-                    source: e.source === oldId ? value : e.source,
-                    target: e.target === oldId ? value : e.target
-                })));
+                setEdges(eds => eds.map(e => ({ ...e, source: e.source === oldId ? value : e.source, target: e.target === oldId ? value : e.target })));
                 setSelectedElement(el => ({ ...el, id: value, data: {...el.data, label: value} }));
             } else {
                 setNodes(nds => nds.map(n => n.id === selectedElement.id ? {...n, data: {...n.data, [key]: value}} : n));
@@ -322,17 +257,21 @@
             setSelectedElement(el => ({...el, label: value}));
         };
 
-        // --- Tool Debug Logic ---
+        // --- Variable Inserter Helper ---
+        const insertVariable = (varName) => {
+            const currentPrompt = selectedElement.data.prompt || "";
+            // Simple append for reliability, or you could try cursor position logic
+            const newText = currentPrompt + ` {{${varName}}}`;
+            updateNode('prompt', newText);
+        };
+
+        // --- Tool Test Logic ---
         const testTool = async () => {
             if (!selectedElement) return;
             setLoading(true);
             setTestResult(null);
             try {
-                const MUTATION = `
-                    mutation Debug($input: ToolDebugInput!) {
-                        debugTool(input: $input) { success statusCode body errorMessage }
-                    }
-                `;
+                const MUTATION = `mutation Debug($input: ToolDebugInput!) { debugTool(input: $input) { success statusCode body errorMessage } }`;
                 const mockVariables = { "user_id": "123" };
                 const result = await fetchGraphQL(MUTATION, {
                     input: {
@@ -344,11 +283,8 @@
                     }
                 });
                 setTestResult(result.debugTool);
-            } catch (e) {
-                setTestResult({ success: false, errorMessage: e.message });
-            } finally {
-                setLoading(false);
-            }
+            } catch (e) { setTestResult({ success: false, errorMessage: e.message }); }
+            finally { setLoading(false); }
         };
 
         return (
@@ -359,21 +295,12 @@
                         <h2>Editing:</h2>
                         <input className="name-input" value={graphName} onChange={(e) => setGraphName(e.target.value)} />
                     </div>
-                    <button onClick={handleSave} className="btn-save" disabled={loading}>
-                        {loading ? "Saving..." : "Save Graph"}
-                    </button>
+                    <button onClick={handleSave} className="btn-save" disabled={loading}>{loading ? "Saving..." : "Save Graph"}</button>
                 </div>
 
                 <div className="main-content">
                     <div className="palette">
-                        <div
-                            className={`palette-node ${hasStartNode ? 'disabled' : ''}`}
-                            title="Start Node"
-                            draggable={!hasStartNode}
-                            onDragStart={(e) => onDragStart(e, 'START')}
-                        >
-                            🚀
-                        </div>
+                        <div className={`palette-node ${hasStartNode ? 'disabled' : ''}`} title="Start Node" draggable={!hasStartNode} onDragStart={(e) => onDragStart(e, 'START')}>🚀</div>
                         <div className="palette-node" title="Action Node" draggable onDragStart={(e) => onDragStart(e, 'ACTION')}>🤖</div>
                         <div className="palette-node" title="Human Node" draggable onDragStart={(e) => onDragStart(e, 'HUMAN')}>👤</div>
                         <div className="palette-node" title="Subgraph Node" draggable onDragStart={(e) => onDragStart(e, 'GRAPH')}>🧩</div>
@@ -382,20 +309,7 @@
                     </div>
 
                     <div className="canvas-wrapper" ref={reactFlowWrapper} onDrop={onDrop} onDragOver={onDragOver}>
-                        <ReactFlow
-                            nodes={nodes}
-                            edges={edges}
-                            onNodesChange={onNodesChange}
-                            onEdgesChange={onEdgesChange}
-                            onConnect={onConnect}
-                            onNodeClick={onElementClick}
-                            onEdgeClick={onElementClick}
-                            nodeTypes={nodeTypes}
-                            defaultViewport={{ x: 0, y: 0, zoom: 1.0 }}
-                            snapToGrid={true}
-                            snapGrid={[10, 10]}
-                            deleteKeyCode={['Backspace', 'Delete']}
-                        >
+                        <ReactFlow nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect} onNodeClick={onElementClick} onEdgeClick={onElementClick} nodeTypes={nodeTypes} fitView>
                             <Background gap={10} size={1} />
                             <Controls />
                         </ReactFlow>
@@ -417,36 +331,42 @@
                                         <input className="form-input" value={selectedElement.id} onChange={(e) => updateNode('id', e.target.value)} />
                                     </div>
                                     <div className="form-group">
-                                        <label className="form-label">Node Name</label>
-                                        <input
-                                            className="form-input"
-                                            value={selectedElement.data.friendlyName || ""}
-                                            onChange={(e) => updateNode('friendlyName', e.target.value)}
-                                            placeholder="e.g. 'Greeting Agent'"
-                                        />
+                                        <label className="form-label">Name (Label)</label>
+                                        <input className="form-input" value={selectedElement.data.friendlyName || ""} onChange={(e) => updateNode('friendlyName', e.target.value)} placeholder="e.g. 'Greeting Agent'"/>
                                     </div>
                                     <div className="form-group">
                                         <label className="form-label">Type</label>
                                         <input className="form-input" value={selectedElement.data.type} disabled />
                                     </div>
+                                </div>
+                            ) : (
+                                <div className="form-row">
+                                    <div className="form-group">
+                                        <label className="form-label">Condition</label>
+                                        <input className="form-input" value={selectedElement.label || ""} onChange={(e) => updateEdge(e.target.value)} placeholder="e.g. intent == 'build'" />
+                                    </div>
+                                    <div className="form-group">
+                                        <label className="form-label">Connection</label>
+                                        <input className="form-input" value={`${selectedElement.source} ➔ ${selectedElement.target}`} disabled />
+                                    </div>
+                                </div>
+                            )}
 
-                                    {/* Conditional Rendering for Specific Types */}
+                            {/* Conditional Render for Node Types */}
+                            {selectedElement.type === 'designNode' && (
+                                <>
                                     {selectedElement.data.type === 'GRAPH' ? (
-                                        <div className="form-group" style={{flex: 2}}>
-                                            <label className="form-label">Link to Subgraph</label>
-                                            <select
-                                                className="form-select"
-                                                value={selectedElement.data.subgraphId || ""}
-                                                onChange={(e) => updateNode('subgraphId', e.target.value)}
-                                            >
-                                                <option value="" disabled>-- Select a Graph --</option>
-                                                {availableGraphs.map(g => (
-                                                    <option key={g.graphId} value={g.graphId}>{g.graphName} ({g.graphId})</option>
-                                                ))}
-                                            </select>
+                                        <div className="form-row">
+                                            <div className="form-group" style={{flex: 2}}>
+                                                <label className="form-label">Link to Subgraph</label>
+                                                <select className="form-select" value={selectedElement.data.subgraphId || ""} onChange={(e) => updateNode('subgraphId', e.target.value)}>
+                                                    <option value="" disabled>-- Select a Graph --</option>
+                                                    {availableGraphs.map(g => ( <option key={g.graphId} value={g.graphId}>{g.graphName} ({g.graphId})</option> ))}
+                                                </select>
+                                            </div>
                                         </div>
                                     ) : selectedElement.data.type === 'TOOL' ? (
-                                        <div className="form-group" style={{flex: 2}}>
+                                        <>
                                             <div className="form-row">
                                                 <div className="form-group" style={{flex: 0.3}}>
                                                     <label className="form-label">Method</label>
@@ -469,11 +389,7 @@
                                                     <textarea className="form-input form-textarea" style={{height: '40px'}} value={selectedElement.data.body || ""} onChange={(e) => updateNode('body', e.target.value)} />
                                                 </div>
                                             </div>
-
-                                            <button className="btn-test-tool" onClick={testTool} disabled={loading}>
-                                                {loading ? "Testing..." : "🛠️ Test Tool"}
-                                            </button>
-
+                                            <button className="btn-test-tool" onClick={testTool} disabled={loading}>{loading ? "Testing..." : "🛠️ Test Tool"}</button>
                                             {testResult && (
                                                 <div className="result-box">
                                                     <strong>Result (Status {testResult.statusCode}):</strong>
@@ -482,30 +398,32 @@
                                                     </pre>
                                                 </div>
                                             )}
-                                        </div>
+                                        </>
                                     ) : (
-                                        <div className="form-group" style={{flex: 2}}>
-                                            <label className="form-label">System Prompt</label>
-                                            <textarea className="form-input form-textarea" value={selectedElement.data.prompt || ""} onChange={(e) => updateNode('prompt', e.target.value)} />
+                                        <div className="form-row">
+                                            <div className="form-group" style={{flex: 2}}>
+                                                {/* --- PROMPT LIBRARY UI --- */}
+                                                <div className="prompt-lib-bar">
+                                                    <label className="form-label" style={{margin: 0}}>System Prompt</label>
+                                                    <button className="btn-sm" onClick={() => insertVariable('input')}>+ Input</button>
+                                                    <button className="btn-sm" onClick={() => insertVariable('tool_result')}>+ Tool Result</button>
+                                                    <button className="btn-sm" onClick={() => { const v = prompt("Variable name:"); if(v) insertVariable(v); }}>+ Custom</button>
+                                                </div>
+                                                <textarea
+                                                    className="form-input form-textarea"
+                                                    value={selectedElement.data.prompt || ""}
+                                                    onChange={(e) => updateNode('prompt', e.target.value)}
+                                                    placeholder="Enter system prompt..."
+                                                />
+                                            </div>
                                         </div>
                                     )}
-                                </div>
-                            ) : (
-                                <div className="form-row">
-                                    <div className="form-group">
-                                        <label className="form-label">Condition</label>
-                                        <input className="form-input" value={selectedElement.label || ""} onChange={(e) => updateEdge(e.target.value)} placeholder="e.g. intent == 'build'" />
-                                    </div>
-                                    <div className="form-group">
-                                        <label className="form-label">Connection</label>
-                                        <input className="form-input" value={`${selectedElement.source} ➔ ${selectedElement.target}`} disabled />
-                                    </div>
-                                </div>
+                                </>
                             )}
                         </>
                     ) : (
                         <div style={{color: '#999', display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%'}}>
-                            Select a node or edge to edit. Press DEL to remove.
+                            Select a node or edge to edit.
                         </div>
                     )}
                 </div>

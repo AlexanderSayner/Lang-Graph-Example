@@ -593,3 +593,72 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             logger.error(f"History fetch error: {e}", exc_info=True)
             # Raising the exception lets the @handle_grpc_errors decorator handle the gRPC response
             raise e
+
+    @handle_grpc_errors
+    async def RewindGraph(self, request, context):
+        graph_id = request.graph_id
+        thread_id = request.thread_id
+        target_state_json = request.target_state_json
+
+        # Check cache first
+        compiled_graph = self._compiled_graphs.get(graph_id)
+
+        # Load from store if not cached (same logic as ExecuteGraph)
+        if compiled_graph is None:
+            logger.info(f"Graph {graph_id} not in memory. Loading for rewind...")
+
+            stored_data = await self.store.get_graph(graph_id)
+            if not stored_data:
+                context.set_code(grpc.StatusCode.NOT_FOUND)
+                context.set_details(f"Graph '{graph_id}' not found")
+                return langgraph_pb2.RewindGraphPayload(success=False, message=f"Graph '{graph_id}' not found")
+
+            try:
+                # Handle Pydantic model or dict
+                if hasattr(stored_data, 'model_dump'):
+                    graph_dict = stored_data.model_dump()
+                elif hasattr(stored_data, 'dict'):
+                    graph_dict = stored_data.dict()
+                else:
+                    graph_dict = stored_data
+
+                validated_graph_data = GraphDefinition(**graph_dict)
+                compiled_graph = self._build_langgraph(validated_graph_data)
+
+                # Cache for future calls
+                self._compiled_graphs[graph_id] = compiled_graph
+                logger.info(f"Graph {graph_id} loaded and cached for rewind.")
+
+            except Exception as e:
+                logger.error(f"Failed to rebuild graph {graph_id}: {e}", exc_info=True)
+                context.set_code(grpc.StatusCode.INTERNAL)
+                context.set_details(f"Failed to rebuild graph: {e}")
+                return langgraph_pb2.RewindGraphPayload(success=False, message=f"Build error: {e}")
+
+        config = {"configurable": {"thread_id": thread_id}}
+
+        try:
+            target_values = json.loads(target_state_json)
+
+            await compiled_graph.aupdate_state(
+                config,
+                values=target_values,
+                as_node=None
+            )
+
+            logger.info(f"Graph {graph_id} rewound successfully for thread {thread_id}")
+            return langgraph_pb2.RewindGraphPayload(
+                success=True,
+                message="State rewound. Send a new message to continue."
+            )
+
+        except json.JSONDecodeError as e:
+            context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+            context.set_details(f"Invalid state JSON: {e}")
+            return langgraph_pb2.RewindGraphPayload(success=False, message=f"Invalid state format: {e}")
+
+        except Exception as e:
+            logger.exception(f"Rewind failed: {e}")
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(str(e))
+            return langgraph_pb2.RewindGraphPayload(success=False, message=f"Rewind error: {e}")

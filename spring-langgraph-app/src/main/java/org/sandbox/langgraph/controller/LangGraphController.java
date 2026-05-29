@@ -9,7 +9,7 @@ import org.sandbox.langgraph.dto.graphql.input.NodePositionInput;
 import org.sandbox.langgraph.dto.graphql.input.UpdateGraphStateInput;
 import org.sandbox.langgraph.dto.graphql.payload.*;
 import org.sandbox.langgraph.dto.graphql.payload.redis.GraphViewPayload;
-import org.sandbox.langgraph.grpc.GraphHistoryResponse;
+import org.sandbox.langgraph.grpc.RewindGraphPayload;
 import org.sandbox.langgraph.mapper.RedisGraphStorageMapper;
 import org.sandbox.langgraph.service.LangGraphGrpcService;
 import org.sandbox.langgraph.service.RedisGraphViewService;
@@ -114,6 +114,12 @@ public class LangGraphController {
     public Mono<@NonNull DeleteGraphPayload> deleteGraph(@Argument String graphId) {
         log.info("Deleting graph: {}", graphId);
         return langGraphService.deleteGraph(graphId);
+    }
+
+    @MutationMapping
+    public Mono<@NonNull RewindGraphPayload> rewindGraph(@Argument String graphId, @Argument String threadId, @Argument String stateJson) {
+        log.info("Rewinding graph: {}:{}:{}", graphId, threadId, stateJson);
+        return langGraphService.rewindGraph(graphId, threadId, stateJson);
     }
 
     @MutationMapping

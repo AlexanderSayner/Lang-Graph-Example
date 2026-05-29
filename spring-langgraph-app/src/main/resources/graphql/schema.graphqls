@@ -14,6 +14,7 @@ type Mutation {
     deleteGraph(graphId: String!): DeleteGraphPayload!
     saveGraphCoordinates(graphId: String!, positions: [NodePositionInput!]!): GraphViewPayload!
     debugTool(input: ToolDebugInput!): ToolDebugPayload!
+    rewindGraph(graphId: String!, threadId: String!, stateJson: String!): RewindPayload!
 }
 
 type Subscription {
@@ -137,6 +138,11 @@ type StateSnapshot {
     nodeId: String!
     stateJson: JSON!
     timestamp: String!
+}
+
+type RewindPayload {
+    success: Boolean!
+    message: String!
 }
 
 # ============== Graph View Types (for visualization) ==============
