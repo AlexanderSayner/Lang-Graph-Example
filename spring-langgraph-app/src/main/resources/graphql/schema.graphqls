@@ -138,6 +138,14 @@ type StateSnapshot {
     nodeId: String!
     stateJson: JSON!
     timestamp: String!
+    diff: StateDiff
+}
+
+type StateDiff {
+    added: JSON                    # Keys added in current state
+    removed: [String!]!            # JSON Pointer paths of removed keys
+    modified: JSON                 # { "path": { "old": ..., "new": ... } }
+    summary: [String!]!            # Human-readable: ["Variable X added"]
 }
 
 type RewindPayload {

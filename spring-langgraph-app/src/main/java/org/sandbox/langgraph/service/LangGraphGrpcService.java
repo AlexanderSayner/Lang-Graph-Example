@@ -14,6 +14,7 @@ import org.sandbox.langgraph.dto.graphql.payload.StateSnapshot;
 import org.sandbox.langgraph.exception.LangGraphException;
 import org.sandbox.langgraph.grpc.*;
 import org.sandbox.langgraph.mapper.GraphGrpcMapper;
+import org.sandbox.langgraph.util.JsonDiffUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -21,7 +22,8 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
-import java.util.Collections;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -189,22 +191,38 @@ public class LangGraphGrpcService {
 
     private GraphHistoryPayload apply(GraphHistoryResponse response) {
         try {
+            List<StateSnapshot> cooking = new ArrayList<>(response.getHistoryList().size());
+            Map<String, Object> previousState = null;
+
             // Map gRPC StateSnapshot list to GraphQL StateSnapshot list
-            List<StateSnapshot> historyList = response.getHistoryList().stream().map(snap -> {
+            for (org.sandbox.langgraph.grpc.StateSnapshot snap : response.getHistoryList()) {
+                Map<String, Object> currentState = new HashMap<>();
                 try {
                     // Parse the JSON string from gRPC into a Map for the GraphQL JSON scalar
-                    Map<String, Object> stateMap = objectMapper.readValue(snap.getStateJson(), new TypeReference<>() {
-                    });
+                    Map<String, Object> stateMap = objectMapper.readValue(
+                            snap.getStateJson(), new TypeReference<>() {
+                            });
                     log.info("State map parsed: {}", stateMap);
-                    return new StateSnapshot(snap.getNodeId(), stateMap, snap.getTimestamp());
+                    currentState = stateMap;
                 } catch (Exception e) {
+                    // A snapshot with empty state on parse error
                     log.warn("Failed to parse state JSON for node {}: {}", snap.getNodeId(), e.getMessage());
-                    // Return a snapshot with empty state on parse error
-                    return new StateSnapshot(snap.getNodeId(), Collections.emptyMap(), snap.getTimestamp());
                 }
-            }).toList();
 
-            return new GraphHistoryPayload(true, historyList, null);
+                JsonDiffUtil.StateDiff diff = JsonDiffUtil.calculateDiff(
+                        previousState, currentState);
+
+                cooking.add(
+                        new StateSnapshot(snap.getNodeId(),
+                                currentState,
+                                snap.getTimestamp(),
+                                diff)
+                );
+
+                previousState = currentState;
+            }
+
+            return new GraphHistoryPayload(true, cooking, null);
         } catch (Exception e) {
             log.error("Error processing history response", e);
             return GraphHistoryPayload.error("Failed to process history: " + e.getMessage());
