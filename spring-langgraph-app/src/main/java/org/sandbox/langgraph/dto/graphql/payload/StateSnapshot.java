@@ -1,6 +1,7 @@
 package org.sandbox.langgraph.dto.graphql.payload;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import org.sandbox.langgraph.util.JsonDiffUtil;
 
 import java.util.Map;
 
@@ -8,6 +9,7 @@ import java.util.Map;
 public record StateSnapshot(
         String nodeId,
         Map<String, Object> stateJson,
-        String timestamp
+        String timestamp,
+        JsonDiffUtil.StateDiff diff
 ) {
 }

@@ -24,6 +24,9 @@ service LangGraphService {
 
     // Get a graph history
     rpc GetExecutionHistory (GraphHistoryRequest) returns (GraphHistoryResponse);
+
+    // Rewind a graph
+    rpc RewindGraph (RewindGraphRequest) returns (RewindGraphPayload);
 }
 
 // ==========================================
@@ -148,6 +151,17 @@ message StateSnapshot {
 
 message GraphHistoryResponse {
     repeated StateSnapshot history = 1;
+}
+
+message RewindGraphRequest {
+    string graph_id = 1;
+    string thread_id = 2;
+    string target_state_json = 3; // The JSON state to revert to
+}
+
+message RewindGraphPayload {
+    bool success = 1;
+    string message = 2;
 }
 
 // ==========================================
