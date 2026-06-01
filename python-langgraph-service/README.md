@@ -45,7 +45,18 @@ The service was designed to:
 
 ### Proto
 ```bash
-python -m grpc_tools.protoc   -I./app/proto   --python_out=./app/generated   --grpc_python_out=./app/generated   ./app/proto/langgraph.proto
+mkdir app/generated
+```
+```bash
+python3 -m grpc_tools.protoc \
+    -I./app/proto \
+    --python_out=./app/generated \
+    --grpc_python_out=./app/generated \
+    ./app/proto/langgraph.proto
+```
+If there is a problem with redis import run
+```bash
+pip install --upgrade "redis>=4.2.0"
 ```
 If there are any problems with a generated file imports set to
 ```python
