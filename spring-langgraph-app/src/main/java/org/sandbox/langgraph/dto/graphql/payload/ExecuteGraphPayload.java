@@ -9,6 +9,7 @@ import java.util.Map; /**
 public record ExecuteGraphPayload(
         boolean success,
         String output,
+        String eventType,
         Map<String, Object> state,
         String errorMessage
 ) {}

@@ -236,6 +236,7 @@
         mutation Exec($input: ExecuteGraphInput!) {
             executeGraph(input: $input) {
                 output
+                eventType
                 state
                 errorMessage
             }
@@ -283,6 +284,8 @@
         const [historyItems, setHistoryItems] = useState([]);
 
         const [modalViewMode, setModalViewMode] = useState('diff'); // 'diff' | 'full
+
+        const [graphStatus, setGraphStatus] = useState('idle'); // Values: 'idle' | 'running' | 'waiting' | 'finished'
 
         // Map for NodeID -> Friendly Name
         const [nodeLabels, setNodeLabels] = useState({});
@@ -382,8 +385,8 @@
 
         const loadGraph = (id) => {
             setSelected(id);
+            setGraphStatus('idle');
 
-            // FIX: Clear active nodes when switching graphs
             setActiveNodeIds(new Set());
 
             fetchGraphQL(VIEW_QUERY, { graphId: id }).then(d => {
@@ -510,25 +513,37 @@
                 const result = data.executeGraph;
                 let outputText = "Graph executed successfully.";
                 let errorText = null;
+                let eventType = null;
 
                 if (Array.isArray(result)) {
                     const lastEvent = result[result.length - 1] || {};
                     outputText = lastEvent.state?.output || lastEvent.output || outputText;
                     errorText = lastEvent.errorMessage;
+                    eventType = lastEvent.eventType;
                 } else if (result) {
                     if (result.state && result.state.output) outputText = result.state.output;
                     else if (result.output) outputText = result.output;
                     errorText = result.errorMessage;
+                    eventType = result.eventType;
                 }
 
                 if (errorText) setMessages(prev => [...prev, { type: 'error', text: errorText }]);
                 else setMessages(prev => [...prev, { type: 'bot', text: outputText }]);
+
+                if (eventType === 'END') {
+                    setGraphStatus('finished');
+                } else if (eventType === 'WAITING_FOR_INPUT') {
+                    setGraphStatus('waiting');
+                } else if (eventType === 'START' || eventType === 'NODE_END') {
+                    setGraphStatus('running');
+                }
 
                 // Refresh history to update tracing
                 await loadHistory();
 
             } catch (err) {
                 setMessages(prev => [...prev, { type: 'error', text: "Error: " + err.message }]);
+                setGraphStatus('idle');
             } finally {
                 setLoading(false);
             }
@@ -553,6 +568,7 @@
             setMessages([]);
             setHistoryItems([]);
             setActiveNodeIds(new Set());
+            setGraphStatus('idle');
         };
 
         const copyThreadId = () => {
@@ -856,12 +872,47 @@
                         {activeTab === 'chat' ? (
                             <>
                                 <div className="chat-messages">
+                                    {graphStatus === 'finished' && (
+                                        <div style={{
+                                            padding: '8px 12px',
+                                            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                                            color: 'white',
+                                            textAlign: 'center',
+                                            fontSize: '12px',
+                                            fontWeight: '500',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            gap: '6px'
+                                        }}>
+                                            <span>✨</span>
+                                            <span>Conversation completed</span>
+                                            <button
+                                                onClick={resetThread}
+                                                style={{
+                                                    background: 'rgba(255,255,255,0.2)',
+                                                    border: '1px solid rgba(255,255,255,0.4)',
+                                                    color: 'white',
+                                                    padding: '4px 10px',
+                                                    borderRadius: '12px',
+                                                    fontSize: '11px',
+                                                    cursor: 'pointer',
+                                                    marginLeft: '8px',
+                                                    transition: 'background 0.2s'
+                                                }}
+                                                onMouseOver={(e) => e.target.style.background = 'rgba(255,255,255,0.3)'}
+                                                onMouseOut={(e) => e.target.style.background = 'rgba(255,255,255,0.2)'}
+                                            >
+                                                Start new thread →
+                                            </button>
+                                        </div>
+                                    )}
                                     {messages.map((m, i) => ( <div key={i} className={`msg msg-${m.type}`}>{m.text}</div> ))}
                                     {loading && <div className="msg msg-bot">Thinking...</div>}
                                     <div ref={chatEndRef} />
                                 </div>
                                 <div className="chat-input-area">
-                                    <input className="chat-input" placeholder="Send message..." value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleExecute()} disabled={loading} />
+                                    <input className="chat-input" placeholder={ graphStatus === 'finished' ? "💬 Graph finished — send a message to continue, or click 'New' for a fresh thread" : "Send message..." } value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleExecute()} disabled={loading} />
                                     <button className="send-btn" onClick={handleExecute} disabled={loading}>Send</button>
                                 </div>
                             </>
