@@ -91,6 +91,18 @@
             border-color: #4caf50 !important;
             box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.3), 0 4px 12px rgba(76, 175, 80, 0.2);
         }
+        /* Purple highlight for the rewind origin node only - THINNER FRAME */
+        .react-flow__node.node-rewind-origin {
+            border-color: #9c27b0 !important;  /* Material purple */
+            border-width: 2px !important;       /* 👈 Thinner border */
+            box-shadow: 0 0 0 2px rgba(156, 39, 176, 0.25);  /* 👈 Subtler shadow */
+            /* Removed pulse animation for cleaner look */
+        }
+
+        /* Keep smooth transitions */
+        .react-flow__node {
+            transition: border-color 0.2s ease, box-shadow 0.2s ease, border-width 0.2s ease;
+        }
 
         .node-header { padding: 8px 12px; border-bottom: 1px solid rgba(0,0,0,0.05); font-weight: bold; font-size: 12px; display: flex; justify-content: space-between; align-items: center; }
         .node-start .node-header { color: #2e7d32; }
@@ -299,6 +311,8 @@
 
         // Visual Path Tracing State
         const [activeNodeIds, setActiveNodeIds] = useState(new Set());
+        // Track which node we rewound from (for purple highlighting)
+        const [rewindOriginNodeId, setRewindOriginNodeId] = useState(null);
 
         // --- Custom Resizer State ---
         const [panelHeight, setPanelHeight] = useState(300);
@@ -388,6 +402,7 @@
             setGraphStatus('idle');
 
             setActiveNodeIds(new Set());
+            setRewindOriginNodeId(null);
 
             fetchGraphQL(VIEW_QUERY, { graphId: id }).then(d => {
                 const view = d.getGraphView;
@@ -461,11 +476,19 @@
             setNodes(nds => {
                 let changed = false;
                 const updated = nds.map(n => {
-                    const isActive = activeNodeIds.has(n.id);
-                    // Extract base class: look for node-{type} pattern
+                    const wasExecuted = activeNodeIds.has(n.id);
+                    if (!wasExecuted) return n;
+
+                    // Extract base class: look for node-{type} pattern (e.g., "node-action", "node-start")
                     const baseMatch = n.className?.match(/node-\w+/);
                     const baseClass = baseMatch ? baseMatch[0] : `node-${n.data?.label?.props?.children?.props?.children?.[0]?.props?.children?.type?.toLowerCase() || 'action'}`;
-                    const newClass = isActive ? `${baseClass} node-active-path` : baseClass;
+
+                    // Determine highlight class
+                    // Purple ONLY for the rewind origin, green for everything else executed
+                    const isRewindOrigin = (rewindOriginNodeId && n.id === rewindOriginNodeId);
+                    const highlightClass = isRewindOrigin ? 'node-rewind-origin' : 'node-active-path';
+
+                    const newClass = `${baseClass} ${highlightClass}`;
 
                     if (n.className !== newClass) {
                         changed = true;
@@ -481,21 +504,25 @@
                 let changed = false;
                 const updated = eds.map(e => {
                     const isActive = activeNodeIds.has(e.source) && activeNodeIds.has(e.target);
-                    const newAnimated = isActive;
-                    const newStyle = isActive ? { stroke: '#4caf50', strokeWidth: 2 } : {};
-                    const newMarker = { ...e.markerEnd, color: isActive ? '#4caf50' : '#b1b1b7' };
+                    if (!isActive) return e;
 
-                    if (e.animated !== newAnimated ||
-                        JSON.stringify(e.style) !== JSON.stringify(newStyle) ||
+                    // Purple edge only if it starts from the rewind origin
+                    const isFromRewindOrigin = (rewindOriginNodeId && e.source === rewindOriginNodeId);
+                    const strokeColor = isFromRewindOrigin ? '#9c27b0' : '#4caf50';
+
+                    const newStyle = { stroke: strokeColor, strokeWidth: 2 };
+                    const newMarker = { ...e.markerEnd, color: strokeColor };
+
+                    if (JSON.stringify(e.style) !== JSON.stringify(newStyle) ||
                         e.markerEnd?.color !== newMarker.color) {
                         changed = true;
-                        return { ...e, animated: newAnimated, style: newStyle, markerEnd: newMarker };
+                        return { ...e, style: newStyle, markerEnd: newMarker };
                     }
                     return e;
                 });
                 return changed ? updated : eds;
             });
-        }, [activeNodeIds, nodes.length]); // Depend on nodes.length to trigger when nodes reset
+        }, [activeNodeIds, rewindOriginNodeId, nodes.length]); // Depend on nodes.length to trigger when nodes reset
 
         const handleExecute = async () => {
             if (!input.trim() || !selected) return;
@@ -532,6 +559,9 @@
 
                 if (eventType === 'END') {
                     setGraphStatus('finished');
+                    if (rewindOriginNodeId) {
+                        setRewindOriginNodeId(null);
+                    }
                 } else if (eventType === 'WAITING_FOR_INPUT') {
                     setGraphStatus('waiting');
                 } else if (eventType === 'START' || eventType === 'NODE_END') {
@@ -569,6 +599,7 @@
             setHistoryItems([]);
             setActiveNodeIds(new Set());
             setGraphStatus('idle');
+            setRewindOriginNodeId(null);
         };
 
         const copyThreadId = () => {
@@ -593,7 +624,7 @@
         };
 
         // --- Rewind Logic ---
-        const handleRewind = async (stateJson) => {
+        const handleRewind = async (stateJson, nodeId) => {
             if (!window.confirm("Rewind to this state? You can then send a new message to continue from here.")) return;
 
             try {
@@ -609,6 +640,7 @@
                     setModalData(null);
                     setActiveTab('chat');
                     setInput("Continue from previous step.");
+                    setRewindOriginNodeId(nodeId);
                 } else {
                     alert("Rewind failed: " + data.rewindGraph.message);
                 }
@@ -803,7 +835,7 @@
                             <div style={{padding: '10px', borderTop: '1px solid #eee', textAlign: 'right', display: 'flex', justifyContent: 'flex-end', gap: '8px'}}>
                                 <button
                                     className="btn-rewind"
-                                    onClick={() => handleRewind(modalData.json)}
+                                    onClick={() => handleRewind(modalData.json, modalData.nodeId)}
                                     style={{ fontSize: '12px', padding: '6px 12px' }}
                                 >
                                     ↩️ Replay from here
@@ -964,7 +996,7 @@
                                                     style={{fontSize: '10px', padding: '4px 8px'}}
                                                     onClick={(e) => {
                                                         e.stopPropagation();
-                                                        handleRewind(h.stateJson);
+                                                        handleRewind(h.stateJson, h.nodeId);
                                                     }}
                                                 >
                                                     Replay
