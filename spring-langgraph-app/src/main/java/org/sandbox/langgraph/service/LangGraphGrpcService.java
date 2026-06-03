@@ -5,11 +5,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
+import lombok.RequiredArgsConstructor;
 import org.jspecify.annotations.NonNull;
 import org.sandbox.langgraph.dto.graphql.input.BuildGraphInput;
 import org.sandbox.langgraph.dto.graphql.input.ExecuteGraphInput;
 import org.sandbox.langgraph.dto.graphql.input.UpdateGraphStateInput;
 import org.sandbox.langgraph.dto.graphql.payload.*;
+import org.sandbox.langgraph.dto.graphql.payload.RewindGraphPayload;
 import org.sandbox.langgraph.dto.graphql.payload.StateSnapshot;
 import org.sandbox.langgraph.exception.LangGraphException;
 import org.sandbox.langgraph.grpc.*;
@@ -26,33 +28,26 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 
 @Service
+@RequiredArgsConstructor
 public class LangGraphGrpcService {
 
     private static final Logger log = LoggerFactory.getLogger(LangGraphGrpcService.class);
+    private static final int TIMEOUT = 30;
 
     private final LangGraphServiceGrpc.LangGraphServiceFutureStub futureStub;
     private final LangGraphServiceGrpc.LangGraphServiceStub asyncStub;
     private final GraphGrpcMapper mapper;
     private final ObjectMapper objectMapper;
 
-    public LangGraphGrpcService(
-            LangGraphServiceGrpc.LangGraphServiceFutureStub futureStub,
-            LangGraphServiceGrpc.LangGraphServiceStub asyncStub,
-            GraphGrpcMapper mapper,
-            ObjectMapper objectMapper) {
-        this.futureStub = futureStub;
-        this.asyncStub = asyncStub;
-        this.mapper = mapper;
-        this.objectMapper = objectMapper;
-    }
-
     public Mono<@NonNull BuildGraphPayload> buildGraph(BuildGraphInput input) {
         return Mono.fromCallable(() -> {
                     log.debug("Building graph: {}", input.graphId());
                     BuildGraphRequest request = mapper.toBuildGraphRequest(input);
-                    return futureStub.buildGraph(request).get();
+                    return futureStub.buildGraph(request).get(TIMEOUT, TimeUnit.SECONDS);
                 })
                 .map(mapper::toBuildGraphPayload)
                 .doOnSuccess(response -> log.info("Graph built successfully: {}", input.graphId()))
@@ -97,7 +92,7 @@ public class LangGraphGrpcService {
         return Mono.fromCallable(() -> {
                     log.debug("Getting graph state for: {}", graphId);
                     GetGraphStateRequest request = mapper.toGetGraphStateRequest(graphId, threadId);
-                    return futureStub.getGraphState(request).get();
+                    return futureStub.getGraphState(request).get(TIMEOUT, TimeUnit.SECONDS);
                 })
                 .map(mapper::toGraphStatePayload)
                 .doOnSuccess(response -> log.debug("Retrieved graph state for: {}", graphId))
@@ -109,7 +104,7 @@ public class LangGraphGrpcService {
         return Mono.fromCallable(() -> {
                     log.debug("Updating graph state for: {}", input.graphId());
                     UpdateGraphStateRequest request = mapper.toUpdateGraphStateRequest(input);
-                    return futureStub.updateGraphState(request).get();
+                    return futureStub.updateGraphState(request).get(TIMEOUT, TimeUnit.SECONDS);
                 })
                 .map(mapper::toUpdateGraphStatePayload)
                 .doOnSuccess(response -> log.debug("Updated graph state for: {}", input.graphId()))
@@ -121,11 +116,11 @@ public class LangGraphGrpcService {
         return Mono.fromCallable(() -> {
                     log.debug("Listing graphs with page size: {}", pageSize);
                     ListGraphsRequest request = mapper.toListGraphsRequest(pageSize, pageToken);
-                    return futureStub.listGraphs(request).get();
+                    return futureStub.listGraphs(request).get(TIMEOUT, TimeUnit.SECONDS);
                 })
                 .map(mapper::toGraphListPayload)
                 .doOnSuccess(response -> {
-                    assert response != null;
+                    Objects.requireNonNull(response, "gRPC returned null response for listGraphs");
                     log.debug("Listed {} graphs", response.totalCount());
                 })
                 .doOnError(this::logAndWrapGrpcError)
@@ -136,7 +131,7 @@ public class LangGraphGrpcService {
         return Mono.fromCallable(() -> {
                     log.debug("Deleting graph: {}", graphId);
                     DeleteGraphRequest request = mapper.toDeleteGraphRequest(graphId);
-                    return futureStub.deleteGraph(request).get();
+                    return futureStub.deleteGraph(request).get(TIMEOUT, TimeUnit.SECONDS);
                 })
                 .map(mapper::toDeleteGraphPayload)
                 .doOnSuccess(response -> log.info("Deleted graph: {}", graphId))
@@ -148,7 +143,7 @@ public class LangGraphGrpcService {
         return Mono.fromCallable(() -> {
                     log.debug("Getting graph {} execution history by thread {}", graphId, threadId);
                     GraphHistoryRequest request = mapper.toGraphHistoryRequest(graphId, threadId);
-                    return futureStub.getExecutionHistory(request).get();
+                    return futureStub.getExecutionHistory(request).get(TIMEOUT, TimeUnit.SECONDS);
                 })
                 .map(this::apply)
                 .doOnError(this::logAndWrapGrpcError)
@@ -162,12 +157,10 @@ public class LangGraphGrpcService {
                             .setThreadId(threadId)
                             .setTargetStateJson(stateJson)
                             .build();
-                    return futureStub.rewindGraph(request).get();
+                    return futureStub.rewindGraph(request).get(TIMEOUT, TimeUnit.SECONDS);
                 })
-                .map(response -> RewindGraphPayload.newBuilder()
-                        .setSuccess(response.getSuccess())
-                        .setMessage(response.getMessage())
-                        .build())
+                .map(mapper::toRewindGraphPayload)
+                .doOnError(this::logAndWrapGrpcError)
                 .subscribeOn(Schedulers.boundedElastic());
     }
 

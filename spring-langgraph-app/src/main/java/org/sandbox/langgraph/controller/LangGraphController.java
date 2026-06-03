@@ -9,7 +9,6 @@ import org.sandbox.langgraph.dto.graphql.input.NodePositionInput;
 import org.sandbox.langgraph.dto.graphql.input.UpdateGraphStateInput;
 import org.sandbox.langgraph.dto.graphql.payload.*;
 import org.sandbox.langgraph.dto.graphql.payload.redis.GraphViewPayload;
-import org.sandbox.langgraph.grpc.RewindGraphPayload;
 import org.sandbox.langgraph.mapper.RedisGraphStorageMapper;
 import org.sandbox.langgraph.service.LangGraphGrpcService;
 import org.sandbox.langgraph.service.RedisGraphViewService;
@@ -93,7 +92,7 @@ public class LangGraphController {
         return langGraphService.executeGraphStream(input, false)
                 .reduce(new ExecuteGraphPayloadAccumulator(), ExecuteGraphPayloadAccumulator::accumulate)
                 .map(ExecuteGraphPayloadAccumulator::toPayload)
-                .defaultIfEmpty(new ExecuteGraphPayload(true, "","idle", null, null));
+                .defaultIfEmpty(new ExecuteGraphPayload(true, "", "idle", null, null));
     }
 
     @SubscriptionMapping
