@@ -74,7 +74,7 @@
         .main-area { flex-grow: 1; display: flex; flex-direction: column; height: 100%; position: relative; }
 
         /* --- Graph Canvas --- */
-        .canvas-container { flex-grow: 1; position: 'relative'; background: #fff; border-bottom: 1px solid #ddd; }
+        .canvas-container { flex-grow: 1; position: relative; background: #fff; border-bottom: 1px solid #ddd; }
 
         /* --- Nodes --- */
         .react-flow__node { font-size: 12px; border-radius: 8px; padding: 0; width: 220px; text-align: left; border: 1px solid rgba(0,0,0,0.1); box-shadow: 0 2px 6px rgba(0,0,0,0.1); background: #fff; transition: box-shadow 0.2s, border-color 0.2s; }
@@ -295,7 +295,7 @@
         const [activeTab, setActiveTab] = useState('chat');
         const [historyItems, setHistoryItems] = useState([]);
 
-        const [modalViewMode, setModalViewMode] = useState('diff'); // 'diff' | 'full
+        const [modalViewMode, setModalViewMode] = useState('diff'); // 'diff' | 'full'
 
         const [graphStatus, setGraphStatus] = useState('idle'); // Values: 'idle' | 'running' | 'waiting' | 'finished'
 
@@ -304,7 +304,7 @@
 
         // Copy States
         const [copiedThread, setCopiedThread] = useState(false);
-        const [copiedGraph, setCopiedGraph] = useState(false);
+        const [copiedGraph, setCopiedGraph] = useState(null);
 
         // Modal State
         const [modalData, setModalData] = useState(null);
@@ -320,21 +320,11 @@
         const isResizing = useRef(false);
 
         // Resizer Handlers
-        const startResizing = useCallback((e) => {
-            e.preventDefault();
-            isResizing.current = true;
-            document.addEventListener('mousemove', stopResizing);
-            document.addEventListener('mouseup', stopResizing);
-        }, []);
-
         const stopResizing = useCallback((e) => {
             if (!isResizing.current) return;
 
             // Calculate new height based on mouse position relative to window bottom
             const newHeight = window.innerHeight - e.clientY;
-            if (newHeight >= 150 && newHeight <= 800) setPanelHeight(newHeight);
-            else if (newHeight < 150) setPanelHeight(150);
-            else setPanelHeight(800);
 
             // Clamp height between min and max
             if (newHeight >= 150 && newHeight <= 800) {
@@ -353,6 +343,13 @@
             }
         }, []);
 
+        const startResizing = useCallback((e) => {
+            e.preventDefault();
+            isResizing.current = true;
+            document.addEventListener('mousemove', stopResizing);
+            document.addEventListener('mouseup', stopResizing);
+        }, []);
+
         // Load Graph List
         useEffect(() => {
             fetchGraphQL(LIST_QUERY).then(d => setGraphs(d.listGraphs.graphs)).catch(console.error);
@@ -364,9 +361,9 @@
         // Load History
         useEffect(() => {
             if (activeTab === 'history' && selected && threadId) loadHistory();
-        }, [activeTab, selected, threadId]);
+        }, [activeTab, selected, threadId, loadHistory]);
 
-        const loadHistory = async () => {
+        const loadHistory = useCallback(async () => {
             try {
                 const data = await fetchGraphQL(HISTORY_QUERY, {
                     graphId: selected,
@@ -395,7 +392,13 @@
                 setHistoryItems([]);
                 setActiveNodeIds(new Set());
             }
-        };
+        }, [selected, threadId]);
+
+        useEffect(() => {
+            if (selected && graphs.length > 0) {
+                loadGraph(selected);
+            }
+        }, [graphs, selected]); // Re-run when graphs are loaded
 
         const loadGraph = (id) => {
             setSelected(id);
@@ -450,7 +453,8 @@
                                         )}
                                     </div>
                                 </div>
-                            )
+                            ),
+                            nodeType: n.nodeType
                         },
                         position: hasPos ? n.position : { x: 0, y: 0 }
                     };
@@ -473,56 +477,52 @@
         useEffect(() => {
             if (!nodes.length) return;
 
-            setNodes(nds => {
-                let changed = false;
-                const updated = nds.map(n => {
-                    const wasExecuted = activeNodeIds.has(n.id);
-                    if (!wasExecuted) return n;
+            // 1. Update Nodes
+            setNodes(nds => nds.map(n => {
+                const wasExecuted = activeNodeIds.has(n.id);
+                const isRewindOrigin = (rewindOriginNodeId && n.id === rewindOriginNodeId);
 
-                    // Extract base class: look for node-{type} pattern (e.g., "node-action", "node-start")
-                    const baseMatch = n.className?.match(/node-\w+/);
-                    const baseClass = baseMatch ? baseMatch[0] : `node-${n.data?.label?.props?.children?.props?.children?.[0]?.props?.children?.type?.toLowerCase() || 'action'}`;
+                // Safely extract base class (strips any old green/purple highlights)
+                const baseClass = (n.className || '').replace(/node-active-path|node-rewind-origin/g, '').trim() || 'node-action';
 
-                    // Determine highlight class
-                    // Purple ONLY for the rewind origin, green for everything else executed
-                    const isRewindOrigin = (rewindOriginNodeId && n.id === rewindOriginNodeId);
-                    const highlightClass = isRewindOrigin ? 'node-rewind-origin' : 'node-active-path';
+                let highlightClass = '';
 
-                    const newClass = `${baseClass} ${highlightClass}`;
+                // If it's in the current valid history, OR it's the rewind origin
+                if (wasExecuted || isRewindOrigin) {
+                    // Purple takes precedence over green for the rewind origin
+                    highlightClass = isRewindOrigin ? 'node-rewind-origin' : 'node-active-path';
+                }
 
-                    if (n.className !== newClass) {
-                        changed = true;
-                        return { ...n, className: newClass };
-                    }
-                    return n;
-                });
-                return changed ? updated : nds;
-            });
+                const newClass = `${baseClass} ${highlightClass}`.trim();
 
-            // Also update edges for visual path tracing
-            setEdges(eds => {
-                let changed = false;
-                const updated = eds.map(e => {
-                    const isActive = activeNodeIds.has(e.source) && activeNodeIds.has(e.target);
-                    if (!isActive) return e;
+                return n.className !== newClass ? { ...n, className: newClass } : n;
+            }));
 
-                    // Purple edge only if it starts from the rewind origin
-                    const isFromRewindOrigin = (rewindOriginNodeId && e.source === rewindOriginNodeId);
-                    const strokeColor = isFromRewindOrigin ? '#9c27b0' : '#4caf50';
+            // 2. Update Edges
+            setEdges(eds => eds.map(e => {
+                const isActive = activeNodeIds.has(e.source) && activeNodeIds.has(e.target);
+                const isFromRewindOrigin = (rewindOriginNodeId && e.source === rewindOriginNodeId);
 
-                    const newStyle = { stroke: strokeColor, strokeWidth: 2 };
-                    const newMarker = { ...e.markerEnd, color: strokeColor };
+                let strokeColor = '#b1b1b7';
+                let strokeWidth = 1;
+                let markerColor = '#b1b1b7';
 
-                    if (JSON.stringify(e.style) !== JSON.stringify(newStyle) ||
-                        e.markerEnd?.color !== newMarker.color) {
-                        changed = true;
-                        return { ...e, style: newStyle, markerEnd: newMarker };
-                    }
-                    return e;
-                });
-                return changed ? updated : eds;
-            });
-        }, [activeNodeIds, rewindOriginNodeId, nodes.length]); // Depend on nodes.length to trigger when nodes reset
+                if (isActive) {
+                    strokeColor = isFromRewindOrigin ? '#9c27b0' : '#4caf50';
+                    strokeWidth = 2;
+                    markerColor = strokeColor;
+                }
+
+                const newStyle = { stroke: strokeColor, strokeWidth: strokeWidth };
+                const newMarker = { ...e.markerEnd, color: markerColor };
+
+                if (e.style?.stroke !== newStyle.stroke || e.markerEnd?.color !== newMarker.color) {
+                    return { ...e, style: newStyle, markerEnd: newMarker };
+                }
+                return e;
+            }));
+
+        }, [activeNodeIds, rewindOriginNodeId]);
 
         const handleExecute = async () => {
             if (!input.trim() || !selected) return;
@@ -628,7 +628,6 @@
             if (!window.confirm("Rewind to this state? You can then send a new message to continue from here.")) return;
 
             try {
-                console.log("Rewinding with state:", stateJson);
                 const data = await fetchGraphQL(REWIND_MUTATION, {
                     graphId: selected,
                     threadId: threadId,
@@ -636,11 +635,19 @@
                 });
 
                 if(data.rewindGraph.success) {
-                    alert("State rewound. Switching to Chat.");
+                    console.log("State rewound. Switching to Chat.");
                     setModalData(null);
                     setActiveTab('chat');
                     setInput("Continue from previous step.");
+
+                    // 1. Mark the origin node to receive the Purple highlight
                     setRewindOriginNodeId(nodeId);
+
+                    // 2. Fetch the NEW history from the backend.
+                    // This naturally updates activeNodeIds to ONLY include nodes up to the rewind point (keeping them green),
+                    // and automatically drops nodes that happened after (reverting them to default color).
+                    await loadHistory();
+
                 } else {
                     alert("Rewind failed: " + data.rewindGraph.message);
                 }
@@ -688,9 +695,13 @@
         // Helper: Render detailed diff view in modal
         const renderDiffDetails = (diff, fullJson) => {
             // Fallback to full JSON if no diff or in full view mode
-            if (!diff || Object.keys(diff.added || {}).length === 0 &&
+            const hasNoChanges =
+                Object.keys(diff.added || {}).length === 0 &&
                 (diff.removed || []).length === 0 &&
-                Object.keys(diff.modified || {}).length === 0) {
+                Object.keys(diff.modified || {}).length === 0;
+
+            // Fallback to full JSON if no diff or in full view mode
+            if (!diff || hasNoChanges) {
                 return <pre className="json-viewer">{JSON.stringify(fullJson, null, 2)}</pre>;
             }
 
@@ -875,7 +886,7 @@
                 <div className="main-area">
                     <div className="canvas-container">
                         <button className="save-layout-btn" onClick={handleSaveLayout}>Save Layout</button>
-                        <ReactFlow nodes={nodes} edges={edges} onNodesChange={onNodesChange} fitView>
+                        <ReactFlow nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} fitView>
                             <Background />
                             <Controls />
                         </ReactFlow>
