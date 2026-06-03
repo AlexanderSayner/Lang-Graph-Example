@@ -4,6 +4,8 @@ import logging
 import time
 from typing import Dict, Any, Callable
 
+from cachetools import LRUCache
+
 import grpc
 from langchain_core.runnables import Runnable, RunnableConfig
 from langgraph.constants import END
@@ -44,16 +46,25 @@ def handle_grpc_errors(func: Callable):
 # --- Helper ---
 
 def _serialize_state(state: Dict[str, Any]) -> Dict[str, str]:
-    """Converts all values in the state dict to strings for Protobuf compatibility."""
-    serialized = {}
-    for k, v in state.items():
+    """
+    Converts state values to strings for Protobuf map<string, string> compatibility.
+    Preserves JSON semantics: True -> "true", None -> "null", etc.
+    """
+
+    def _to_proto_str(v):
+        if v is None:
+            return "null"
+        if isinstance(v, bool):  # ⚠️ Check BEFORE int (bool is subclass of int in Python)
+            return "true" if v else "false"
+        if isinstance(v, (int, float)):
+            return str(v)
+        if isinstance(v, str):
+            return v
         if isinstance(v, (dict, list)):
-            # Convert complex objects to JSON strings
-            serialized[k] = json.dumps(v)
-        else:
-            # Convert primitives (int, float, bool) to string
-            serialized[k] = str(v)
-    return serialized
+            return json.dumps(v, ensure_ascii=False)
+        return str(v)
+
+    return {str(k): _to_proto_str(v) for k, v in state.items()}
 
 
 # --- Servicer ---
@@ -63,8 +74,9 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
 
     def __init__(self, store: GraphStore, checkpointer: Any):
         self.store = store
-        # Cache for compiled graphs. In production, consider LRU cache or Redis.
-        self._compiled_graphs: Dict[str, Any] = {}
+        # LRU Cache for compiled graphs
+        max_cache_size = getattr(settings, "MAX_CACHED_GRAPHS", 100)
+        self._compiled_graphs = LRUCache(maxsize=max_cache_size)
 
         self._checkpointer = checkpointer
 
@@ -87,6 +99,37 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             return compiled
 
         self.node_handler = NodeHandler(self._llm_client, graph_loader)
+
+    async def _get_compiled_graph(self, graph_id: str) -> Runnable:
+        """
+        Load compiled graph from cache or store.
+        Raises KeyError if graph not found, ValueError if build fails.
+        """
+        # Check in-memory cache first
+        if graph_id in self._compiled_graphs:
+            return self._compiled_graphs[graph_id]
+
+        # Load from persistent store
+        stored_data = await self.store.get_graph(graph_id)
+        if not stored_data:
+            raise KeyError(f"Graph {graph_id} not found")
+
+        # Normalize to dict (handle Pydantic model or raw dict)
+        if hasattr(stored_data, 'model_dump'):
+            graph_dict = stored_data.model_dump()
+        elif hasattr(stored_data, 'dict'):
+            graph_dict = stored_data.dict()
+        else:
+            graph_dict = stored_data
+
+        # Validate and compile
+        validated = GraphDefinition(**graph_dict)
+        compiled = self._build_langgraph(validated)
+
+        # Cache for next time
+        self._compiled_graphs[graph_id] = compiled
+        logger.info(f"Graph {graph_id} compiled and cached")
+        return compiled
 
     def _build_langgraph(self, graph_data: GraphDefinition) -> Runnable:
         """Internal method to build and compile the graph."""
@@ -180,9 +223,15 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                         # Look up value in state 'variables' (from routers) or top-level state
                         vars_dict = state.get("variables", {}) or {}
                         # Check variables first, then top level
-                        current_val = vars_dict.get(parsed_key) or state.get(parsed_key)
+                        current_val = vars_dict.get(parsed_key)
+                        if current_val is None and parsed_key in state:
+                            current_val = state[parsed_key]
 
-                        match = str(current_val).strip() == str(expected_val).strip()
+                        # For numeric conditions, avoid string comparison
+                        if isinstance(expected_val, (int, float)) and isinstance(current_val, (int, float)):
+                            match = current_val == expected_val
+                        else:
+                            match = str(current_val).strip() == str(expected_val).strip()
 
                         logger.debug(
                             f"Router Check: Key='{parsed_key}', Expected='{expected_val}', Actual='{current_val}', Match='{match}'")
@@ -223,6 +272,11 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
     async def BuildGraph(self, request, context):
         graph_id = request.graph_id
 
+        # 🔥 EVICT OLD COMPILED VERSION IF IT EXISTS
+        if graph_id in self._compiled_graphs:
+            del self._compiled_graphs[graph_id]
+            logger.debug(f"Evicted stale compiled graph: {graph_id}")
+
         # Convert proto to dict for Pydantic validation in store
         nodes = [{"node_id": n.node_id, "node_type": n.node_type,
                   "handler_name": n.handler_name, "metadata": dict(n.metadata)} for n in request.nodes]
@@ -261,45 +315,20 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                 """
         graph_id = request.graph_id
 
-        # 1. Basic Validation
         if not graph_id:
             # immediate error message then stop the stream
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "graph_id is required")
             return  # defensive
 
-        # 2. Check Cache
-        compiled_graph = self._compiled_graphs.get(graph_id)
-
-        if compiled_graph is None:
-            logger.info(f"Graph {graph_id} not in memory. Attempting to load from store...")
-
-            stored_data = await self.store.get_graph(graph_id)
-
-            if not stored_data:
-                logger.error(f"Graph {graph_id} not found in store either.")
-                await context.abort(grpc.StatusCode.NOT_FOUND, f"Graph {graph_id} not found")
-                return
-
-            try:
-                # Handle if stored_data is a Pydantic model or a Dictionary
-                if hasattr(stored_data, 'model_dump'):
-                    graph_dict = stored_data.model_dump()
-                elif hasattr(stored_data, 'dict'):
-                    graph_dict = stored_data.dict()
-                else:
-                    graph_dict = stored_data
-
-                # Validate and Build
-                validated_graph_data = GraphDefinition(**graph_dict)
-                compiled_graph = self._build_langgraph(validated_graph_data)
-
-                # Cache it for future requests
-                self._compiled_graphs[graph_id] = compiled_graph
-                logger.info(f"Graph {graph_id} successfully rebuilt and cached.")
-            except Exception as e:
-                logger.error(f"Failed to rebuild graph {graph_id}: {e}", exc_info=True)
-                await context.abort(grpc.StatusCode.INTERNAL, f"Failed to rebuild graph: {e}")
-                return
+        try:
+            compiled_graph = await self._get_compiled_graph(graph_id)
+        except KeyError:
+            await context.abort(grpc.StatusCode.NOT_FOUND, f"Graph {graph_id} not found")
+            return
+        except Exception as e:
+            logger.error(f"Failed to rebuild graph {graph_id}: {e}", exc_info=True)
+            await context.abort(grpc.StatusCode.INTERNAL, f"Failed to rebuild graph: {e}")
+            return
 
         config: RunnableConfig = {
             "configurable": {
@@ -533,34 +562,13 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         graph_id = request.graph_id
         thread_id = request.thread_id or "default"
 
-        # 1. Retrieve the compiled graph
-        compiled_graph = self._compiled_graphs.get(graph_id)
-
-        # 2. If not in memory, load from store and compile (Same logic as ExecuteGraph)
-        if compiled_graph is None:
-            logger.info(f"Graph {graph_id} not in memory. Loading for history...")
-            stored_data = await self.store.get_graph(graph_id)
-
-            if not stored_data:
-                raise ValueError(f"Graph {graph_id} not found")
-
-            try:
-                # Handle dict vs pydantic model
-                if hasattr(stored_data, 'model_dump'):
-                    graph_dict = stored_data.model_dump()
-                elif hasattr(stored_data, 'dict'):
-                    graph_dict = stored_data.dict()
-                else:
-                    graph_dict = stored_data
-
-                validated_graph_data = GraphDefinition(**graph_dict)
-                compiled_graph = self._build_langgraph(validated_graph_data)
-
-                # Cache it for future use
-                self._compiled_graphs[graph_id] = compiled_graph
-            except Exception as e:
-                logger.error(f"Failed to rebuild graph {graph_id}: {e}", exc_info=True)
-                raise ValueError(f"Failed to rebuild graph: {e}")
+        try:
+            compiled_graph = await self._get_compiled_graph(graph_id)
+        except KeyError:
+            raise ValueError(f"Graph {graph_id} not found")  # Let decorator handle gRPC response
+        except Exception as e:
+            logger.error(f"Failed to load graph {graph_id}: {e}", exc_info=True)
+            raise ValueError(f"Failed to load graph: {e}")
 
         config = {"configurable": {"thread_id": thread_id}}
         history_list = []
@@ -600,40 +608,17 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         thread_id = request.thread_id
         target_state_json = request.target_state_json
 
-        # Check cache first
-        compiled_graph = self._compiled_graphs.get(graph_id)
-
-        # Load from store if not cached (same logic as ExecuteGraph)
-        if compiled_graph is None:
-            logger.info(f"Graph {graph_id} not in memory. Loading for rewind...")
-
-            stored_data = await self.store.get_graph(graph_id)
-            if not stored_data:
-                context.set_code(grpc.StatusCode.NOT_FOUND)
-                context.set_details(f"Graph '{graph_id}' not found")
-                return langgraph_pb2.RewindGraphPayload(success=False, message=f"Graph '{graph_id}' not found")
-
-            try:
-                # Handle Pydantic model or dict
-                if hasattr(stored_data, 'model_dump'):
-                    graph_dict = stored_data.model_dump()
-                elif hasattr(stored_data, 'dict'):
-                    graph_dict = stored_data.dict()
-                else:
-                    graph_dict = stored_data
-
-                validated_graph_data = GraphDefinition(**graph_dict)
-                compiled_graph = self._build_langgraph(validated_graph_data)
-
-                # Cache for future calls
-                self._compiled_graphs[graph_id] = compiled_graph
-                logger.info(f"Graph {graph_id} loaded and cached for rewind.")
-
-            except Exception as e:
-                logger.error(f"Failed to rebuild graph {graph_id}: {e}", exc_info=True)
-                context.set_code(grpc.StatusCode.INTERNAL)
-                context.set_details(f"Failed to rebuild graph: {e}")
-                return langgraph_pb2.RewindGraphPayload(success=False, message=f"Build error: {e}")
+        try:
+            compiled_graph = await self._get_compiled_graph(graph_id)
+        except KeyError:
+            context.set_code(grpc.StatusCode.NOT_FOUND)
+            context.set_details(f"Graph '{graph_id}' not found")
+            return langgraph_pb2.RewindGraphPayload(success=False, message=f"Graph '{graph_id}' not found")
+        except Exception as e:
+            logger.error(f"Failed to load graph {graph_id}: {e}", exc_info=True)
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(f"Failed to load graph: {e}")
+            return langgraph_pb2.RewindGraphPayload(success=False, message=f"Build error: {e}")
 
         config = {"configurable": {"thread_id": thread_id}}
 

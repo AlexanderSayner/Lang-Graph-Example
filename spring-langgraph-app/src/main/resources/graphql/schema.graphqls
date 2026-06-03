@@ -104,6 +104,7 @@ type BuildGraphPayload {
 type ExecuteGraphPayload {
     success: Boolean!
     output: String
+    eventType: String
     state: JSON
     errorMessage: String
 }
