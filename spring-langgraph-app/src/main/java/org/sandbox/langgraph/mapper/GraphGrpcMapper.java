@@ -92,6 +92,9 @@ public interface GraphGrpcMapper {
         if (input.stateUpdates() != null) {
             builder.putAllStateUpdates(convertToStringMap(input.stateUpdates()));
         }
+        if (input.asNode() != null) {
+            builder.setAsNode(input.asNode());
+        }
         return builder.build();
     }
 

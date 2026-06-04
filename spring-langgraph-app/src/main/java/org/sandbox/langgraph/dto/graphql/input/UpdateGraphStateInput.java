@@ -12,6 +12,8 @@ public record UpdateGraphStateInput(
 
         String threadId,
 
+        String asNode,
+
         @NotNull(message = "State updates are required")
         @Size(min = 1, message = "At least one state update is required")
         Map<String, Object> stateUpdates

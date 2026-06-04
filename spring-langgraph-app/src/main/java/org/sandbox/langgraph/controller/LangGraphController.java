@@ -116,9 +116,12 @@ public class LangGraphController {
     }
 
     @MutationMapping
-    public Mono<@NonNull RewindGraphPayload> rewindGraph(@Argument String graphId, @Argument String threadId, @Argument String stateJson) {
+    public Mono<@NonNull RewindGraphPayload> rewindGraph(@Argument String graphId,
+                                                         @Argument String threadId,
+                                                         @Argument String stateJson,
+                                                         @Argument String targetNodeId) {
         log.info("Rewinding graph: {}:{}:{}", graphId, threadId, stateJson);
-        return langGraphService.rewindGraph(graphId, threadId, stateJson);
+        return langGraphService.rewindGraph(graphId, threadId, stateJson, targetNodeId);
     }
 
     @MutationMapping

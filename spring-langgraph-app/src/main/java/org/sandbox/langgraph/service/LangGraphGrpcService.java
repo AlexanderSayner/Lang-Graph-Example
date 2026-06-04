@@ -150,12 +150,13 @@ public class LangGraphGrpcService {
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
-    public Mono<@NonNull RewindGraphPayload> rewindGraph(String graphId, String threadId, String stateJson) {
+    public Mono<@NonNull RewindGraphPayload> rewindGraph(String graphId, String threadId, String stateJson, String targetNodeId) {
         return Mono.fromCallable(() -> {
                     RewindGraphRequest request = RewindGraphRequest.newBuilder()
                             .setGraphId(graphId)
                             .setThreadId(threadId)
                             .setTargetStateJson(stateJson)
+                            .setTargetNodeId(targetNodeId)
                             .build();
                     return futureStub.rewindGraph(request).get(TIMEOUT, TimeUnit.SECONDS);
                 })

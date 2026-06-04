@@ -52,8 +52,8 @@ const SAVE_MUTATION = `mutation Save($graphId: String!, $positions: [NodePositio
 const DELETE_MUTATION = `mutation Del($graphId: String!) { deleteGraph(graphId: $graphId) { success } }`;
 
 const REWIND_MUTATION = `
-    mutation Rewind($graphId: String!, $threadId: String!, $stateJson: String!) {
-        rewindGraph(graphId: $graphId, threadId: $threadId, stateJson: $stateJson) { success message }
+    mutation Rewind($graphId: String!, $threadId: String!, $stateJson: String!, $targetNodeId: String) {
+        rewindGraph(graphId: $graphId, threadId: $threadId, stateJson: $stateJson, targetNodeId: $targetNodeId) { success message }
     }
 `;
 
@@ -425,7 +425,8 @@ function App() {
             const data = await fetchGraphQL(REWIND_MUTATION, {
                 graphId: selected,
                 threadId: threadId,
-                stateJson: JSON.stringify(stateJson)
+                stateJson: JSON.stringify(stateJson),
+                targetNodeId: nodeId
             });
 
             if(data.rewindGraph.success) {
@@ -709,6 +710,7 @@ function App() {
                     {activeTab === 'chat' ? (
                         <>
                             <div className="chat-messages">
+                                {messages.map((m, i) => ( <div key={i} className={`msg msg-${m.type}`}>{m.text}</div> ))}
                                 {graphStatus === 'finished' && (
                                     <div style={{
                                         padding: '8px 12px',
@@ -744,7 +746,6 @@ function App() {
                                         </button>
                                     </div>
                                 )}
-                                {messages.map((m, i) => ( <div key={i} className={`msg msg-${m.type}`}>{m.text}</div> ))}
                                 {loading && <div className="msg msg-bot">Thinking...</div>}
                                 <div ref={chatEndRef} />
                             </div>
