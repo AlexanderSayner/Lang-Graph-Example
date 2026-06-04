@@ -1,0 +1,827 @@
+const { useState, useEffect, useRef, useCallback } = React;
+const { ReactFlow, Background, Controls, MarkerType, useNodesState, useEdgesState } = window.ReactFlow;
+
+// --- Config ---
+const API_URL = "http://localhost:9191/graphql";
+
+// --- Helpers ---
+const fetchGraphQL = async (query, variables) => {
+    const response = await fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, variables })
+    });
+    const json = await response.json();
+    if (json.errors) throw new Error(json.errors[0].message);
+    return json.data;
+};
+
+// --- Queries ---
+const LIST_QUERY = `query { listGraphs(pageSize: 100) { graphs { graphId graphName nodeCount } } }`;
+const VIEW_QUERY = `query Get($graphId: String!) { getGraphView(graphId: $graphId) { nodes { nodeId nodeType metadata position { x y } } edges { source target condition } } }`;
+
+const HISTORY_QUERY = `query History($graphId: String!, $threadId: String!) {
+    getExecutionHistory(graphId: $graphId, threadId: $threadId) {
+        success
+        history {
+            nodeId
+            stateJson
+            timestamp
+            diff {
+                added
+                removed
+                modified
+                summary
+            }
+        }
+        errorMessage
+    }
+}`;
+
+const EXECUTE_MUTATION = `
+    mutation Exec($input: ExecuteGraphInput!) {
+        executeGraph(input: $input) {
+            output
+            eventType
+            state
+            errorMessage
+        }
+    }`;
+
+const SAVE_MUTATION = `mutation Save($graphId: String!, $positions: [NodePositionInput!]!) { saveGraphCoordinates(graphId: $graphId, positions: $positions) { success } }`;
+const DELETE_MUTATION = `mutation Del($graphId: String!) { deleteGraph(graphId: $graphId) { success } }`;
+
+const REWIND_MUTATION = `
+    mutation Rewind($graphId: String!, $threadId: String!, $stateJson: String!, $targetNodeId: String) {
+        rewindGraph(graphId: $graphId, threadId: $threadId, stateJson: $stateJson, targetNodeId: $targetNodeId) { success message }
+    }
+`;
+
+// --- Layout Logic ---
+const layoutGraph = (nodes, edges) => {
+    const g = new dagre.graphlib.Graph();
+    g.setGraph({ rankdir: 'TB', nodesep: 150, ranksep: 120 });
+    g.setDefaultEdgeLabel(() => ({}));
+    nodes.forEach(n => g.setNode(n.id, { width: 220, height: 80 }));
+    edges.forEach(e => g.setEdge(e.source, e.target));
+    dagre.layout(g);
+    return nodes.map(n => {
+        const pos = g.node(n.id);
+        return { ...n, position: { x: pos.x - 110, y: pos.y - 40 } };
+    });
+};
+
+// --- Main App ---
+function App() {
+    const [graphs, setGraphs] = useState([]);
+    const [selected, setSelected] = useState(null);
+    const [collapsed, setCollapsed] = useState(false);
+
+    const [nodes, setNodes, onNodesChange] = useNodesState([]);
+    const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+
+    const [messages, setMessages] = useState([]);
+    const [input, setInput] = useState("");
+    const [threadId, setThreadId] = useState(Date.now().toString());
+    const [loading, setLoading] = useState(false);
+    const chatEndRef = useRef(null);
+
+    const [activeTab, setActiveTab] = useState('chat');
+    const [historyItems, setHistoryItems] = useState([]);
+
+    const [modalViewMode, setModalViewMode] = useState('diff'); // 'diff' | 'full'
+
+    const [graphStatus, setGraphStatus] = useState('idle'); // Values: 'idle' | 'running' | 'waiting' | 'finished'
+
+    // Map for NodeID -> Friendly Name
+    const [nodeLabels, setNodeLabels] = useState({});
+
+    // Copy States
+    const [copiedThread, setCopiedThread] = useState(false);
+    const [copiedGraph, setCopiedGraph] = useState(null);
+
+    // Modal State
+    const [modalData, setModalData] = useState(null);
+
+    // Visual Path Tracing State
+    const [activeNodeIds, setActiveNodeIds] = useState(new Set());
+    // Track which node we rewound from (for purple highlighting)
+    const [rewindOriginNodeId, setRewindOriginNodeId] = useState(null);
+
+    // --- Custom Resizer State ---
+    const [panelHeight, setPanelHeight] = useState(300);
+    const panelRef = useRef(null);
+    const isResizing = useRef(false);
+
+    // Resizer Handlers
+    const stopResizing = useCallback((e) => {
+        if (!isResizing.current) return;
+
+        // Calculate new height based on mouse position relative to window bottom
+        const newHeight = window.innerHeight - e.clientY;
+
+        // Clamp height between min and max
+        if (newHeight >= 150 && newHeight <= 800) {
+            setPanelHeight(newHeight);
+        } else if (newHeight < 150) {
+            setPanelHeight(150);
+        } else {
+            setPanelHeight(800);
+        }
+
+        // Cleanup
+        if (e.type === 'mouseup') {
+            isResizing.current = false;
+            document.removeEventListener('mousemove', stopResizing);
+            document.removeEventListener('mouseup', stopResizing);
+        }
+    }, []);
+
+    const startResizing = useCallback((e) => {
+        e.preventDefault();
+        isResizing.current = true;
+        document.addEventListener('mousemove', stopResizing);
+        document.addEventListener('mouseup', stopResizing);
+    }, []);
+
+    // Load Graph List
+    useEffect(() => {
+        fetchGraphQL(LIST_QUERY).then(d => setGraphs(d.listGraphs.graphs)).catch(console.error);
+    }, []);
+
+    // Scroll chat to bottom
+    useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+    // Load History
+    useEffect(() => {
+        if (activeTab === 'history' && selected && threadId) loadHistory();
+    }, [activeTab, selected, threadId, loadHistory]);
+
+    const loadHistory = useCallback(async () => {
+        try {
+            const data = await fetchGraphQL(HISTORY_QUERY, {
+                graphId: selected,
+                threadId
+            });
+
+            if (data.getExecutionHistory.success) {
+                // Backend now returns history items with optional 'diff' field
+                setHistoryItems(data.getExecutionHistory.history);
+
+                // Visual Path Tracing: Calculate Active Nodes
+                const executedIds = new Set(
+                    data.getExecutionHistory.history
+                        .map(h => h.nodeId)
+                        .filter(id => id && !id.startsWith("Pending"))
+                );
+                setActiveNodeIds(executedIds);
+
+            } else {
+                console.error("History error:", data.getExecutionHistory.errorMessage);
+                setHistoryItems([]);
+                setActiveNodeIds(new Set());
+            }
+        } catch (err) {
+            console.error("Failed to load history:", err);
+            setHistoryItems([]);
+            setActiveNodeIds(new Set());
+        }
+    }, [selected, threadId]);
+
+    useEffect(() => {
+        if (selected && graphs.length > 0) {
+            loadGraph(selected);
+        }
+    }, [graphs, selected]); // Re-run when graphs are loaded
+
+    const loadGraph = (id) => {
+        setSelected(id);
+        setGraphStatus('idle');
+
+        setActiveNodeIds(new Set());
+        setRewindOriginNodeId(null);
+
+        fetchGraphQL(VIEW_QUERY, { graphId: id }).then(d => {
+            const view = d.getGraphView;
+
+            // Create Label Map
+            const labels = {};
+            view.nodes.forEach(n => { if(n.metadata?.label) labels[n.nodeId] = n.metadata.label; });
+            setNodeLabels(labels);
+
+            // Map Backend Nodes to React Flow Nodes
+            const rN = view.nodes.map(n => {
+                const hasPos = n.position && (n.position.x || n.position.y);
+                const prompt = n.metadata?.system_prompt || "";
+                const subgraphId = n.metadata?.subgraph_id;
+                const label = n.metadata?.label;
+                const toolUrl = n.metadata?.url || "";
+
+                const subgraphName = graphs.find(g => g.graphId === subgraphId)?.graphName || "Unknown Graph";
+
+                return {
+                    id: n.nodeId,
+                    className: `node-${n.nodeType.toLowerCase()}`,
+                    data: {
+                        label: (
+                            <div>
+                                <div className="node-header">
+                                    {/* Use Label if exists, else ID */}
+                                    <span>{label || n.nodeId}</span>
+                                    <span className="node-type-badge">{n.nodeType}</span>
+                                </div>
+
+                                <div className="node-body">
+                                    {n.nodeType === 'GRAPH' ? (
+                                        <div>
+                                            <div style={{marginBottom: '5px'}}><strong>Subgraph:</strong><br/>{subgraphName}</div>
+                                            <div className="subgraph-link" onClick={(e) => { e.stopPropagation(); if(subgraphId) loadGraph(subgraphId); }}>View Subgraph &rarr;</div>
+                                        </div>
+                                    ) : n.nodeType === 'TOOL' ? (
+                                        <div>
+                                            <strong>Tool:</strong> {n.metadata?.method || 'GET'}<br/>
+                                            <span style={{fontSize: '9px', color: '#666'}}>{toolUrl}</span>
+                                        </div>
+                                    ) : (
+                                        <div className="node-prompt">{prompt}</div>
+                                    )}
+                                </div>
+                            </div>
+                        ),
+                        nodeType: n.nodeType
+                    },
+                    position: hasPos ? n.position : { x: 0, y: 0 }
+                };
+            });
+
+            const rE = view.edges.map((e, i) => ({
+                id: `e${i}`, source: e.source, target: e.target,
+                label: e.condition,
+                animated: true,
+                markerEnd: { type: MarkerType.ArrowClosed }
+            }));
+
+            const needsLayout = rN.every(n => n.position.x === 0 && n.position.y === 0);
+            setNodes(needsLayout ? layoutGraph(rN, rE) : rN);
+            setEdges(rE);
+        });
+    };
+
+    // Re-apply node styles when activeNodeIds changes OR when nodes are reset
+    useEffect(() => {
+        if (!nodes.length) return;
+
+        // 1. Update Nodes
+        setNodes(nds => nds.map(n => {
+            const wasExecuted = activeNodeIds.has(n.id);
+            const isRewindOrigin = (rewindOriginNodeId && n.id === rewindOriginNodeId);
+
+            // Safely extract base class (strips any old green/purple highlights)
+            const baseClass = (n.className || '').replace(/node-active-path|node-rewind-origin/g, '').trim() || 'node-action';
+
+            let highlightClass = '';
+
+            // If it's in the current valid history, OR it's the rewind origin
+            if (wasExecuted || isRewindOrigin) {
+                // Purple takes precedence over green for the rewind origin
+                highlightClass = isRewindOrigin ? 'node-rewind-origin' : 'node-active-path';
+            }
+
+            const newClass = `${baseClass} ${highlightClass}`.trim();
+
+            return n.className !== newClass ? { ...n, className: newClass } : n;
+        }));
+
+        // 2. Update Edges
+        setEdges(eds => eds.map(e => {
+            const isActive = activeNodeIds.has(e.source) && activeNodeIds.has(e.target);
+            const isFromRewindOrigin = (rewindOriginNodeId && e.source === rewindOriginNodeId);
+
+            let strokeColor = '#b1b1b7';
+            let strokeWidth = 1;
+            let markerColor = '#b1b1b7';
+
+            if (isActive) {
+                strokeColor = isFromRewindOrigin ? '#9c27b0' : '#4caf50';
+                strokeWidth = 2;
+                markerColor = strokeColor;
+            }
+
+            const newStyle = { stroke: strokeColor, strokeWidth: strokeWidth };
+            const newMarker = { ...e.markerEnd, color: markerColor };
+
+            if (e.style?.stroke !== newStyle.stroke || e.markerEnd?.color !== newMarker.color) {
+                return { ...e, style: newStyle, markerEnd: newMarker };
+            }
+            return e;
+        }));
+
+    }, [activeNodeIds, rewindOriginNodeId]);
+
+    const handleExecute = async () => {
+        if (!input.trim() || !selected) return;
+
+        const userText = input;
+        setMessages(prev => [...prev, { type: 'user', text: userText }]);
+        setInput("");
+        setLoading(true);
+
+        try {
+            const data = await fetchGraphQL(EXECUTE_MUTATION, {
+                input: { graphId: selected, threadId: threadId, input: userText }
+            });
+
+            const result = data.executeGraph;
+            let outputText = "Graph executed successfully.";
+            let errorText = null;
+            let eventType = null;
+
+            if (Array.isArray(result)) {
+                const lastEvent = result[result.length - 1] || {};
+                outputText = lastEvent.state?.output || lastEvent.output || outputText;
+                errorText = lastEvent.errorMessage;
+                eventType = lastEvent.eventType;
+            } else if (result) {
+                if (result.state && result.state.output) outputText = result.state.output;
+                else if (result.output) outputText = result.output;
+                errorText = result.errorMessage;
+                eventType = result.eventType;
+            }
+
+            if (errorText) setMessages(prev => [...prev, { type: 'error', text: errorText }]);
+            else setMessages(prev => [...prev, { type: 'bot', text: outputText }]);
+
+            if (eventType === 'END') {
+                setGraphStatus('finished');
+                if (rewindOriginNodeId) {
+                    setRewindOriginNodeId(null);
+                }
+            } else if (eventType === 'WAITING_FOR_INPUT') {
+                setGraphStatus('waiting');
+            } else if (eventType === 'START' || eventType === 'NODE_END') {
+                setGraphStatus('running');
+            }
+
+            // Refresh history to update tracing
+            await loadHistory();
+
+        } catch (err) {
+            setMessages(prev => [...prev, { type: 'error', text: "Error: " + err.message }]);
+            setGraphStatus('idle');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleSaveLayout = async () => {
+        if(!selected) return;
+        const positions = nodes.map(n => ({ nodeId: n.id, x: n.position.x, y: n.position.y }));
+        await fetchGraphQL(SAVE_MUTATION, { graphId: selected, positions });
+        alert("Layout Saved!");
+    };
+
+    const handleDelete = async (e, id) => {
+        e.stopPropagation();
+        if(!window.confirm("Delete?")) return;
+        await fetchGraphQL(DELETE_MUTATION, { graphId: id });
+        setGraphs(prev => prev.filter(g => g.graphId !== id));
+    };
+
+    const resetThread = () => {
+        setThreadId(Date.now().toString());
+        setMessages([]);
+        setHistoryItems([]);
+        setActiveNodeIds(new Set());
+        setGraphStatus('idle');
+        setRewindOriginNodeId(null);
+    };
+
+    const copyThreadId = () => {
+        navigator.clipboard.writeText(threadId).then(() => { setCopiedThread(true); setTimeout(() => setCopiedThread(false), 2000); });
+    };
+
+    const copyGraphId = (id) => {
+        navigator.clipboard.writeText(id).then(() => { setCopiedGraph(id); setTimeout(() => setCopiedGraph(null), 2000); });
+    };
+
+    const formatTimestamp = (ts) => { try { return new Date(ts).toLocaleString(); } catch { return ts; } };
+
+    // Use Labels in History
+    const getNodeDisplayName = (id) => {
+        if (!id) return "Start";
+        if (id.startsWith("Pending:")) {
+            const match = id.match(/'([^']+)'/);
+            const nodeId = match ? match[1] : id;
+            return `Next: ${nodeLabels[nodeId] || nodeId}`;
+        }
+        return nodeLabels[id] || id;
+    };
+
+    // --- Rewind Logic ---
+    const handleRewind = async (stateJson, nodeId) => {
+        if (!window.confirm("Rewind to this state? You can then send a new message to continue from here.")) return;
+
+        try {
+            const data = await fetchGraphQL(REWIND_MUTATION, {
+                graphId: selected,
+                threadId: threadId,
+                stateJson: JSON.stringify(stateJson),
+                targetNodeId: nodeId
+            });
+
+            if(data.rewindGraph.success) {
+                console.log("State rewound. Switching to Chat.");
+                setModalData(null);
+                setActiveTab('chat');
+                setInput("Continue from previous step.");
+
+                // 1. Mark the origin node to receive the Purple highlight
+                setRewindOriginNodeId(nodeId);
+
+                // 2. Fetch the NEW history from the backend.
+                // This naturally updates activeNodeIds to ONLY include nodes up to the rewind point (keeping them green),
+                // and automatically drops nodes that happened after (reverting them to default color).
+                await loadHistory();
+
+            } else {
+                alert("Rewind failed: " + data.rewindGraph.message);
+            }
+        } catch (e) {
+            alert("Error: " + e.message);
+        }
+    };
+
+    // Helper: Render concise diff summary for history list
+    const renderDiffSummary = (diff) => {
+        if (!diff?.summary?.length) return null;
+
+        return (
+            <div style={{ fontSize: '11px', color: '#666', marginTop: '4px', lineHeight: '1.3' }}>
+                {diff.summary.slice(0, 2).map((item, i) => {
+                    let icon = '';
+                    let color = '#666';
+
+                    if (item.includes('added')) {
+                        icon = '➕ ';
+                        color = '#2e7d32';
+                    } else if (item.includes('removed')) {
+                        icon = '➖ ';
+                        color = '#c62828';
+                    } else if (item.includes('modified')) {
+                        icon = '✏️ ';
+                        color = '#1565c0';
+                    }
+
+                    return (
+                        <div key={i} style={{ color }}>
+                            {icon}{item}
+                        </div>
+                    );
+                })}
+                {diff.summary.length > 2 && (
+                    <div style={{ fontStyle: 'italic', color: '#999' }}>
+                        +{diff.summary.length - 2} more
+                    </div>
+                )}
+            </div>
+        );
+    };
+
+    // Helper: Render detailed diff view in modal
+    const renderDiffDetails = (diff, fullJson) => {
+        // Fallback to full JSON if no diff or in full view mode
+        const hasNoChanges =
+            Object.keys(diff.added || {}).length === 0 &&
+            (diff.removed || []).length === 0 &&
+            Object.keys(diff.modified || {}).length === 0;
+
+        // Fallback to full JSON if no diff or in full view mode
+        if (!diff || hasNoChanges) {
+            return <pre className="json-viewer">{JSON.stringify(fullJson, null, 2)}</pre>;
+        }
+
+        return (
+            <div style={{ fontFamily: 'Consolas, Monaco, monospace', fontSize: '11px', lineHeight: '1.4' }}>
+                {/* Added fields */}
+                {diff.added && Object.keys(diff.added).length > 0 && (
+                    <div style={{ marginBottom: '12px' }}>
+                        <strong style={{ color: '#2e7d32', display: 'block', marginBottom: '4px' }}>
+                            ➕ Added
+                        </strong>
+                        <pre style={{
+                            background: '#e8f5e9',
+                            padding: '8px',
+                            borderRadius: '4px',
+                            margin: 0,
+                            whiteSpace: 'pre-wrap',
+                            overflow: 'auto',
+                            maxHeight: '150px'
+                        }}>
+                    {JSON.stringify(diff.added, null, 2)}
+                </pre>
+                    </div>
+                )}
+
+                {/* Removed fields */}
+                {diff.removed && diff.removed.length > 0 && (
+                    <div style={{ marginBottom: '12px' }}>
+                        <strong style={{ color: '#c62828', display: 'block', marginBottom: '4px' }}>
+                            ➖ Removed
+                        </strong>
+                        <ul style={{ margin: '4px 0 0 20px', padding: 0 }}>
+                            {diff.removed.map((path, i) => (
+                                <li key={i} style={{ color: '#c62828', marginBottom: '2px' }}>
+                                    {path}
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                )}
+
+                {/* Modified fields */}
+                {diff.modified && Object.keys(diff.modified).length > 0 && (
+                    <div style={{ marginBottom: '12px' }}>
+                        <strong style={{ color: '#1565c0', display: 'block', marginBottom: '4px' }}>
+                            ✏️ Modified
+                        </strong>
+                        {Object.entries(diff.modified).map(([path, values]) => (
+                            <div key={path} style={{
+                                background: '#e3f2fd',
+                                padding: '6px 8px',
+                                margin: '4px 0',
+                                borderRadius: '3px',
+                                borderLeft: '3px solid #2196f3'
+                            }}>
+                                <div style={{ fontWeight: '600', marginBottom: '4px' }}>{path}</div>
+                                <div style={{ fontSize: '10px' }}>
+                                    <span style={{ color: '#999' }}>Before: </span>
+                                    <code style={{ background: '#ffebee', padding: '2px 4px', borderRadius: '2px' }}>
+                                        {JSON.stringify(values?.old)}
+                                    </code>
+                                </div>
+                                <div style={{ fontSize: '10px', marginTop: '2px' }}>
+                                    <span style={{ color: '#999' }}>After: </span>
+                                    <code style={{ background: '#e8f5e9', padding: '2px 4px', borderRadius: '2px' }}>
+                                        {JSON.stringify(values?.new)}
+                                    </code>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )}
+            </div>
+        );
+    };
+
+
+    return (
+        <React.Fragment>
+            {/* Modal */}
+            {modalData && (
+                <div className="modal-overlay" onClick={() => {
+                    setModalData(null);
+                    setModalViewMode('diff'); // Reset on close
+                }}>
+                    <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+                        <div className="modal-header">
+                            <div className="modal-title">
+                                State: <strong>{getNodeDisplayName(modalData.nodeId)}</strong>
+                                <span style={{fontWeight: 'normal', marginLeft: '10px', fontSize: '12px', color: '#666'}}>
+                    {formatTimestamp(modalData.timestamp)}
+                </span>
+                            </div>
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                {/* Toggle buttons - only show if diff exists */}
+                                {modalData.diff && (
+                                    <>
+                                        <button
+                                            onClick={() => setModalViewMode('diff')}
+                                            style={{
+                                                padding: '4px 10px',
+                                                fontSize: '11px',
+                                                border: modalViewMode === 'diff' ? '2px solid #2196f3' : '1px solid #ccc',
+                                                background: modalViewMode === 'diff' ? '#e3f2fd' : '#fff',
+                                                borderRadius: '4px',
+                                                cursor: 'pointer',
+                                                color: modalViewMode === 'diff' ? '#1565c0' : '#666',
+                                                fontWeight: modalViewMode === 'diff' ? '600' : 'normal'
+                                            }}
+                                        >
+                                            Diff
+                                        </button>
+                                        <button
+                                            onClick={() => setModalViewMode('full')}
+                                            style={{
+                                                padding: '4px 10px',
+                                                fontSize: '11px',
+                                                border: modalViewMode === 'full' ? '2px solid #2196f3' : '1px solid #ccc',
+                                                background: modalViewMode === 'full' ? '#e3f2fd' : '#fff',
+                                                borderRadius: '4px',
+                                                cursor: 'pointer',
+                                                color: modalViewMode === 'full' ? '#1565c0' : '#666',
+                                                fontWeight: modalViewMode === 'full' ? '600' : 'normal'
+                                            }}
+                                        >
+                                            Full JSON
+                                        </button>
+                                    </>
+                                )}
+                                <button className="modal-close" onClick={() => {
+                                    setModalData(null);
+                                    setModalViewMode('diff');
+                                }}>&times;</button>
+                            </div>
+                        </div>
+                        <div className="modal-body">
+                            {modalViewMode === 'diff' && modalData.diff
+                                ? renderDiffDetails(modalData.diff, modalData.json)
+                                : <pre className="json-viewer">{JSON.stringify(modalData.json, null, 2)}</pre>
+                            }
+                        </div>
+                        <div style={{padding: '10px', borderTop: '1px solid #eee', textAlign: 'right', display: 'flex', justifyContent: 'flex-end', gap: '8px'}}>
+                            <button
+                                className="btn-rewind"
+                                onClick={() => handleRewind(modalData.json, modalData.nodeId)}
+                                style={{ fontSize: '12px', padding: '6px 12px' }}
+                            >
+                                ↩️ Replay from here
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Sidebar */}
+            <div className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
+                <div className="sidebar-header">
+                    <a href="help.html" style={{textDecoration: 'none', color: 'inherit'}}><h3>LangGraph</h3></a>
+                    <button onClick={() => window.location.href = 'builder.html?isNew=true'} style={{ background: '#2196f3', color: 'white', border: 'none', padding: '5px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', marginRight: '10px' }}>+ New</button>
+                    <button className="toggle-btn" onClick={() => setCollapsed(!collapsed)}>{collapsed ? '»' : '«'}</button>
+                </div>
+                <div className="graph-list">
+                    {graphs.map(g => (
+                        <div key={g.graphId} className={`graph-item ${g.graphId === selected ? 'active' : ''}`} onClick={() => loadGraph(g.graphId)}>
+                            <div className="graph-icon-mini"></div>
+                            <div className="graph-info">
+                                <div className="name">{g.graphName}</div>
+                                <div className="meta">{g.nodeCount} Nodes</div>
+                            </div>
+
+                            <div style={{ display: 'flex', gap: '5px', alignItems: 'center' }}>
+                                <button className="icon-btn" title="Copy ID" onClick={(e) => { e.stopPropagation(); copyGraphId(g.graphId); }}>{copiedGraph === g.graphId ? '✅' : '📋'}</button>
+                                <button style={{ background: 'transparent', border: '1px solid #2196f3', color: '#2196f3', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '10px', fontWeight: 'bold' }} onClick={(e) => { e.stopPropagation(); window.location.href = `builder.html?graphId=${g.graphId}&graphName=${g.graphName}`; }}>Edit</button>
+                                <button className="delete-btn" onClick={(e) => handleDelete(e, g.graphId)}>✕</button>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+
+            {/* Main Content */}
+            <div className="main-area">
+                <div className="canvas-container">
+                    <button className="save-layout-btn" onClick={handleSaveLayout}>Save Layout</button>
+                    <ReactFlow nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} fitView>
+                        <Background />
+                        <Controls />
+                    </ReactFlow>
+                </div>
+
+                {/* Chat Area */}
+                <div className="chat-panel" style={{ height: `${panelHeight}px` }} ref={panelRef}>
+
+                    {/* The Resizer Handle */}
+                    <div className="resizer" onMouseDown={startResizing}></div>
+
+                    {/* Tabs Header */}
+                    <div className="chat-tabs">
+                        <div className={`chat-tab ${activeTab === 'chat' ? 'active' : ''}`} onClick={() => setActiveTab('chat')}>Chat</div>
+                        <div className={`chat-tab ${activeTab === 'history' ? 'active' : ''}`} onClick={() => setActiveTab('history')}>History</div>
+                        <div style={{flexGrow: 1}}></div>
+                        <div style={{padding: '10px 15px', fontSize: '11px', color: '#999', display: 'flex', alignItems: 'center'}}>
+                            {selected && ( <><span title={selected}>Graph: ...{selected.slice(-6)}</span><span className="copy-btn-icon" onClick={() => copyGraphId(selected)}>{copiedGraph === selected ? '✅' : '📋'}</span><span style={{margin: '0 8px', color: '#ddd'}}>|</span></> )}
+                            <span title={threadId}>Thread: ...{threadId.slice(-6)}</span>
+                            <span className="copy-btn-icon" onClick={copyThreadId}>{copiedThread ? '✅' : '📋'}</span>
+                            <button onClick={resetThread} style={{border:'none', background:'none', cursor:'pointer', color:'#2196f3', marginLeft: '10px', fontSize: '11px'}}>New</button>
+                        </div>
+                    </div>
+
+                    {/* Content Area */}
+                    {activeTab === 'chat' ? (
+                        <>
+                            <div className="chat-messages">
+                                {messages.map((m, i) => ( <div key={i} className={`msg msg-${m.type}`}>{m.text}</div> ))}
+                                {graphStatus === 'finished' && (
+                                    <div style={{
+                                        padding: '8px 12px',
+                                        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                                        color: 'white',
+                                        textAlign: 'center',
+                                        fontSize: '12px',
+                                        fontWeight: '500',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        gap: '6px'
+                                    }}>
+                                        <span>✨</span>
+                                        <span>Conversation completed</span>
+                                        <button
+                                            onClick={resetThread}
+                                            style={{
+                                                background: 'rgba(255,255,255,0.2)',
+                                                border: '1px solid rgba(255,255,255,0.4)',
+                                                color: 'white',
+                                                padding: '4px 10px',
+                                                borderRadius: '12px',
+                                                fontSize: '11px',
+                                                cursor: 'pointer',
+                                                marginLeft: '8px',
+                                                transition: 'background 0.2s'
+                                            }}
+                                            onMouseOver={(e) => e.target.style.background = 'rgba(255,255,255,0.3)'}
+                                            onMouseOut={(e) => e.target.style.background = 'rgba(255,255,255,0.2)'}
+                                        >
+                                            Start new thread →
+                                        </button>
+                                    </div>
+                                )}
+                                {loading && <div className="msg msg-bot">Thinking...</div>}
+                                <div ref={chatEndRef} />
+                            </div>
+                            <div className="chat-input-area">
+                                <input className="chat-input" placeholder={ graphStatus === 'finished' ? "💬 Graph finished — send a message to continue, or click 'New' for a fresh thread" : "Send message..." } value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleExecute()} disabled={loading} />
+                                <button className="send-btn" onClick={handleExecute} disabled={loading}>Send</button>
+                            </div>
+                        </>
+                    ) : (
+                        <div className="history-list">
+                            {historyItems.length === 0 ? (
+                                <div style={{textAlign: 'center', color: '#999', marginTop: '20px'}}>
+                                    No execution history for this thread.
+                                </div>
+                            ) : (
+                                historyItems.map((h, idx) => (
+                                    <div
+                                        key={`${h.nodeId}-${idx}`}  // Unique key for React
+                                        className="history-item"
+                                        onClick={() => setModalData({
+                                            nodeId: h.nodeId,
+                                            timestamp: h.timestamp,
+                                            json: h.stateJson,
+                                            diff: h.diff  // Pass diff from backend
+                                        })}
+                                        style={{cursor: 'pointer'}}
+                                    >
+                                        <div style={{flex: 1, minWidth: 0}}>
+                                            <div className="history-node-name" style={{
+                                                fontWeight: '600',
+                                                fontSize: '13px',
+                                                color: '#333',
+                                                marginBottom: '2px'
+                                            }}>
+                                                {getNodeDisplayName(h.nodeId)}
+                                            </div>
+                                            <div className="history-timestamp" style={{
+                                                fontSize: '10px',
+                                                color: '#999'
+                                            }}>
+                                                {formatTimestamp(h.timestamp)}
+                                            </div>
+                                            {/* NEW: Show diff summary */}
+                                            {renderDiffSummary(h.diff)}
+                                        </div>
+                                        <div className="history-actions" style={{
+                                            display: 'flex',
+                                            gap: '8px',
+                                            alignItems: 'center',
+                                            flexShrink: 0
+                                        }}>
+                                            <button
+                                                className="btn-rewind"
+                                                style={{fontSize: '10px', padding: '4px 8px'}}
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    handleRewind(h.stateJson, h.nodeId);
+                                                }}
+                                            >
+                                                Replay
+                                            </button>
+                                            <div style={{fontSize: '10px', color: '#2196f3'}}>
+                                                {h.diff?.summary?.length > 0 ? 'View Diff' : 'View JSON'}
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    )
+                    }
+                </div>
+            </div>
+        </React.Fragment>
+    );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<App />);

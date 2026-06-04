@@ -4,29 +4,29 @@ package langgraph;
 
 // LangGraph Service definition
 service LangGraphService {
-    // Build a new graph with the given configuration
-    rpc BuildGraph (BuildGraphRequest) returns (BuildGraphResponse);
+  // Build a new graph with the given configuration
+  rpc BuildGraph (BuildGraphRequest) returns (BuildGraphResponse);
 
-    // Execute a graph with the given input
-    rpc ExecuteGraph (ExecuteGraphRequest) returns (stream ExecuteGraphResponse);
+  // Execute a graph with the given input
+  rpc ExecuteGraph (ExecuteGraphRequest) returns (stream ExecuteGraphResponse);
 
-    // Get graph state
-    rpc GetGraphState (GetGraphStateRequest) returns (GetGraphStateResponse);
+  // Get graph state
+  rpc GetGraphState (GetGraphStateRequest) returns (GetGraphStateResponse);
 
-    // Update graph state
-    rpc UpdateGraphState (UpdateGraphStateRequest) returns (UpdateGraphStateResponse);
+  // Update graph state
+  rpc UpdateGraphState (UpdateGraphStateRequest) returns (UpdateGraphStateResponse);
 
-    // List available graphs
-    rpc ListGraphs (ListGraphsRequest) returns (ListGraphsResponse);
+  // List available graphs
+  rpc ListGraphs (ListGraphsRequest) returns (ListGraphsResponse);
 
-    // Delete a graph
-    rpc DeleteGraph (DeleteGraphRequest) returns (DeleteGraphResponse);
+  // Delete a graph
+  rpc DeleteGraph (DeleteGraphRequest) returns (DeleteGraphResponse);
 
-    // Get a graph history
-    rpc GetExecutionHistory (GraphHistoryRequest) returns (GraphHistoryResponse);
+  // Get a graph history
+  rpc GetExecutionHistory (GraphHistoryRequest) returns (GraphHistoryResponse);
 
-    // Rewind a graph
-    rpc RewindGraph (RewindGraphRequest) returns (RewindGraphPayload);
+  // Rewind a graph
+  rpc RewindGraph (RewindGraphRequest) returns (RewindGraphPayload);
 }
 
 // ==========================================
@@ -39,129 +39,131 @@ service ToolService {
 
 // Message for building a graph
 message BuildGraphRequest {
-    string graph_id = 1;
-    string graph_name = 2;
-    repeated NodeDefinition nodes = 3;
-    repeated EdgeDefinition edges = 4;
-    map<string, string> config = 5;
+  string graph_id = 1;
+  string graph_name = 2;
+  repeated NodeDefinition nodes = 3;
+  repeated EdgeDefinition edges = 4;
+  map<string, string> config = 5;
 }
 
 message NodeDefinition {
-    string node_id = 1;
-    string node_type = 2;
-    string handler_name = 3;
-    map<string, string> metadata = 4;
+  string node_id = 1;
+  string node_type = 2;
+  string handler_name = 3;
+  map<string, string> metadata = 4;
 }
 
 message EdgeDefinition {
-    string source = 1;
-    string target = 2;
-    string condition = 3;
+  string source = 1;
+  string target = 2;
+  string condition = 3;
 }
 
 message BuildGraphResponse {
-    bool success = 1;
-    string graph_id = 2;
-    string message = 3;
+  bool success = 1;
+  string graph_id = 2;
+  string message = 3;
 }
 
 // Message for executing a graph
 message ExecuteGraphRequest {
-    string graph_id = 1;
-    string input = 2;
-    map<string, string> context = 3;
-    bool stream_output = 4;
-    string thread_id = 5;
+  string graph_id = 1;
+  string input = 2;
+  map<string, string> context = 3;
+  bool stream_output = 4;
+  string thread_id = 5;
 }
 
 message ExecuteGraphResponse {
-    string event_type = 1;
-    string node_id = 2;
-    string output = 3;
-    map<string, string> state = 4;
-    int64 timestamp = 5;
-    string error_message = 6;
+  string event_type = 1;
+  string node_id = 2;
+  string output = 3;
+  map<string, string> state = 4;
+  int64 timestamp = 5;
+  string error_message = 6;
 }
 
 // Message for getting graph state
 message GetGraphStateRequest {
-    string graph_id = 1;
-    string thread_id = 2;
+  string graph_id = 1;
+  string thread_id = 2;
 }
 
 message GetGraphStateResponse {
-    bool success = 1;
-    map<string, string> state = 2;
-    string current_node = 3;
-    repeated string node_history = 4;
+  bool success = 1;
+  map<string, string> state = 2;
+  string current_node = 3;
+  repeated string node_history = 4;
 }
 
 // Message for updating graph state
 message UpdateGraphStateRequest {
-    string graph_id = 1;
-    string thread_id = 2;
-    map<string, string> state_updates = 3;
+  string graph_id = 1;
+  string thread_id = 2;
+  map<string, string> state_updates = 3;
+  string as_node = 4;
 }
 
 message UpdateGraphStateResponse {
-    bool success = 1;
-    map<string, string> updated_state = 2;
+  bool success = 1;
+  map<string, string> updated_state = 2;
 }
 
 // Message for listing graphs
 message ListGraphsRequest {
-    int32 page_size = 1;
-    string page_token = 2;
+  int32 page_size = 1;
+  string page_token = 2;
 }
 
 message ListGraphsResponse {
-    repeated GraphInfo graphs = 1;
-    string next_page_token = 2;
+  repeated GraphInfo graphs = 1;
+  string next_page_token = 2;
 }
 
 message GraphInfo {
-    string graph_id = 1;
-    string graph_name = 2;
-    int32 node_count = 3;
-    string created_at = 4;
-    string status = 5;
+  string graph_id = 1;
+  string graph_name = 2;
+  int32 node_count = 3;
+  string created_at = 4;
+  string status = 5;
 }
 
 // Message for deleting a graph
 message DeleteGraphRequest {
-    string graph_id = 1;
+  string graph_id = 1;
 }
 
 message DeleteGraphResponse {
-    bool success = 1;
-    string message = 2;
+  bool success = 1;
+  string message = 2;
 }
 
 // Message for a graph history
 message GraphHistoryRequest {
-    string graph_id = 1;
-    string thread_id = 2;
+  string graph_id = 1;
+  string thread_id = 2;
 }
 
 message StateSnapshot {
-    string node_id = 1;       // The node that was just executed or is about to run
-    string state_json = 2;    // The full state variables as a JSON string
-    string timestamp = 3;     // When this step occurred
+  string node_id = 1;       // The node that was just executed or is about to run
+  string state_json = 2;    // The full state variables as a JSON string
+  string timestamp = 3;     // When this step occurred
 }
 
 message GraphHistoryResponse {
-    repeated StateSnapshot history = 1;
+  repeated StateSnapshot history = 1;
 }
 
 message RewindGraphRequest {
-    string graph_id = 1;
-    string thread_id = 2;
-    string target_state_json = 3; // The JSON state to revert to
+  string graph_id = 1;
+  string thread_id = 2;
+  string target_state_json = 3; // The JSON state to revert to
+  string target_node_id = 4; // The node we are rewinding to
 }
 
 message RewindGraphPayload {
-    bool success = 1;
-    string message = 2;
+  bool success = 1;
+  string message = 2;
 }
 
 // ==========================================

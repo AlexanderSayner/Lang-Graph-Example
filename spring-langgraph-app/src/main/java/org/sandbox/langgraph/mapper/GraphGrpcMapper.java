@@ -3,6 +3,7 @@ package org.sandbox.langgraph.mapper;
 import org.mapstruct.Mapper;
 import org.sandbox.langgraph.dto.graphql.input.*;
 import org.sandbox.langgraph.dto.graphql.payload.*;
+import org.sandbox.langgraph.dto.graphql.payload.RewindGraphPayload;
 import org.sandbox.langgraph.dto.graphql.payload.meta.PageInfo;
 import org.sandbox.langgraph.grpc.*;
 
@@ -91,6 +92,9 @@ public interface GraphGrpcMapper {
         if (input.stateUpdates() != null) {
             builder.putAllStateUpdates(convertToStringMap(input.stateUpdates()));
         }
+        if (input.asNode() != null) {
+            builder.setAsNode(input.asNode());
+        }
         return builder.build();
     }
 
@@ -172,6 +176,10 @@ public interface GraphGrpcMapper {
 
     default DeleteGraphPayload toDeleteGraphPayload(org.sandbox.langgraph.grpc.DeleteGraphResponse response) {
         return new DeleteGraphPayload(response.getSuccess(), response.getMessage());
+    }
+
+    default RewindGraphPayload toRewindGraphPayload(org.sandbox.langgraph.grpc.RewindGraphPayload response) {
+        return new RewindGraphPayload(response.getSuccess(), response.getMessage());
     }
 
     // ============== Helper Methods ==============

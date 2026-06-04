@@ -1,3 +1,4 @@
+import asyncio
 import functools
 import json
 import logging
@@ -77,6 +78,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         # LRU Cache for compiled graphs
         max_cache_size = getattr(settings, "MAX_CACHED_GRAPHS", 100)
         self._compiled_graphs = LRUCache(maxsize=max_cache_size)
+        self._compile_lock = asyncio.Lock()
 
         self._checkpointer = checkpointer
 
@@ -106,30 +108,31 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         Raises KeyError if graph not found, ValueError if build fails.
         """
         # Check in-memory cache first
-        if graph_id in self._compiled_graphs:
-            return self._compiled_graphs[graph_id]
+        async with self._compile_lock:
+            if graph_id in self._compiled_graphs:
+                return self._compiled_graphs[graph_id]
 
-        # Load from persistent store
-        stored_data = await self.store.get_graph(graph_id)
-        if not stored_data:
-            raise KeyError(f"Graph {graph_id} not found")
+            # Load from persistent store
+            stored_data = await self.store.get_graph(graph_id)
+            if not stored_data:
+                raise KeyError(f"Graph {graph_id} not found")
 
-        # Normalize to dict (handle Pydantic model or raw dict)
-        if hasattr(stored_data, 'model_dump'):
-            graph_dict = stored_data.model_dump()
-        elif hasattr(stored_data, 'dict'):
-            graph_dict = stored_data.dict()
-        else:
-            graph_dict = stored_data
+            # Normalize to dict (handle Pydantic model or raw dict)
+            if hasattr(stored_data, 'model_dump'):
+                graph_dict = stored_data.model_dump()
+            elif hasattr(stored_data, 'dict'):
+                graph_dict = stored_data.dict()
+            else:
+                graph_dict = stored_data
 
-        # Validate and compile
-        validated = GraphDefinition(**graph_dict)
-        compiled = self._build_langgraph(validated)
+            # Validate and compile
+            validated = GraphDefinition(**graph_dict)
+            compiled = self._build_langgraph(validated)
 
-        # Cache for next time
-        self._compiled_graphs[graph_id] = compiled
-        logger.info(f"Graph {graph_id} compiled and cached")
-        return compiled
+            # Cache for next time
+            self._compiled_graphs[graph_id] = compiled
+            logger.info(f"Graph {graph_id} compiled and cached")
+            return compiled
 
     def _build_langgraph(self, graph_data: GraphDefinition) -> Runnable:
         """Internal method to build and compile the graph."""
@@ -255,7 +258,12 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
 
         # Set Entry Point
         if graph_data.nodes:
-            workflow.set_entry_point(graph_data.nodes[0].node_id)
+            # --- Generally find the start node somewhere in an array ---
+            start_node = next((n for n in graph_data.nodes if n.node_type == "START"), None)
+            if not start_node:
+                raise ValueError("Graph definition has no node with type 'START'.")
+
+            workflow.set_entry_point(start_node.node_id)
         else:
             raise ValueError("Graph definition has no nodes.")
 
@@ -388,30 +396,31 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                 )
 
             # Use astream to get events as they happen
-            # stream_mode="values" yields the state after each node
-            async for event in compiled_graph.astream(stream_input, config=config, stream_mode="values"):
-                # In 'values' mode, event is the state dict after a node run
-                # event is expected to be a dict-like state after each node
-                # Defensive extraction with fallbacks
-                last_node = event.get("last_node") if isinstance(event, dict) \
-                    else getattr(event, "last_node", "unknown")
+            # stream_mode="updates" yields the state after each node
+            async for event in compiled_graph.astream(stream_input, config=config, stream_mode="updates"):
+                # In 'updates' mode, LangGraph yields a dictionary of only the changes
+                # made by the node that just ran, with the node name as the key.
+                # event looks like: {"node_name": {"output": "...", "variables": {...}}}
+                for node_name, updates in event.items():
+                    if isinstance(updates, dict):
+                        output_content = str(updates.get("output", ""))
+                        serialized_state = _serialize_state(updates)
+                    else:
+                        # Fallback if the node handler returned a tuple or other type
+                        logger.warning(
+                            f"Node '{node_name}' returned a non-dict update (type: {type(updates).__name__}). "
+                            "Ensure your NodeHandler returns a dictionary.")
+                        output_content = str(updates)
+                        # 'updates' contains the actual state changes (e.g., {"output": "...", "variables": {...}})
+                        serialized_state = _serialize_state({"raw_output": updates})
 
-                if isinstance(event, dict):
-                    output_content = str(event.get("output", "") or "")
-                    serialized_state = _serialize_state(event)
-                else:
-                    # snapshot-like object with .values
-                    values = getattr(event, "values", {}) or {}
-                    output_content = str(values.get("output", "") or "")
-                    serialized_state = _serialize_state(values)
-
-                yield langgraph_pb2.ExecuteGraphResponse(
-                    event_type="NODE_END",
-                    node_id=last_node,
-                    output=output_content,
-                    state=serialized_state,
-                    timestamp=int(time.time() * 1000)
-                )
+                    yield langgraph_pb2.ExecuteGraphResponse(
+                        event_type="NODE_END",
+                        node_id=node_name,
+                        output=output_content,
+                        state=serialized_state,
+                        timestamp=int(time.time() * 1000)
+                    )
 
             # --- POST-STREAM CHECK ---
             # After the stream finishes, check the state to see if we are paused
@@ -446,32 +455,9 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                 )
 
         except Exception as exec_error:
-            # If GraphInterrupt bubbled all the way here (unlikely with astream but possible)
-            from langgraph.errors import GraphInterrupt
-            if isinstance(exec_error, GraphInterrupt):
-                logger.warning("Graph Interrupted (Pause). Checking state for WAITING event.")
-
-                # Fetch the state to find out WHERE we are waiting
-                snapshot = await compiled_graph.aget_state(config)
-                next_nodes = getattr(snapshot, "next", None) or []
-                values = getattr(snapshot, "values", {}) or {}
-
-                if next_nodes:
-                    waiting_node = next_nodes[0] if isinstance(next_nodes, (list, tuple)) else next_nodes
-                    logger.info(f"Graph paused at node: {waiting_node}")
-
-                    # YIELD the waiting event so the client knows to pause
-                    yield langgraph_pb2.ExecuteGraphResponse(
-                        event_type="WAITING_FOR_INPUT",
-                        node_id=waiting_node,
-                        output="Action required. Waiting for user input.",
-                        state=_serialize_state(values),
-                        timestamp=int(time.time() * 1000)
-                    )
-
-                return
-
+            # GraphInterrupt is handled internally by astream and the post-stream check.
             logger.error(f"Execution error: {exec_error}", exc_info=True)
+
             yield langgraph_pb2.ExecuteGraphResponse(
                 event_type="ERROR",
                 error_message=str(exec_error),
@@ -513,12 +499,13 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         compiled_graph = self._compiled_graphs[graph_id]
         config = {"configurable": {"thread_id": thread_id}}
 
+        as_node = request.as_node if request.as_node else None
+
         # Update the state
-        # as_node="human_input" is optional but recommended to mark where the update came from
         await compiled_graph.aupdate_state(
             config,
             dict(request.state_updates),
-            as_node="human_input"
+            as_node=as_node
         )
 
         # Get the updated state to return
@@ -584,7 +571,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                 # We look for 'last_node' which your nodes are setting, or fallback to 'next'
                 node_id = state_values.get("last_node")
                 if not node_id and snapshot.next:
-                    node_id = f"Pending: {snapshot.next}"
+                    node_id = f"Pending: {snapshot.next[0]}"
                 elif not node_id:
                     node_id = "start"
 
@@ -592,7 +579,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                 history_list.append(langgraph_pb2.StateSnapshot(
                     node_id=str(node_id),
                     state_json=json.dumps(state_values, default=str),
-                    timestamp=str(snapshot.created_at)
+                    timestamp=str(snapshot.created_at) if snapshot.created_at else ""
                 ))
 
             return langgraph_pb2.GraphHistoryResponse(history=history_list)
@@ -628,7 +615,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             await compiled_graph.aupdate_state(
                 config,
                 values=target_values,
-                as_node=None
+                as_node=request.target_node_id or None
             )
 
             logger.info(f"Graph {graph_id} rewound successfully for thread {thread_id}")
