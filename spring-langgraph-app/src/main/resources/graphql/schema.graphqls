@@ -15,6 +15,7 @@ type Mutation {
     saveGraphCoordinates(graphId: String!, positions: [NodePositionInput!]!): GraphViewPayload!
     debugTool(input: ToolDebugInput!): ToolDebugPayload!
     rewindGraph(graphId: String!, threadId: String!, stateJson: String!, targetNodeId: String): RewindPayload!
+    askCopilot(message: String!, graphContext: String!, history: String): CopilotPayload!
 }
 
 type Subscription {
@@ -153,6 +154,12 @@ type StateDiff {
 type RewindPayload {
     success: Boolean!
     message: String!
+}
+
+type CopilotPayload {
+    success: Boolean
+    aiResponse: String!
+    errorMessage: String
 }
 
 # ============== Graph View Types (for visualization) ==============

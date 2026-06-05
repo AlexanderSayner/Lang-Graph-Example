@@ -14,6 +14,7 @@ from langgraph.graph import StateGraph
 
 from app.clients.yandex_client import YandexGPTClient
 from app.config import settings
+from app.copilot.copilot_agent import CopilotAgent
 from app.generated import langgraph_pb2_grpc, langgraph_pb2
 from app.graph_engine.graph_utils import parse_condition, GraphState
 from app.graph_engine.node_handlers import NodeHandler
@@ -86,6 +87,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             api_key=settings.YC_API_KEY,
             folder_id=settings.YC_FOLDER_ID
         )
+        self.copilot = CopilotAgent(self._llm_client)
 
         async def graph_loader(graph_id: str):
             if graph_id in self._compiled_graphs:
@@ -634,3 +636,21 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(str(e))
             return langgraph_pb2.RewindGraphPayload(success=False, message=f"Rewind error: {e}")
+
+    @handle_grpc_errors
+    async def AskCopilot(self, request, context):
+        """
+        Handles Copilot chat requests
+        """
+        logger.info(f"Copilot request received.")
+
+        ai_response = await self.copilot.ask(
+            user_message=request.user_message,
+            graph_context_json=request.graph_context_json,
+            history_json=request.conversation_history_json
+        )
+
+        return langgraph_pb2.CopilotResponse(
+            success=True,
+            ai_response=ai_response
+        )

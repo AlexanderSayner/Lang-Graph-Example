@@ -156,6 +156,15 @@ public class LangGraphController {
                 });
     }
 
+    @MutationMapping
+    public Mono<@NonNull CopilotGraphPayload> askCopilot(
+            @Argument String message,
+            @Argument String graphContext,
+            @Argument String history
+    ) {
+        return langGraphService.askCopilot(message, graphContext, history);
+    }
+
     // Internal helper class for accumulating stream results
     private static final class ExecuteGraphPayloadAccumulator {
         private String output;

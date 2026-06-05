@@ -1,0 +1,5 @@
+CONVERSATION HISTORY:
+{history}
+
+CURRENT USER QUESTION:
+{question}
