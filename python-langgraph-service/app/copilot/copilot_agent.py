@@ -27,10 +27,10 @@ def _build_user_message(current_message: str, history_json: str) -> str:
         return current_message
 
 
-def _build_system_prompt(graph_context_json: str) -> str:
+def _build_system_prompt(graph_context_json: str, execution_history_json: str) -> str:
     """Crafts a highly specific system prompt for the Graph Builder context."""
     template = _read_prompt("system_prompt_template")
-    return template.format(graph=graph_context_json)
+    return template.format(graph=graph_context_json, execution_history=execution_history_json)
 
 
 class CopilotAgent:
@@ -42,20 +42,16 @@ class CopilotAgent:
     def __init__(self, llm_client: YandexGPTClient):
         self.llm = llm_client
 
-    async def ask(self, user_message: str, graph_context_json: str, history_json: str) -> str:
+    async def ask(self, user_message: str, graph_context_json: str, execution_history_json: str, chat_history_json: str) -> str:
         """
         Processes a copilot request and returns the AI response.
         """
-        # 1. Build the System Prompt with Graph Context
-        system_prompt = _build_system_prompt(graph_context_json)
+        # Build the System Prompt with Graph Context
+        system_prompt = _build_system_prompt(graph_context_json, execution_history_json)
 
-        # 2. Format the User Message (incorporating history)
-        # Since YandexGPTClient.generate() takes a single user_message string,
-        # we format the conversation history into this string.
         # TODO: refactor generate() to an easier way working with a history
-        formatted_user_message = _build_user_message(user_message, history_json)
+        formatted_user_message = _build_user_message(user_message, chat_history_json)
 
-        # 3. Call LLM using your exact existing pattern
         logger.info(f"Copilot processing request: {user_message[:50]}...")
         try:
             response_text = await self.llm.generate(

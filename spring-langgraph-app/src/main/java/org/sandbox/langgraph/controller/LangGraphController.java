@@ -10,6 +10,7 @@ import org.sandbox.langgraph.dto.graphql.input.UpdateGraphStateInput;
 import org.sandbox.langgraph.dto.graphql.payload.*;
 import org.sandbox.langgraph.dto.graphql.payload.redis.GraphViewPayload;
 import org.sandbox.langgraph.mapper.RedisGraphStorageMapper;
+import org.sandbox.langgraph.service.CopilotService;
 import org.sandbox.langgraph.service.LangGraphGrpcService;
 import org.sandbox.langgraph.service.RedisGraphViewService;
 import org.sandbox.langgraph.service.ui.RedisGraphCoordinatesService;
@@ -37,15 +38,18 @@ public class LangGraphController {
     private final RedisGraphViewService redisGraphViewService;
     private final RedisGraphStorageMapper redisGraphStorageMapper;
     private final RedisGraphCoordinatesService coordinatesService;
+    private final CopilotService copilotService;
 
     public LangGraphController(LangGraphGrpcService langGraphService,
                                RedisGraphViewService redisGraphViewService,
                                RedisGraphStorageMapper redisGraphStorageMapper,
-                               RedisGraphCoordinatesService coordinatesService) {
+                               RedisGraphCoordinatesService coordinatesService,
+                               CopilotService copilotService) {
         this.langGraphService = langGraphService;
         this.redisGraphViewService = redisGraphViewService;
         this.redisGraphStorageMapper = redisGraphStorageMapper;
         this.coordinatesService = coordinatesService;
+        this.copilotService = copilotService;
     }
 
     @QueryMapping
@@ -158,11 +162,12 @@ public class LangGraphController {
 
     @MutationMapping
     public Mono<@NonNull CopilotGraphPayload> askCopilot(
+            @Argument String graphId,
+            @Argument String threadId,
             @Argument String message,
-            @Argument String graphContext,
-            @Argument String history
+            @Argument String copilotChatHistoryJson
     ) {
-        return langGraphService.askCopilot(message, graphContext, history);
+        return copilotService.askCopilot(graphId, threadId, message, copilotChatHistoryJson);
     }
 
     // Internal helper class for accumulating stream results

@@ -15,7 +15,7 @@ type Mutation {
     saveGraphCoordinates(graphId: String!, positions: [NodePositionInput!]!): GraphViewPayload!
     debugTool(input: ToolDebugInput!): ToolDebugPayload!
     rewindGraph(graphId: String!, threadId: String!, stateJson: String!, targetNodeId: String): RewindPayload!
-    askCopilot(message: String!, graphContext: String!, history: String): CopilotPayload!
+    askCopilot(graphId: String!, threadId: String!, message: String!, copilotChatHistoryJson: String): CopilotPayload!
 }
 
 type Subscription {

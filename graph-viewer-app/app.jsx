@@ -71,6 +71,16 @@ const layoutGraph = (nodes, edges) => {
     });
 };
 
+const COPILOT_MUTATION = `
+    mutation AskCopilot($graphId: String!, $threadId: String!, $message: String!, $chatHistory: String!) {
+        askCopilot(graphId: $graphId, threadId: $threadId, message: $message, copilotChatHistoryJson: $chatHistory) {
+            success
+            aiResponse
+            errorMessage
+        }
+    }
+`;
+
 // --- Main App ---
 function App() {
     const [graphs, setGraphs] = useState([]);
@@ -92,6 +102,11 @@ function App() {
     const [modalViewMode, setModalViewMode] = useState('diff'); // 'diff' | 'full'
 
     const [graphStatus, setGraphStatus] = useState('idle'); // Values: 'idle' | 'running' | 'waiting' | 'finished'
+
+    // --- Copilot State ---
+    const [copilotMessages, setCopilotMessages] = useState([]);
+    const [copilotInput, setCopilotInput] = useState("");
+    const [copilotLoading, setCopilotLoading] = useState(false);
 
     // Map for NodeID -> Friendly Name
     const [nodeLabels, setNodeLabels] = useState({});
@@ -150,7 +165,11 @@ function App() {
     }, []);
 
     // Scroll chat to bottom
-    useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+    useEffect(() => {
+        if (activeTab === 'chat' || activeTab === 'copilot') {
+            chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+        }
+    }, [messages, copilotMessages, copilotLoading, activeTab]);
 
     // Load History
     useEffect(() => {
@@ -394,6 +413,7 @@ function App() {
         setActiveNodeIds(new Set());
         setGraphStatus('idle');
         setRewindOriginNodeId(null);
+        setCopilotMessages([]);
     };
 
     const copyThreadId = () => {
@@ -448,6 +468,39 @@ function App() {
             }
         } catch (e) {
             alert("Error: " + e.message);
+        }
+    };
+
+    const handleCopilotSend = async () => {
+        if (!copilotInput.trim() || !selected) return;
+
+        const userText = copilotInput;
+
+        // Add user message to local state immediately for UI responsiveness
+        const updatedHistory = [...copilotMessages, { role: 'user', text: userText }];
+        setCopilotMessages(updatedHistory);
+        setCopilotInput("");
+        setCopilotLoading(true);
+
+        try {
+            const data = await fetchGraphQL(COPILOT_MUTATION, {
+                graphId: selected,
+                threadId: threadId,
+                message: userText,
+                chatHistory: JSON.stringify(updatedHistory) // 👈 Send the chat history!
+            });
+
+            const result = data.askCopilot;
+            if (result.success) {
+                // Add AI response to local state
+                setCopilotMessages(prev => [...prev, { role: 'ai', text: result.aiResponse }]);
+            } else {
+                setCopilotMessages(prev => [...prev, { role: 'error', text: result.errorMessage }]);
+            }
+        } catch (err) {
+            setCopilotMessages(prev => [...prev, { role: 'error', text: err.message }]);
+        } finally {
+            setCopilotLoading(false);
         }
     };
 
@@ -696,6 +749,9 @@ function App() {
                     {/* Tabs Header */}
                     <div className="chat-tabs">
                         <div className={`chat-tab ${activeTab === 'chat' ? 'active' : ''}`} onClick={() => setActiveTab('chat')}>Chat</div>
+                        {selected && (
+                                <div className={`chat-tab ${activeTab === 'copilot' ? 'active' : ''}`} onClick={() => setActiveTab('copilot')}>✨ Copilot</div>
+                        )}
                         <div className={`chat-tab ${activeTab === 'history' ? 'active' : ''}`} onClick={() => setActiveTab('history')}>History</div>
                         <div style={{flexGrow: 1}}></div>
                         <div style={{padding: '10px 15px', fontSize: '11px', color: '#999', display: 'flex', alignItems: 'center'}}>
@@ -754,6 +810,16 @@ function App() {
                                 <button className="send-btn" onClick={handleExecute} disabled={loading}>Send</button>
                             </div>
                         </>
+                    ) : activeTab === 'copilot' ? (
+                        <CopilotTab
+                            copilotMessages={copilotMessages}
+                            copilotInput={copilotInput}
+                            setCopilotInput={setCopilotInput}
+                            copilotLoading={copilotLoading}
+                            handleCopilotSend={handleCopilotSend}
+                            chatEndRef={chatEndRef}
+                            onClearChat={() => setCopilotMessages([])}
+                        />
                     ) : (
                         <div className="history-list">
                             {historyItems.length === 0 ? (

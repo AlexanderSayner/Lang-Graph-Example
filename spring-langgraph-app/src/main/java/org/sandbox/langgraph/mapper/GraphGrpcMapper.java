@@ -193,11 +193,13 @@ public interface GraphGrpcMapper {
     // ============== Helper Methods ==============
 
     default Map<String, String> convertToStringMap(Map<String, Object> map) {
-        if (map == null) return null;
+        if (map == null) {
+            return null;
+        }
         return map.entrySet().stream()
                 .collect(Collectors.toMap(
                         Map.Entry::getKey,
-                        e -> e.getValue() != null ? e.getValue().toString() : null
+                        e -> e.getValue() != null ? e.getValue().toString() : ""
                 ));
     }
 }

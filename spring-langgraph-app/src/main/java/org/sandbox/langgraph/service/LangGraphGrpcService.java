@@ -165,20 +165,6 @@ public class LangGraphGrpcService {
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
-    public Mono<@NonNull CopilotGraphPayload> askCopilot(String message, String graphContext, String history) {
-        return Mono.fromCallable(() -> {
-                    CopilotRequest req = CopilotRequest.newBuilder()
-                            .setUserMessage(message)
-                            .setGraphContextJson(graphContext)
-                            .setConversationHistoryJson(history != null ? history : "")
-                            .build();
-                    return futureStub.askCopilot(req).get(30, TimeUnit.SECONDS);
-                })
-                .map(mapper::toCopilotGraphPayload)
-                .doOnError(this::logAndWrapGrpcError)
-                .subscribeOn(Schedulers.boundedElastic());
-    }
-
     private void logAndWrapGrpcError(Throwable error) {
         if (error instanceof StatusRuntimeException sre) {
             Status status = sre.getStatus();
