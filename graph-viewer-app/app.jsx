@@ -72,8 +72,8 @@ const layoutGraph = (nodes, edges) => {
 };
 
 const COPILOT_MUTATION = `
-    mutation AskCopilot($graphId: String!, $threadId: String!, $message: String!, $chatHistory: String!) {
-        askCopilot(graphId: $graphId, threadId: $threadId, message: $message, copilotChatHistoryJson: $chatHistory) {
+    mutation AskCopilot($graphId: String!, $threadId: String!, $message: String!, $chatHistory: String!, $selectedNodeId: String) {
+        askCopilot(graphId: $graphId, threadId: $threadId, message: $message, copilotChatHistoryJson: $chatHistory, selectedNodeId: $selectedNodeId) {
             success
             aiResponse
             errorMessage
@@ -107,6 +107,8 @@ function App() {
     const [copilotMessages, setCopilotMessages] = useState([]);
     const [copilotInput, setCopilotInput] = useState("");
     const [copilotLoading, setCopilotLoading] = useState(false);
+
+    const [selectedNodeId, setSelectedNodeId] = useState(null);
 
     // Map for NodeID -> Friendly Name
     const [nodeLabels, setNodeLabels] = useState({});
@@ -286,7 +288,7 @@ function App() {
         });
     };
 
-    // Re-apply node styles when activeNodeIds changes OR when nodes are reset
+    // Re-apply node styles when activeNodeIds, rewindOriginNodeId, OR selectedNodeId changes
     useEffect(() => {
         if (!nodes.length) return;
 
@@ -294,15 +296,19 @@ function App() {
         setNodes(nds => nds.map(n => {
             const wasExecuted = activeNodeIds.has(n.id);
             const isRewindOrigin = (rewindOriginNodeId && n.id === rewindOriginNodeId);
+            const isSelected = (selectedNodeId && n.id === selectedNodeId);
 
-            // Safely extract base class (strips any old green/purple highlights)
-            const baseClass = (n.className || '').replace(/node-active-path|node-rewind-origin/g, '').trim() || 'node-action';
+            // Safely extract base class (strips any old highlights including the new blue one)
+            const baseClass = (n.className || '')
+                .replace(/node-active-path|node-rewind-origin|node-selected/g, '')
+                .trim() || 'node-action';
 
             let highlightClass = '';
 
-            // If it's in the current valid history, OR it's the rewind origin
-            if (wasExecuted || isRewindOrigin) {
-                // Purple takes precedence over green for the rewind origin
+            // Priority: Selected (Blue) > Rewind Origin (Purple) > Executed (Green)
+            if (isSelected) {
+                highlightClass = 'node-selected';
+            } else if (wasExecuted || isRewindOrigin) {
                 highlightClass = isRewindOrigin ? 'node-rewind-origin' : 'node-active-path';
             }
 
@@ -335,7 +341,7 @@ function App() {
             return e;
         }));
 
-    }, [activeNodeIds, rewindOriginNodeId]);
+    }, [activeNodeIds, rewindOriginNodeId, selectedNodeId]);
 
     const handleExecute = async () => {
         if (!input.trim() || !selected) return;
@@ -487,7 +493,8 @@ function App() {
                 graphId: selected,
                 threadId: threadId,
                 message: userText,
-                chatHistory: JSON.stringify(updatedHistory) // 👈 Send the chat history!
+                chatHistory: JSON.stringify(updatedHistory),
+                selectedNodeId: selectedNodeId
             });
 
             const result = data.askCopilot;
@@ -734,7 +741,15 @@ function App() {
             <div className="main-area">
                 <div className="canvas-container">
                     <button className="save-layout-btn" onClick={handleSaveLayout}>Save Layout</button>
-                    <ReactFlow nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} fitView>
+                    <ReactFlow
+                        nodes={nodes}
+                        edges={edges}
+                        onNodesChange={onNodesChange}
+                        onEdgesChange={onEdgesChange}
+                        fitView
+                        onNodeClick={(event, node) => setSelectedNodeId(node.id)}
+                        onPaneClick={() => setSelectedNodeId(null)}
+                    >
                         <Background />
                         <Controls />
                     </ReactFlow>

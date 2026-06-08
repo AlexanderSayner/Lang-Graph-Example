@@ -198,6 +198,7 @@ message CopilotRequest {
     string graph_context_json = 2; // Lightweight JSON of nodes/edges
     string execution_history_json = 3; // Graph execution thread history
     string copilot_chat_history_json = 4; // Previous chat messages
+    string selected_node_id = 5;
 }
 
 message CopilotResponse {

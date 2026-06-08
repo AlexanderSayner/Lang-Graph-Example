@@ -30,7 +30,11 @@ public class CopilotServiceImpl implements CopilotService {
     private final ObjectMapper objectMapper;
 
     @Override
-    public Mono<CopilotGraphPayload> askCopilot(String graphId, String threadId, String message, String copilotChatHistoryJson) {
+    public Mono<CopilotGraphPayload> askCopilot(String graphId,
+                                                String threadId,
+                                                String message,
+                                                String copilotChatHistoryJson,
+                                                String selectedNodeId) {
         log.debug("Copilot request for graph: {}, thread: {}", graphId, threadId);
 
         return Mono.zip(
@@ -50,6 +54,7 @@ public class CopilotServiceImpl implements CopilotService {
                                     .setGraphContextJson(graphContextJson)
                                     .setExecutionHistoryJson(executionHistoryJson)
                                     .setCopilotChatHistoryJson(copilotChatHistoryJson != null ? copilotChatHistoryJson : "[]")
+                                    .setSelectedNodeId(selectedNodeId != null ? selectedNodeId : "")
                                     .build();
 
                             return futureStub.askCopilot(request).get(30, TimeUnit.SECONDS);

@@ -165,9 +165,10 @@ public class LangGraphController {
             @Argument String graphId,
             @Argument String threadId,
             @Argument String message,
-            @Argument String copilotChatHistoryJson
+            @Argument String copilotChatHistoryJson,
+            @Argument String selectedNodeId
     ) {
-        return copilotService.askCopilot(graphId, threadId, message, copilotChatHistoryJson);
+        return copilotService.askCopilot(graphId, threadId, message, copilotChatHistoryJson, selectedNodeId);
     }
 
     // Internal helper class for accumulating stream results

@@ -16,6 +16,8 @@ Connections between nodes. They can have 'conditions' (e.g., "intent == 'buy'") 
 CURRENT GRAPH CONTEXT (JSON):
 {graph}
 
+{selected_node_context}
+
 This JSON represents the history of the graph's execution for the current thread. 
 It contains 'StateSnapshot' objects, showing the state variables and outputs after each node ran. 
 Use this to debug why a graph routed a certain way or what variables were extracted.

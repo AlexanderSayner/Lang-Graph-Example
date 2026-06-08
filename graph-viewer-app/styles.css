@@ -96,6 +96,15 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
     transition: border-color 0.2s ease, box-shadow 0.2s ease, border-width 0.2s ease;
 }
 
+/* --- Node Selection Highlight (Blue) --- */
+.react-flow__node.node-selected {
+    border-color: #2196f3 !important; /* Material Blue */
+    border-width: 2px !important;
+    box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.3), 0 4px 12px rgba(33, 150, 243, 0.2) !important;
+    z-index: 10 !important; /* Ensure selected node is visually above others */
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, border-width 0.2s ease;
+}
+
 .node-header { padding: 8px 12px; border-bottom: 1px solid rgba(0,0,0,0.05); font-weight: bold; font-size: 12px; display: flex; justify-content: space-between; align-items: center; }
 .node-start .node-header { color: #2e7d32; }
 .node-end .node-header { color: #c62828; }
