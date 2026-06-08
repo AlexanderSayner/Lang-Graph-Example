@@ -34,7 +34,8 @@ public class CopilotServiceImpl implements CopilotService {
                                                 String threadId,
                                                 String message,
                                                 String copilotChatHistoryJson,
-                                                String selectedNodeId) {
+                                                String selectedNodeId,
+                                                String selectedEdgeJson) {
         log.debug("Copilot request for graph: {}, thread: {}", graphId, threadId);
 
         return Mono.zip(
@@ -55,6 +56,7 @@ public class CopilotServiceImpl implements CopilotService {
                                     .setExecutionHistoryJson(executionHistoryJson)
                                     .setCopilotChatHistoryJson(copilotChatHistoryJson != null ? copilotChatHistoryJson : "[]")
                                     .setSelectedNodeId(selectedNodeId != null ? selectedNodeId : "")
+                                    .setSelectedEdgeJson(selectedEdgeJson != null ? selectedEdgeJson : "")
                                     .build();
 
                             return futureStub.askCopilot(request).get(30, TimeUnit.SECONDS);

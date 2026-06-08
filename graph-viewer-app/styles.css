@@ -105,6 +105,23 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
     transition: border-color 0.2s ease, box-shadow 0.2s ease, border-width 0.2s ease;
 }
 
+/* --- Edge Selection Highlight (Blue) --- */
+.react-flow__edge.edge-selected .react-flow__edge-path {
+    stroke: #2196f3 !important; /* Material Blue */
+    stroke-width: 3px !important;
+    filter: drop-shadow(0 0 4px rgba(33, 150, 243, 0.5));
+    transition: stroke 0.2s ease, stroke-width 0.2s ease;
+}
+
+/* Make the condition label pop when selected */
+.react-flow__edge.edge-selected .react-flow__edge-textbg {
+    fill: #2196f3 !important;
+}
+.react-flow__edge.edge-selected .react-flow__edge-text {
+    fill: white !important;
+    font-weight: bold;
+}
+
 .node-header { padding: 8px 12px; border-bottom: 1px solid rgba(0,0,0,0.05); font-weight: bold; font-size: 12px; display: flex; justify-content: space-between; align-items: center; }
 .node-start .node-header { color: #2e7d32; }
 .node-end .node-header { color: #c62828; }

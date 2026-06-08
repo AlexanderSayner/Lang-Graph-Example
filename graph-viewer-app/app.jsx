@@ -72,8 +72,8 @@ const layoutGraph = (nodes, edges) => {
 };
 
 const COPILOT_MUTATION = `
-    mutation AskCopilot($graphId: String!, $threadId: String!, $message: String!, $chatHistory: String!, $selectedNodeId: String) {
-        askCopilot(graphId: $graphId, threadId: $threadId, message: $message, copilotChatHistoryJson: $chatHistory, selectedNodeId: $selectedNodeId) {
+    mutation AskCopilot($graphId: String!, $threadId: String!, $message: String!, $chatHistory: String!, $selectedNodeId: String, $selectedEdgeJson: String) {
+        askCopilot(graphId: $graphId, threadId: $threadId, message: $message, copilotChatHistoryJson: $chatHistory, selectedNodeId: $selectedNodeId, selectedEdgeJson: $selectedEdgeJson) {
             success
             aiResponse
             errorMessage
@@ -109,6 +109,7 @@ function App() {
     const [copilotLoading, setCopilotLoading] = useState(false);
 
     const [selectedNodeId, setSelectedNodeId] = useState(null);
+    const [selectedEdge, setSelectedEdge] = useState(null);
 
     // Map for NodeID -> Friendly Name
     const [nodeLabels, setNodeLabels] = useState({});
@@ -221,6 +222,7 @@ function App() {
 
         setActiveNodeIds(new Set());
         setRewindOriginNodeId(null);
+        setSelectedNodeId(null);
 
         fetchGraphQL(VIEW_QUERY, { graphId: id }).then(d => {
             const view = d.getGraphView;
@@ -288,7 +290,7 @@ function App() {
         });
     };
 
-    // Re-apply node styles when activeNodeIds, rewindOriginNodeId, OR selectedNodeId changes
+    // Re-apply node and edge styles when selection or execution state changes
     useEffect(() => {
         if (!nodes.length) return;
 
@@ -313,7 +315,6 @@ function App() {
             }
 
             const newClass = `${baseClass} ${highlightClass}`.trim();
-
             return n.className !== newClass ? { ...n, className: newClass } : n;
         }));
 
@@ -321,6 +322,11 @@ function App() {
         setEdges(eds => eds.map(e => {
             const isActive = activeNodeIds.has(e.source) && activeNodeIds.has(e.target);
             const isFromRewindOrigin = (rewindOriginNodeId && e.source === rewindOriginNodeId);
+
+            // Check if this specific edge is selected
+            const isSelected = selectedEdge &&
+                               e.source === selectedEdge.source &&
+                               e.target === selectedEdge.target;
 
             let strokeColor = '#b1b1b7';
             let strokeWidth = 1;
@@ -332,16 +338,32 @@ function App() {
                 markerColor = strokeColor;
             }
 
+            // Override marker color if the edge is selected
+            if (isSelected) {
+                markerColor = '#2196f3'; // Material Blue
+            }
+
             const newStyle = { stroke: strokeColor, strokeWidth: strokeWidth };
             const newMarker = { ...e.markerEnd, color: markerColor };
 
-            if (e.style?.stroke !== newStyle.stroke || e.markerEnd?.color !== newMarker.color) {
-                return { ...e, style: newStyle, markerEnd: newMarker };
+            // Apply custom class for selection
+            const newClassName = isSelected ? 'edge-selected' : '';
+
+            // Return updated edge if ANYTHING changed (style, marker, or className)
+            if (e.style?.stroke !== newStyle.stroke ||
+                e.markerEnd?.color !== newMarker.color ||
+                e.className !== newClassName) {
+                return {
+                    ...e,
+                    style: newStyle,
+                    markerEnd: newMarker,
+                    className: newClassName
+                };
             }
             return e;
         }));
 
-    }, [activeNodeIds, rewindOriginNodeId, selectedNodeId]);
+    }, [activeNodeIds, rewindOriginNodeId, selectedNodeId, selectedEdge]);
 
     const handleExecute = async () => {
         if (!input.trim() || !selected) return;
@@ -494,7 +516,8 @@ function App() {
                 threadId: threadId,
                 message: userText,
                 chatHistory: JSON.stringify(updatedHistory),
-                selectedNodeId: selectedNodeId
+                selectedNodeId: selectedNodeId,
+                selectedEdgeJson: selectedEdge ? JSON.stringify(selectedEdge) : null
             });
 
             const result = data.askCopilot;
@@ -747,8 +770,22 @@ function App() {
                         onNodesChange={onNodesChange}
                         onEdgesChange={onEdgesChange}
                         fitView
-                        onNodeClick={(event, node) => setSelectedNodeId(node.id)}
-                        onPaneClick={() => setSelectedNodeId(null)}
+                        onNodeClick={(event, node) => {
+                            setSelectedNodeId(node.id);
+                            setSelectedEdge(null);
+                        }}
+                        onEdgeClick={(event, edge) => {
+                            setSelectedEdge({
+                                source: edge.source,
+                                target: edge.target,
+                                condition: edge.label || "None (unconditional)"
+                            });
+                            setSelectedNodeId(null);
+                        }}
+                        onPaneClick={() => {
+                            setSelectedNodeId(null);
+                            setSelectedEdge(null);
+                        }}
                     >
                         <Background />
                         <Controls />
