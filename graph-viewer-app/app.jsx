@@ -71,6 +71,16 @@ const layoutGraph = (nodes, edges) => {
     });
 };
 
+const COPILOT_MUTATION = `
+    mutation AskCopilot($graphId: String!, $threadId: String!, $message: String!, $chatHistory: String!, $selectedNodeId: String) {
+        askCopilot(graphId: $graphId, threadId: $threadId, message: $message, copilotChatHistoryJson: $chatHistory, selectedNodeId: $selectedNodeId) {
+            success
+            aiResponse
+            errorMessage
+        }
+    }
+`;
+
 // --- Main App ---
 function App() {
     const [graphs, setGraphs] = useState([]);
@@ -92,6 +102,13 @@ function App() {
     const [modalViewMode, setModalViewMode] = useState('diff'); // 'diff' | 'full'
 
     const [graphStatus, setGraphStatus] = useState('idle'); // Values: 'idle' | 'running' | 'waiting' | 'finished'
+
+    // --- Copilot State ---
+    const [copilotMessages, setCopilotMessages] = useState([]);
+    const [copilotInput, setCopilotInput] = useState("");
+    const [copilotLoading, setCopilotLoading] = useState(false);
+
+    const [selectedNodeId, setSelectedNodeId] = useState(null);
 
     // Map for NodeID -> Friendly Name
     const [nodeLabels, setNodeLabels] = useState({});
@@ -150,7 +167,11 @@ function App() {
     }, []);
 
     // Scroll chat to bottom
-    useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+    useEffect(() => {
+        if (activeTab === 'chat' || activeTab === 'copilot') {
+            chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+        }
+    }, [messages, copilotMessages, copilotLoading, activeTab]);
 
     // Load History
     useEffect(() => {
@@ -267,7 +288,7 @@ function App() {
         });
     };
 
-    // Re-apply node styles when activeNodeIds changes OR when nodes are reset
+    // Re-apply node styles when activeNodeIds, rewindOriginNodeId, OR selectedNodeId changes
     useEffect(() => {
         if (!nodes.length) return;
 
@@ -275,15 +296,19 @@ function App() {
         setNodes(nds => nds.map(n => {
             const wasExecuted = activeNodeIds.has(n.id);
             const isRewindOrigin = (rewindOriginNodeId && n.id === rewindOriginNodeId);
+            const isSelected = (selectedNodeId && n.id === selectedNodeId);
 
-            // Safely extract base class (strips any old green/purple highlights)
-            const baseClass = (n.className || '').replace(/node-active-path|node-rewind-origin/g, '').trim() || 'node-action';
+            // Safely extract base class (strips any old highlights including the new blue one)
+            const baseClass = (n.className || '')
+                .replace(/node-active-path|node-rewind-origin|node-selected/g, '')
+                .trim() || 'node-action';
 
             let highlightClass = '';
 
-            // If it's in the current valid history, OR it's the rewind origin
-            if (wasExecuted || isRewindOrigin) {
-                // Purple takes precedence over green for the rewind origin
+            // Priority: Selected (Blue) > Rewind Origin (Purple) > Executed (Green)
+            if (isSelected) {
+                highlightClass = 'node-selected';
+            } else if (wasExecuted || isRewindOrigin) {
                 highlightClass = isRewindOrigin ? 'node-rewind-origin' : 'node-active-path';
             }
 
@@ -316,7 +341,7 @@ function App() {
             return e;
         }));
 
-    }, [activeNodeIds, rewindOriginNodeId]);
+    }, [activeNodeIds, rewindOriginNodeId, selectedNodeId]);
 
     const handleExecute = async () => {
         if (!input.trim() || !selected) return;
@@ -394,6 +419,7 @@ function App() {
         setActiveNodeIds(new Set());
         setGraphStatus('idle');
         setRewindOriginNodeId(null);
+        setCopilotMessages([]);
     };
 
     const copyThreadId = () => {
@@ -448,6 +474,40 @@ function App() {
             }
         } catch (e) {
             alert("Error: " + e.message);
+        }
+    };
+
+    const handleCopilotSend = async () => {
+        if (!copilotInput.trim() || !selected) return;
+
+        const userText = copilotInput;
+
+        // Add user message to local state immediately for UI responsiveness
+        const updatedHistory = [...copilotMessages, { role: 'user', text: userText }];
+        setCopilotMessages(updatedHistory);
+        setCopilotInput("");
+        setCopilotLoading(true);
+
+        try {
+            const data = await fetchGraphQL(COPILOT_MUTATION, {
+                graphId: selected,
+                threadId: threadId,
+                message: userText,
+                chatHistory: JSON.stringify(updatedHistory),
+                selectedNodeId: selectedNodeId
+            });
+
+            const result = data.askCopilot;
+            if (result.success) {
+                // Add AI response to local state
+                setCopilotMessages(prev => [...prev, { role: 'ai', text: result.aiResponse }]);
+            } else {
+                setCopilotMessages(prev => [...prev, { role: 'error', text: result.errorMessage }]);
+            }
+        } catch (err) {
+            setCopilotMessages(prev => [...prev, { role: 'error', text: err.message }]);
+        } finally {
+            setCopilotLoading(false);
         }
     };
 
@@ -681,7 +741,15 @@ function App() {
             <div className="main-area">
                 <div className="canvas-container">
                     <button className="save-layout-btn" onClick={handleSaveLayout}>Save Layout</button>
-                    <ReactFlow nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} fitView>
+                    <ReactFlow
+                        nodes={nodes}
+                        edges={edges}
+                        onNodesChange={onNodesChange}
+                        onEdgesChange={onEdgesChange}
+                        fitView
+                        onNodeClick={(event, node) => setSelectedNodeId(node.id)}
+                        onPaneClick={() => setSelectedNodeId(null)}
+                    >
                         <Background />
                         <Controls />
                     </ReactFlow>
@@ -696,6 +764,9 @@ function App() {
                     {/* Tabs Header */}
                     <div className="chat-tabs">
                         <div className={`chat-tab ${activeTab === 'chat' ? 'active' : ''}`} onClick={() => setActiveTab('chat')}>Chat</div>
+                        {selected && (
+                                <div className={`chat-tab ${activeTab === 'copilot' ? 'active' : ''}`} onClick={() => setActiveTab('copilot')}>✨ Copilot</div>
+                        )}
                         <div className={`chat-tab ${activeTab === 'history' ? 'active' : ''}`} onClick={() => setActiveTab('history')}>History</div>
                         <div style={{flexGrow: 1}}></div>
                         <div style={{padding: '10px 15px', fontSize: '11px', color: '#999', display: 'flex', alignItems: 'center'}}>
@@ -754,6 +825,16 @@ function App() {
                                 <button className="send-btn" onClick={handleExecute} disabled={loading}>Send</button>
                             </div>
                         </>
+                    ) : activeTab === 'copilot' ? (
+                        <CopilotTab
+                            copilotMessages={copilotMessages}
+                            copilotInput={copilotInput}
+                            setCopilotInput={setCopilotInput}
+                            copilotLoading={copilotLoading}
+                            handleCopilotSend={handleCopilotSend}
+                            chatEndRef={chatEndRef}
+                            onClearChat={() => setCopilotMessages([])}
+                        />
                     ) : (
                         <div className="history-list">
                             {historyItems.length === 0 ? (

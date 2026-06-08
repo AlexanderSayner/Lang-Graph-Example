@@ -1,7 +1,11 @@
 package org.sandbox.langgraph.mapper;
 
 import org.mapstruct.Mapper;
-import org.sandbox.langgraph.dto.graphql.input.*;
+import org.sandbox.langgraph.dto.graphql.input.BuildGraphInput;
+import org.sandbox.langgraph.dto.graphql.input.EdgeInput;
+import org.sandbox.langgraph.dto.graphql.input.ExecuteGraphInput;
+import org.sandbox.langgraph.dto.graphql.input.NodeInput;
+import org.sandbox.langgraph.dto.graphql.input.UpdateGraphStateInput;
 import org.sandbox.langgraph.dto.graphql.payload.*;
 import org.sandbox.langgraph.dto.graphql.payload.RewindGraphPayload;
 import org.sandbox.langgraph.dto.graphql.payload.meta.PageInfo;
@@ -182,14 +186,20 @@ public interface GraphGrpcMapper {
         return new RewindGraphPayload(response.getSuccess(), response.getMessage());
     }
 
+    default CopilotGraphPayload toCopilotGraphPayload(org.sandbox.langgraph.grpc.CopilotResponse response) {
+        return new CopilotGraphPayload(response.getSuccess(), response.getAiResponse(), response.getErrorMessage());
+    }
+
     // ============== Helper Methods ==============
 
     default Map<String, String> convertToStringMap(Map<String, Object> map) {
-        if (map == null) return null;
+        if (map == null) {
+            return null;
+        }
         return map.entrySet().stream()
                 .collect(Collectors.toMap(
                         Map.Entry::getKey,
-                        e -> e.getValue() != null ? e.getValue().toString() : null
+                        e -> e.getValue() != null ? e.getValue().toString() : ""
                 ));
     }
 }

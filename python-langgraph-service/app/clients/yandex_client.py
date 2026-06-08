@@ -23,7 +23,7 @@ class YandexGPTClient:
     async def generate(
             self,
             user_message: str,
-            system_message: str = settings.SYSTEM_PROMPT,
+            system_message: str = settings.system_prompt,
             model_name: str = "yandexgpt",
             temperature: float = 0.6,
             max_tokens: int = 2000

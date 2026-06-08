@@ -31,6 +31,9 @@ service LangGraphService {
 
   // Rewind a graph
   rpc RewindGraph (RewindGraphRequest) returns (RewindGraphPayload);
+
+  // Copilot questions chat
+  rpc AskCopilot (CopilotRequest) returns (CopilotResponse);
 }
 
 // ==========================================
@@ -188,4 +191,22 @@ message HttpRequestOutput {
   map<string, string> headers = 3;  // Response Headers
   bool success = 4;                 // True if network call succeeded
   string error_message = 5;         // Error details if success is false
+}
+
+// ==========================================
+// Copilot Messages
+// ==========================================
+
+message CopilotRequest {
+  string user_message = 1;
+  string graph_context_json = 2; // Lightweight JSON of nodes/edges
+  string execution_history_json = 3; // Graph execution thread history
+  string copilot_chat_history_json = 4; // Previous chat messages
+  string selected_node_id = 5;
+}
+
+message CopilotResponse {
+  bool success = 1;
+  string ai_response = 2;
+  string error_message = 3;
 }
