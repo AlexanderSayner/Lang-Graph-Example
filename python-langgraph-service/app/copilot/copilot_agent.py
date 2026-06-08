@@ -47,7 +47,8 @@ def _extract_selected_node_info(graph_context_json: str, selected_node_id: str) 
             node_type = selected_node.get("nodeType", "UNKNOWN")
             prompt = selected_node.get("metadata", {}).get("system_prompt", "No prompt set.")
 
-            return _read_prompt("selected_node_prompt").format(selected_node_id=selected_node_id, label=label, node_type=node_type, prompt=prompt)
+            return _read_prompt("selected_node_prompt").format(selected_node_id=selected_node_id, label=label,
+                                                               node_type=node_type, prompt=prompt)
 
         else:
             return f"The user selected node ID '{selected_node_id}', but it was not found in the current graph context."
@@ -56,13 +57,33 @@ def _extract_selected_node_info(graph_context_json: str, selected_node_id: str) 
         return "Failed to parse selected node context."
 
 
-def _build_system_prompt(graph_context_json: str, execution_history_json: str, selected_node_id: str) -> str:
+def _extract_selected_edge_info(selected_edge_json: str) -> str:
+    """Parses the selected edge JSON and formats it for the LLM."""
+    if not selected_edge_json or selected_edge_json in ("", "null"):
+        # No specific edge is currently selected by the user in the UI.
+        return ""
+
+    try:
+        edge_data = json.loads(selected_edge_json)
+        source = edge_data.get("source", "Unknown")
+        target = edge_data.get("target", "Unknown")
+        condition = edge_data.get("condition", "None (unconditional edge)")
+
+        return _read_prompt("selected_edge_prompt").format(source=source, target=target,
+                                                           condition=condition)
+    except Exception as e:
+        logger.warning(f"Failed to parse selected edge info: {e}")
+        return "Failed to parse selected edge context."
+
+def _build_system_prompt(graph_context_json: str, execution_history_json: str, selected_node_id: str,
+                         selected_edge_json: str) -> str:
     """Crafts a highly specific system prompt for the Graph Builder context."""
     template = _read_prompt("system_prompt_template")
     selected_node_context = _extract_selected_node_info(graph_context_json,
                                                         selected_node_id) if selected_node_id else ""
+    selected_edge_context = _extract_selected_edge_info(selected_edge_json) if selected_edge_json else ""
     return template.format(graph=graph_context_json, execution_history=execution_history_json,
-                           selected_node_context=selected_node_context)
+                           selected_node_context=selected_node_context, selected_edge_context=selected_edge_context)
 
 
 class CopilotAgent:
@@ -75,17 +96,19 @@ class CopilotAgent:
         self.llm = llm_client
 
     async def ask(self, user_message: str, graph_context_json: str, execution_history_json: str, chat_history_json: str,
-                  selected_node_id: str) -> str:
+                  selected_node_id: str, selected_edge_json: str) -> str:
         """
         Processes a copilot request and returns the AI response.
         """
         # Build the System Prompt with Graph Context
-        system_prompt = _build_system_prompt(graph_context_json, execution_history_json, selected_node_id)
+        system_prompt = _build_system_prompt(graph_context_json, execution_history_json, selected_node_id,
+                                             selected_edge_json)
 
         # TODO: refactor generate() to an easier way working with a history
         formatted_user_message = _build_user_message(user_message, chat_history_json)
 
-        logger.info(f"Copilot processing request: {user_message[:50]}...")
+        logger.info(
+            f"Copilot processing request (Node: {selected_node_id or 'None'}, Edge: {'Yes' if selected_edge_json else 'None'})")
         try:
             response_text = await self.llm.generate(
                 user_message=formatted_user_message,

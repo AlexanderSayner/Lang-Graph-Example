@@ -649,7 +649,8 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             graph_context_json=request.graph_context_json,
             execution_history_json=request.execution_history_json,
             chat_history_json=request.copilot_chat_history_json,
-            selected_node_id=request.selected_node_id
+            selected_node_id=request.selected_node_id,
+            selected_edge_json=request.selected_edge_json
         )
 
         return langgraph_pb2.CopilotResponse(
