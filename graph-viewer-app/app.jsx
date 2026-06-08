@@ -1,85 +1,6 @@
 const { useState, useEffect, useRef, useCallback } = React;
-const { ReactFlow, Background, Controls, MarkerType, useNodesState, useEdgesState } = window.ReactFlow;
-
-// --- Config ---
-const API_URL = "http://localhost:9191/graphql";
-
-// --- Helpers ---
-const fetchGraphQL = async (query, variables) => {
-    const response = await fetch(API_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, variables })
-    });
-    const json = await response.json();
-    if (json.errors) throw new Error(json.errors[0].message);
-    return json.data;
-};
-
-// --- Queries ---
-const LIST_QUERY = `query { listGraphs(pageSize: 100) { graphs { graphId graphName nodeCount } } }`;
-const VIEW_QUERY = `query Get($graphId: String!) { getGraphView(graphId: $graphId) { nodes { nodeId nodeType metadata position { x y } } edges { source target condition } } }`;
-
-const HISTORY_QUERY = `query History($graphId: String!, $threadId: String!) {
-    getExecutionHistory(graphId: $graphId, threadId: $threadId) {
-        success
-        history {
-            nodeId
-            stateJson
-            timestamp
-            diff {
-                added
-                removed
-                modified
-                summary
-            }
-        }
-        errorMessage
-    }
-}`;
-
-const EXECUTE_MUTATION = `
-    mutation Exec($input: ExecuteGraphInput!) {
-        executeGraph(input: $input) {
-            output
-            eventType
-            state
-            errorMessage
-        }
-    }`;
-
-const SAVE_MUTATION = `mutation Save($graphId: String!, $positions: [NodePositionInput!]!) { saveGraphCoordinates(graphId: $graphId, positions: $positions) { success } }`;
-const DELETE_MUTATION = `mutation Del($graphId: String!) { deleteGraph(graphId: $graphId) { success } }`;
-
-const REWIND_MUTATION = `
-    mutation Rewind($graphId: String!, $threadId: String!, $stateJson: String!, $targetNodeId: String) {
-        rewindGraph(graphId: $graphId, threadId: $threadId, stateJson: $stateJson, targetNodeId: $targetNodeId) { success message }
-    }
-`;
-
-// --- Layout Logic ---
-const layoutGraph = (nodes, edges) => {
-    const g = new dagre.graphlib.Graph();
-    g.setGraph({ rankdir: 'TB', nodesep: 150, ranksep: 120 });
-    g.setDefaultEdgeLabel(() => ({}));
-    nodes.forEach(n => g.setNode(n.id, { width: 220, height: 80 }));
-    edges.forEach(e => g.setEdge(e.source, e.target));
-    dagre.layout(g);
-    return nodes.map(n => {
-        const pos = g.node(n.id);
-        return { ...n, position: { x: pos.x - 110, y: pos.y - 40 } };
-    });
-};
-
-const COPILOT_MUTATION = `
-    mutation AskCopilot($graphId: String!, $threadId: String!, $message: String!, $chatHistory: String!, $selectedNodeId: String, $selectedEdgeJson: String) {
-        askCopilot(graphId: $graphId, threadId: $threadId, message: $message, copilotChatHistoryJson: $chatHistory, selectedNodeId: $selectedNodeId, selectedEdgeJson: $selectedEdgeJson) {
-            success
-            aiResponse
-            errorMessage
-        }
-    }
-`;
+const { ReactFlow, Background, Controls, applyNodeChanges, applyEdgeChanges } = window.ReactFlow;
+const MarkerType = window.ReactFlow.MarkerType || { ArrowClosed: 'arrowclosed' };
 
 // --- Main App ---
 function App() {
@@ -87,8 +8,16 @@ function App() {
     const [selected, setSelected] = useState(null);
     const [collapsed, setCollapsed] = useState(false);
 
-    const [nodes, setNodes, onNodesChange] = useNodesState([]);
-    const [edges, setEdges, onEdgesChange] = useEdgesState([]);
+    const [nodes, setNodes] = useState([]);
+    const onNodesChange = useCallback(
+        (changes) => setNodes((nds) => applyNodeChanges(changes, nds)),
+        []
+    );
+    const [edges, setEdges] = useState([]);
+    const onEdgesChange = useCallback(
+        (changes) => setEdges((eds) => applyEdgeChanges(changes, eds)),
+        []
+    );
 
     const [messages, setMessages] = useState([]);
     const [input, setInput] = useState("");
@@ -223,6 +152,7 @@ function App() {
         setActiveNodeIds(new Set());
         setRewindOriginNodeId(null);
         setSelectedNodeId(null);
+        setSelectedEdge(null);
 
         fetchGraphQL(VIEW_QUERY, { graphId: id }).then(d => {
             const view = d.getGraphView;
@@ -534,231 +464,22 @@ function App() {
         }
     };
 
-    // Helper: Render concise diff summary for history list
-    const renderDiffSummary = (diff) => {
-        if (!diff?.summary?.length) return null;
-
-        return (
-            <div style={{ fontSize: '11px', color: '#666', marginTop: '4px', lineHeight: '1.3' }}>
-                {diff.summary.slice(0, 2).map((item, i) => {
-                    let icon = '';
-                    let color = '#666';
-
-                    if (item.includes('added')) {
-                        icon = '➕ ';
-                        color = '#2e7d32';
-                    } else if (item.includes('removed')) {
-                        icon = '➖ ';
-                        color = '#c62828';
-                    } else if (item.includes('modified')) {
-                        icon = '✏️ ';
-                        color = '#1565c0';
-                    }
-
-                    return (
-                        <div key={i} style={{ color }}>
-                            {icon}{item}
-                        </div>
-                    );
-                })}
-                {diff.summary.length > 2 && (
-                    <div style={{ fontStyle: 'italic', color: '#999' }}>
-                        +{diff.summary.length - 2} more
-                    </div>
-                )}
-            </div>
-        );
-    };
-
-    // Helper: Render detailed diff view in modal
-    const renderDiffDetails = (diff, fullJson) => {
-        // Fallback to full JSON if no diff or in full view mode
-        const hasNoChanges =
-            Object.keys(diff.added || {}).length === 0 &&
-            (diff.removed || []).length === 0 &&
-            Object.keys(diff.modified || {}).length === 0;
-
-        // Fallback to full JSON if no diff or in full view mode
-        if (!diff || hasNoChanges) {
-            return <pre className="json-viewer">{JSON.stringify(fullJson, null, 2)}</pre>;
-        }
-
-        return (
-            <div style={{ fontFamily: 'Consolas, Monaco, monospace', fontSize: '11px', lineHeight: '1.4' }}>
-                {/* Added fields */}
-                {diff.added && Object.keys(diff.added).length > 0 && (
-                    <div style={{ marginBottom: '12px' }}>
-                        <strong style={{ color: '#2e7d32', display: 'block', marginBottom: '4px' }}>
-                            ➕ Added
-                        </strong>
-                        <pre style={{
-                            background: '#e8f5e9',
-                            padding: '8px',
-                            borderRadius: '4px',
-                            margin: 0,
-                            whiteSpace: 'pre-wrap',
-                            overflow: 'auto',
-                            maxHeight: '150px'
-                        }}>
-                    {JSON.stringify(diff.added, null, 2)}
-                </pre>
-                    </div>
-                )}
-
-                {/* Removed fields */}
-                {diff.removed && diff.removed.length > 0 && (
-                    <div style={{ marginBottom: '12px' }}>
-                        <strong style={{ color: '#c62828', display: 'block', marginBottom: '4px' }}>
-                            ➖ Removed
-                        </strong>
-                        <ul style={{ margin: '4px 0 0 20px', padding: 0 }}>
-                            {diff.removed.map((path, i) => (
-                                <li key={i} style={{ color: '#c62828', marginBottom: '2px' }}>
-                                    {path}
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
-                )}
-
-                {/* Modified fields */}
-                {diff.modified && Object.keys(diff.modified).length > 0 && (
-                    <div style={{ marginBottom: '12px' }}>
-                        <strong style={{ color: '#1565c0', display: 'block', marginBottom: '4px' }}>
-                            ✏️ Modified
-                        </strong>
-                        {Object.entries(diff.modified).map(([path, values]) => (
-                            <div key={path} style={{
-                                background: '#e3f2fd',
-                                padding: '6px 8px',
-                                margin: '4px 0',
-                                borderRadius: '3px',
-                                borderLeft: '3px solid #2196f3'
-                            }}>
-                                <div style={{ fontWeight: '600', marginBottom: '4px' }}>{path}</div>
-                                <div style={{ fontSize: '10px' }}>
-                                    <span style={{ color: '#999' }}>Before: </span>
-                                    <code style={{ background: '#ffebee', padding: '2px 4px', borderRadius: '2px' }}>
-                                        {JSON.stringify(values?.old)}
-                                    </code>
-                                </div>
-                                <div style={{ fontSize: '10px', marginTop: '2px' }}>
-                                    <span style={{ color: '#999' }}>After: </span>
-                                    <code style={{ background: '#e8f5e9', padding: '2px 4px', borderRadius: '2px' }}>
-                                        {JSON.stringify(values?.new)}
-                                    </code>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                )}
-            </div>
-        );
-    };
-
-
     return (
         <React.Fragment>
             {/* Modal */}
-            {modalData && (
-                <div className="modal-overlay" onClick={() => {
-                    setModalData(null);
-                    setModalViewMode('diff'); // Reset on close
-                }}>
-                    <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-                        <div className="modal-header">
-                            <div className="modal-title">
-                                State: <strong>{getNodeDisplayName(modalData.nodeId)}</strong>
-                                <span style={{fontWeight: 'normal', marginLeft: '10px', fontSize: '12px', color: '#666'}}>
-                    {formatTimestamp(modalData.timestamp)}
-                </span>
-                            </div>
-                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                                {/* Toggle buttons - only show if diff exists */}
-                                {modalData.diff && (
-                                    <>
-                                        <button
-                                            onClick={() => setModalViewMode('diff')}
-                                            style={{
-                                                padding: '4px 10px',
-                                                fontSize: '11px',
-                                                border: modalViewMode === 'diff' ? '2px solid #2196f3' : '1px solid #ccc',
-                                                background: modalViewMode === 'diff' ? '#e3f2fd' : '#fff',
-                                                borderRadius: '4px',
-                                                cursor: 'pointer',
-                                                color: modalViewMode === 'diff' ? '#1565c0' : '#666',
-                                                fontWeight: modalViewMode === 'diff' ? '600' : 'normal'
-                                            }}
-                                        >
-                                            Diff
-                                        </button>
-                                        <button
-                                            onClick={() => setModalViewMode('full')}
-                                            style={{
-                                                padding: '4px 10px',
-                                                fontSize: '11px',
-                                                border: modalViewMode === 'full' ? '2px solid #2196f3' : '1px solid #ccc',
-                                                background: modalViewMode === 'full' ? '#e3f2fd' : '#fff',
-                                                borderRadius: '4px',
-                                                cursor: 'pointer',
-                                                color: modalViewMode === 'full' ? '#1565c0' : '#666',
-                                                fontWeight: modalViewMode === 'full' ? '600' : 'normal'
-                                            }}
-                                        >
-                                            Full JSON
-                                        </button>
-                                    </>
-                                )}
-                                <button className="modal-close" onClick={() => {
-                                    setModalData(null);
-                                    setModalViewMode('diff');
-                                }}>&times;</button>
-                            </div>
-                        </div>
-                        <div className="modal-body">
-                            {modalViewMode === 'diff' && modalData.diff
-                                ? renderDiffDetails(modalData.diff, modalData.json)
-                                : <pre className="json-viewer">{JSON.stringify(modalData.json, null, 2)}</pre>
-                            }
-                        </div>
-                        <div style={{padding: '10px', borderTop: '1px solid #eee', textAlign: 'right', display: 'flex', justifyContent: 'flex-end', gap: '8px'}}>
-                            <button
-                                className="btn-rewind"
-                                onClick={() => handleRewind(modalData.json, modalData.nodeId)}
-                                style={{ fontSize: '12px', padding: '6px 12px' }}
-                            >
-                                ↩️ Replay from here
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <StateModal
+                modalData={modalData} modalViewMode={modalViewMode}
+                setModalData={setModalData} setModalViewMode={setModalViewMode}
+                handleRewind={handleRewind} getNodeDisplayName={getNodeDisplayName}
+                formatTimestamp={formatTimestamp}
+            />
 
             {/* Sidebar */}
-            <div className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
-                <div className="sidebar-header">
-                    <a href="help.html" style={{textDecoration: 'none', color: 'inherit'}}><h3>LangGraph</h3></a>
-                    <button onClick={() => window.location.href = 'builder.html?isNew=true'} style={{ background: '#2196f3', color: 'white', border: 'none', padding: '5px 10px', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', marginRight: '10px' }}>+ New</button>
-                    <button className="toggle-btn" onClick={() => setCollapsed(!collapsed)}>{collapsed ? '»' : '«'}</button>
-                </div>
-                <div className="graph-list">
-                    {graphs.map(g => (
-                        <div key={g.graphId} className={`graph-item ${g.graphId === selected ? 'active' : ''}`} onClick={() => loadGraph(g.graphId)}>
-                            <div className="graph-icon-mini"></div>
-                            <div className="graph-info">
-                                <div className="name">{g.graphName}</div>
-                                <div className="meta">{g.nodeCount} Nodes</div>
-                            </div>
-
-                            <div style={{ display: 'flex', gap: '5px', alignItems: 'center' }}>
-                                <button className="icon-btn" title="Copy ID" onClick={(e) => { e.stopPropagation(); copyGraphId(g.graphId); }}>{copiedGraph === g.graphId ? '✅' : '📋'}</button>
-                                <button style={{ background: 'transparent', border: '1px solid #2196f3', color: '#2196f3', padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '10px', fontWeight: 'bold' }} onClick={(e) => { e.stopPropagation(); window.location.href = `builder.html?graphId=${g.graphId}&graphName=${g.graphName}`; }}>Edit</button>
-                                <button className="delete-btn" onClick={(e) => handleDelete(e, g.graphId)}>✕</button>
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            </div>
+            <Sidebar
+                graphs={graphs} selected={selected} collapsed={collapsed}
+                setCollapsed={setCollapsed} loadGraph={loadGraph}
+                copyGraphId={copyGraphId} copiedGraph={copiedGraph} handleDelete={handleDelete}
+            />
 
             {/* Main Content */}
             <div className="main-area">
@@ -793,149 +514,20 @@ function App() {
                 </div>
 
                 {/* Chat Area */}
-                <div className="chat-panel" style={{ height: `${panelHeight}px` }} ref={panelRef}>
-
-                    {/* The Resizer Handle */}
-                    <div className="resizer" onMouseDown={startResizing}></div>
-
-                    {/* Tabs Header */}
-                    <div className="chat-tabs">
-                        <div className={`chat-tab ${activeTab === 'chat' ? 'active' : ''}`} onClick={() => setActiveTab('chat')}>Chat</div>
-                        {selected && (
-                                <div className={`chat-tab ${activeTab === 'copilot' ? 'active' : ''}`} onClick={() => setActiveTab('copilot')}>✨ Copilot</div>
-                        )}
-                        <div className={`chat-tab ${activeTab === 'history' ? 'active' : ''}`} onClick={() => setActiveTab('history')}>History</div>
-                        <div style={{flexGrow: 1}}></div>
-                        <div style={{padding: '10px 15px', fontSize: '11px', color: '#999', display: 'flex', alignItems: 'center'}}>
-                            {selected && ( <><span title={selected}>Graph: ...{selected.slice(-6)}</span><span className="copy-btn-icon" onClick={() => copyGraphId(selected)}>{copiedGraph === selected ? '✅' : '📋'}</span><span style={{margin: '0 8px', color: '#ddd'}}>|</span></> )}
-                            <span title={threadId}>Thread: ...{threadId.slice(-6)}</span>
-                            <span className="copy-btn-icon" onClick={copyThreadId}>{copiedThread ? '✅' : '📋'}</span>
-                            <button onClick={resetThread} style={{border:'none', background:'none', cursor:'pointer', color:'#2196f3', marginLeft: '10px', fontSize: '11px'}}>New</button>
-                        </div>
-                    </div>
-
-                    {/* Content Area */}
-                    {activeTab === 'chat' ? (
-                        <>
-                            <div className="chat-messages">
-                                {messages.map((m, i) => ( <div key={i} className={`msg msg-${m.type}`}>{m.text}</div> ))}
-                                {graphStatus === 'finished' && (
-                                    <div style={{
-                                        padding: '8px 12px',
-                                        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-                                        color: 'white',
-                                        textAlign: 'center',
-                                        fontSize: '12px',
-                                        fontWeight: '500',
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        justifyContent: 'center',
-                                        gap: '6px'
-                                    }}>
-                                        <span>✨</span>
-                                        <span>Conversation completed</span>
-                                        <button
-                                            onClick={resetThread}
-                                            style={{
-                                                background: 'rgba(255,255,255,0.2)',
-                                                border: '1px solid rgba(255,255,255,0.4)',
-                                                color: 'white',
-                                                padding: '4px 10px',
-                                                borderRadius: '12px',
-                                                fontSize: '11px',
-                                                cursor: 'pointer',
-                                                marginLeft: '8px',
-                                                transition: 'background 0.2s'
-                                            }}
-                                            onMouseOver={(e) => e.target.style.background = 'rgba(255,255,255,0.3)'}
-                                            onMouseOut={(e) => e.target.style.background = 'rgba(255,255,255,0.2)'}
-                                        >
-                                            Start new thread →
-                                        </button>
-                                    </div>
-                                )}
-                                {loading && <div className="msg msg-bot">Thinking...</div>}
-                                <div ref={chatEndRef} />
-                            </div>
-                            <div className="chat-input-area">
-                                <input className="chat-input" placeholder={ graphStatus === 'finished' ? "💬 Graph finished — send a message to continue, or click 'New' for a fresh thread" : "Send message..." } value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleExecute()} disabled={loading} />
-                                <button className="send-btn" onClick={handleExecute} disabled={loading}>Send</button>
-                            </div>
-                        </>
-                    ) : activeTab === 'copilot' ? (
-                        <CopilotTab
-                            copilotMessages={copilotMessages}
-                            copilotInput={copilotInput}
-                            setCopilotInput={setCopilotInput}
-                            copilotLoading={copilotLoading}
-                            handleCopilotSend={handleCopilotSend}
-                            chatEndRef={chatEndRef}
-                            onClearChat={() => setCopilotMessages([])}
-                        />
-                    ) : (
-                        <div className="history-list">
-                            {historyItems.length === 0 ? (
-                                <div style={{textAlign: 'center', color: '#999', marginTop: '20px'}}>
-                                    No execution history for this thread.
-                                </div>
-                            ) : (
-                                historyItems.map((h, idx) => (
-                                    <div
-                                        key={`${h.nodeId}-${idx}`}  // Unique key for React
-                                        className="history-item"
-                                        onClick={() => setModalData({
-                                            nodeId: h.nodeId,
-                                            timestamp: h.timestamp,
-                                            json: h.stateJson,
-                                            diff: h.diff  // Pass diff from backend
-                                        })}
-                                        style={{cursor: 'pointer'}}
-                                    >
-                                        <div style={{flex: 1, minWidth: 0}}>
-                                            <div className="history-node-name" style={{
-                                                fontWeight: '600',
-                                                fontSize: '13px',
-                                                color: '#333',
-                                                marginBottom: '2px'
-                                            }}>
-                                                {getNodeDisplayName(h.nodeId)}
-                                            </div>
-                                            <div className="history-timestamp" style={{
-                                                fontSize: '10px',
-                                                color: '#999'
-                                            }}>
-                                                {formatTimestamp(h.timestamp)}
-                                            </div>
-                                            {/* NEW: Show diff summary */}
-                                            {renderDiffSummary(h.diff)}
-                                        </div>
-                                        <div className="history-actions" style={{
-                                            display: 'flex',
-                                            gap: '8px',
-                                            alignItems: 'center',
-                                            flexShrink: 0
-                                        }}>
-                                            <button
-                                                className="btn-rewind"
-                                                style={{fontSize: '10px', padding: '4px 8px'}}
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    handleRewind(h.stateJson, h.nodeId);
-                                                }}
-                                            >
-                                                Replay
-                                            </button>
-                                            <div style={{fontSize: '10px', color: '#2196f3'}}>
-                                                {h.diff?.summary?.length > 0 ? 'View Diff' : 'View JSON'}
-                                            </div>
-                                        </div>
-                                    </div>
-                                ))
-                            )}
-                        </div>
-                    )
-                    }
-                </div>
+                <ChatPanel
+                    activeTab={activeTab} setActiveTab={setActiveTab} selected={selected}
+                    threadId={threadId} copiedThread={copiedThread} copiedGraph={copiedGraph}
+                    copyThreadId={copyThreadId} copyGraphId={copyGraphId} resetThread={resetThread}
+                    panelHeight={panelHeight} panelRef={panelRef} startResizing={startResizing}
+                    messages={messages} graphStatus={graphStatus} loading={loading}
+                    input={input} setInput={setInput} handleExecute={handleExecute} chatEndRef={chatEndRef}
+                    historyItems={historyItems} setModalData={setModalData}
+                    getNodeDisplayName={getNodeDisplayName} handleRewind={handleRewind}
+                    copilotMessages={copilotMessages} copilotInput={copilotInput}
+                    setCopilotInput={setCopilotInput} copilotLoading={copilotLoading}
+                    handleCopilotSend={handleCopilotSend}
+                    formatTimestamp={formatTimestamp}
+                />
             </div>
         </React.Fragment>
     );
