@@ -11,7 +11,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install python dependencies
 COPY requirements.txt .
 ENV PIP_DEFAULT_TIMEOUT=120
-RUN pip install --no-cache-dir --retries=5 --user -r requirements.txt
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+RUN pip install --no-cache-dir --retries=5 -r requirements.txt
+# FORCE upgrade redis to a modern Python 3 version (4.5.0+)
+RUN pip install --no-cache-dir --upgrade "redis>=4.5.0"
+RUN which python && python -c "import redis; print(redis.__file__)"
 
 # --- Final Image ---
 FROM python:3.11-slim
@@ -19,8 +24,8 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Copy installed packages from builder
-COPY --from=builder /root/.local /root/.local
-ENV PATH=/root/.local/bin:$PATH
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy application code
 COPY app ./app
