@@ -93,7 +93,7 @@ services:
   redis:
     image: redis/redis-stack-server:latest
     container_name: langgraph-redis
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --protected-mode no --bind 0.0.0.0
     volumes:
       - redis_data:/data
     ports:
