@@ -14,7 +14,8 @@ ENV PIP_DEFAULT_TIMEOUT=120
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --no-cache-dir --retries=5 -r requirements.txt
-RUN pip show redis
+# FORCE upgrade redis to a modern Python 3 version (4.5.0+)
+RUN pip install --no-cache-dir --upgrade "redis>=4.5.0"
 RUN which python && python -c "import redis; print(redis.__file__)"
 
 # --- Final Image ---

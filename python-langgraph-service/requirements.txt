@@ -21,4 +21,3 @@ uvloop>=0.21.0; platform_system != "Windows"
 httpx>=0.28.1
 booktype
 cachetools
-redis
