@@ -11,7 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install python dependencies
 COPY requirements.txt .
 ENV PIP_DEFAULT_TIMEOUT=120
-RUN pip install --no-cache-dir --retries=5 --user -r requirements.txt
+RUN pip install --no-cache-dir --retries=5 -r requirements.txt
+RUN pip show redis
 
 # --- Final Image ---
 FROM python:3.11-slim
