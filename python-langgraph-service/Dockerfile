@@ -15,7 +15,7 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --no-cache-dir --retries=5 -r requirements.txt
 RUN pip show redis
-RUN python -c "import redis; print(redis.__version__)"
+RUN which python && python -c "import redis; print(redis.__file__)"
 
 # --- Final Image ---
 FROM python:3.11-slim
