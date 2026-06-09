@@ -21,8 +21,8 @@ spring:
 
   data:
     redis:
-      host: localhost
-      port: 6380
+      host: ${SPRING_REDIS_HOST:localhost}
+      port: ${SPRING_REDIS_PORT:6380}
       timeout: 2000ms
 
   grpc:
