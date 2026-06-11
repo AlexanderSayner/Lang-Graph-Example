@@ -1,0 +1,64 @@
+name: Build and Deploy to VPS
+
+on:
+  push:
+    branches: [ "main" ]
+
+# Required to push images to GitHub Container Registry
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      # ------------------------------------------------------------------
+      # 1️⃣ Checkout source
+      # ------------------------------------------------------------------
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------
+      # 2️⃣ Log in to GitHub Container Registry (GHCR)
+      # ------------------------------------------------------------------
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ------------------------------------------------------------------
+      # 3️⃣ Build & push Langgraph Service (Python)
+      # ------------------------------------------------------------------
+      - name: Build and push Langgraph Service
+        uses: docker/build-push-action@v5
+        with:
+          context: ./python-langgraph-service
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/langgraph-service:latest
+
+      # ------------------------------------------------------------------
+      # 4️⃣ Build & push Spring Service (Java)
+      # ------------------------------------------------------------------
+      - name: Build and push Spring Service
+        uses: docker/build-push-action@v5
+        with:
+          context: ./spring-langgraph-app
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/spring-service:latest
+
+      # ------------------------------------------------------------------
+      # 4.5️⃣ Build & push Graph Viewer App (Frontend)
+      # ------------------------------------------------------------------
+      - name: Build and push Graph Viewer App
+        uses: docker/build-push-action@v5
+        with:
+          context: ./graph-viewer-app
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/graph-viewer-app:latest
