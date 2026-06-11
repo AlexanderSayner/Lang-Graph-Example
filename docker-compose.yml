@@ -3,6 +3,7 @@ version: '3.8'
 services:
   # LangGraph gRPC Service
   langgraph-service:
+    image: ghcr.io/alexandersayner/lang-graph-example/langgraph-service:latest
     build:
       context: ./python-langgraph-service
       dockerfile: Dockerfile
@@ -39,6 +40,7 @@ services:
 
   # Spring LangGraph Application
   spring-service:
+    image: ghcr.io/alexandersayner/lang-graph-example/spring-service:latest
     build:
       context: ./spring-langgraph-app
       dockerfile: Dockerfile
@@ -64,6 +66,7 @@ services:
         max-size: "10m"
 
   graph-viewer-app:
+    image: ghcr.io/alexandersayner/lang-graph-example/graph-viewer-app:latest
     build:
       context: ./graph-viewer-app
       dockerfile: Dockerfile
@@ -82,7 +85,7 @@ services:
 
   # PostgreSQL Database
   postgres:
-    image: postgres:./15-alpine
+    image: postgres:15-alpine
     container_name: langgraph-postgres
     environment:
       POSTGRES_USER: langgraph

@@ -62,3 +62,22 @@ jobs:
           context: ./graph-viewer-app
           push: true
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/graph-viewer-app:latest
+
+      # ------------------------------------------------------------------
+      # 5️⃣ Deploy to VPS via SSH
+      # ------------------------------------------------------------------
+      - name: Deploy to VPS
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            cd /opt/myapp
+            # Log in to GitHub so the VPS can download the images
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+            docker compose pull
+            docker compose up -d
+
+            docker image prune -f
