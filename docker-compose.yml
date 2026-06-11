@@ -32,6 +32,10 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
 
   # Spring LangGraph Application
   spring-service:
@@ -45,6 +49,7 @@ services:
       - SPRING_REDIS_HOST=redis
       - SPRING_REDIS_PORT=6379
       - LANGGRAPH_SERVICE_ADDRESS=langgraph-service:50051
+      - JAVA_OPTS=-Xmx256m -Xms128m
     depends_on:
       postgres:
         condition: service_healthy
@@ -53,6 +58,10 @@ services:
     networks:
       - langgraph-network
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
 
   graph-viewer-app:
     build:
@@ -66,16 +75,26 @@ services:
     networks:
       - langgraph-network
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
 
   # PostgreSQL Database
   postgres:
-    image: postgres:15-alpine
+    image: postgres:./15-alpine
     container_name: langgraph-postgres
     environment:
       POSTGRES_USER: langgraph
       POSTGRES_PASSWORD: langgraph_password
       POSTGRES_DB: langgraph_db
-    command: ['postgres', '-c', 'shared_buffers=128MB', '-c', 'max_connections=50']
+    command: [
+      'postgres',
+      '-c', 'shared_buffers=128MB',
+      '-c', 'max_connections=50',
+      '-c', 'effective_cache_size=256MB',
+      '-c', 'work_mem=4MB'
+    ]
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -89,12 +108,16 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
 
   # Redis Cache
   redis:
     image: redis/redis-stack-server:latest
     container_name: langgraph-redis
-    command: redis-server --appendonly yes --protected-mode no --bind 0.0.0.0
+    command: redis-server --appendonly yes --protected-mode no --bind 0.0.0.0 --maxmemory 128mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
     ports:
@@ -107,6 +130,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
 
 networks:
   langgraph-network:
