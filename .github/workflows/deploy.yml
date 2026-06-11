@@ -1,0 +1,82 @@
+name: Build and Deploy to VPS
+
+on:
+        push:
+                branches: [ "main" ]
+
+# Required to push images to GitHub Container Registry
+permissions:
+        contents: read
+        packages: write
+
+env:
+        REGISTRY: ghcr.io
+        IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+        build-and-push:
+                runs-on: ubuntu-latest
+                steps:
+                        # ------------------------------------------------------------------
+                        # 1️⃣ Checkout source
+                        # ------------------------------------------------------------------
+                        - name: Checkout code
+                          uses: actions/checkout@v4
+
+                        # ------------------------------------------------------------------
+                        # 2️⃣ Log in to GitHub Container Registry (GHCR)
+                        # ------------------------------------------------------------------
+                        - name: Log in to GitHub Container Registry
+                          uses: docker/login-action@v3
+                          with:
+                                  registry: ${{ env.REGISTRY }}
+                                  username: ${{ github.actor }}
+                                  password: ${{ secrets.GITHUB_TOKEN }}
+
+                        # ------------------------------------------------------------------
+                        # 3️⃣ Build & push Java service
+                        # ------------------------------------------------------------------
+                        - name: Build and push Java Service
+                          uses: docker/build-push-action@v5
+                          with:
+                                  context: ./java-service
+                                  push: true
+                                  tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/java-service:latest
+
+                        # ------------------------------------------------------------------
+                        # 4️⃣ Build & push Python service (fixed)
+                        # ------------------------------------------------------------------
+                        - name: Build and push Python Service
+                          uses: docker/build-push-action@v5
+                          with:
+                                  context: ./python-service
+                                  push: true
+                                  tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/python-service:latest
+
+                        # ------------------------------------------------------------------
+                        # 5️⃣ Deploy to VPS via SSH
+                        # ------------------------------------------------------------------
+                        - name: Deploy to VPS
+                          uses: appleboy/ssh-action@v1.0.0
+                          with:
+                                  host: ${{ secrets.VPS_HOST }}
+                                  username: ${{ secrets.VPS_USER }}
+                                  key: ${{ secrets.VPS_SSH_KEY }}
+                                  # If you use a PAT for GHCR, reference it here instead of GITHUB_TOKEN
+                                  # password: ${{ secrets.GHCR_PAT }}
+                                  script: |
+                                          set -euo pipefail
+                                          
+                                          cd /opt/myapp
+                                          
+                                          # 1️⃣ Log in to GHCR from the VPS
+                                          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+                                          
+                                          # 2️⃣ Pull the freshly built images
+                                          docker compose pull
+                                          
+                                          # 3️⃣ Restart containers with the new images
+                                          docker compose up -d
+                                          
+                                          # 4️⃣ Clean up old images
+                                          docker image prune -f

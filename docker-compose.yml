@@ -75,6 +75,7 @@ services:
       POSTGRES_USER: langgraph
       POSTGRES_PASSWORD: langgraph_password
       POSTGRES_DB: langgraph_db
+    command: ['postgres', '-c', 'shared_buffers=128MB', '-c', 'max_connections=50']
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql:ro
