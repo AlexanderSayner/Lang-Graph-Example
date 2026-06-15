@@ -51,6 +51,53 @@ This project demonstrates a microservices architecture where:
 - Python 3.10+
 - protoc (Protocol Buffers compiler)
 
+## Deployment
+
+### Install docker
+```bash
+# Install Docker using the official script
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+
+# Create a dedicated 'deployer' user (skip the password prompts by pressing Enter)
+adduser deployer
+usermod -aG docker deployer
+
+# Create the app folder
+mkdir -p /opt/myapp
+chown deployer:deployer /opt/myapp
+```
+
+### Login into GitHub
+```bash
+su - deployer
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+ssh-keygen -t ed25519 -C "github-actions" -f ~/.ssh/github_deploy -N ""
+cat ~/.ssh/github_deploy.pub >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+
+# Print the private key to copy it
+cat ~/.ssh/github_deploy
+```
+
+### Saving env secrets
+```text
+Go to your GitHub Repo -> Settings -> Secrets and variables -> Actions.
+Add these 3 secrets:
+    VPS_HOST: Your VPS IP address.
+    VPS_USER: deployer
+    VPS_SSH_KEY:
+```
+
+### Uploading files into VPS
+```bash
+#If you change docker-compose.yml (e.g., add a new port or environment variable) -> You must run on local machine 
+scp docker-compose.yml root@YOUR_VPS_IP:/opt/myapp/ 
+```
+```bash
+scp -r ./scripts/ root@80.66.78.40:/opt/myapp
+```
+
 ## Getting Started
 
 ### Run Redis server
