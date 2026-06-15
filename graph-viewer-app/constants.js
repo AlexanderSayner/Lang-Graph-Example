@@ -1,5 +1,8 @@
 // --- Config ---
-const API_URL = "http://localhost:9191/graphql";
+const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+const API_URL = isLocalhost
+    ? "http://localhost:9191/graphql"
+    : `http://${window.location.hostname}:9191/graphql`;
 
 // --- Helpers ---
 const fetchGraphQL = async (query, variables) => {
