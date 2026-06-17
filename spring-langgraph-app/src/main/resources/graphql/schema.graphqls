@@ -5,6 +5,7 @@ type Query {
     getGraphState(graphId: String!, threadId: String): GraphStatePayload!
     getGraphView(graphId: String!): GraphViewPayload!
     getExecutionHistory(graphId: String!, threadId: String!): GraphHistoryPayload!
+    getYandexBalance: YandexBalancePayload!
 }
 
 type Mutation {
@@ -212,6 +213,14 @@ type GraphInfo {
 type PageInfo {
     hasNextPage: Boolean!
     endCursor: String
+}
+
+# ================= Helpers ===================
+type YandexBalancePayload {
+    success: Boolean!
+    balance: Float!
+    currency: String!
+    errorMessage: String
 }
 
 enum GraphStatus {

@@ -1,4 +1,3 @@
-
 # Spring LangGraph gRPC-GraphQL Gateway
 
 A Spring Boot 4 (Java 21) gateway that exposes a GraphQL API on top of a LangGraph gRPC backend. 
@@ -26,6 +25,20 @@ docker run -d \
 * **GraphQL Playground (UI)**: [http://localhost:9191/graphiql](http://localhost:9191/graphiql)
 * **GraphQL POST Endpoint**: `http://localhost:9191/graphql`
 * **WebSocket (Subscriptions)**: `ws://localhost:9191/graphql/ws`
+
+## YC tricking
+```bash
+curl -sSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash
+```       
+```bash
+yandex-cloud/bin/yc init
+```
+```bash
+yandex-cloud/bin/yc iam service-account list
+```
+```bash
+yandex-cloud/bin/yc iam key create --service-account-name ai-service-user --output ./authorized_key.json
+```
 
 ---
 

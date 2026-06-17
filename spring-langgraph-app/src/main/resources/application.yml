@@ -56,3 +56,8 @@ logging:
     org.springframework.data.redis: DEBUG
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+yandex:
+  cloud:
+    billing-account-id: ${YC_BILLING_ACCOUNT_ID}
+    serviceAccountKeyJson: ${YC_SA_KEY_JSON}

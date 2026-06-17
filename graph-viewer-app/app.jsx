@@ -60,6 +60,9 @@ function App() {
     const panelRef = useRef(null);
     const isResizing = useRef(false);
 
+    // Economy State
+    const [realBalance, setRealBalance] = useState(null);
+
     // Resizer Handlers
     const stopResizing = useCallback((e) => {
         if (!isResizing.current) return;
@@ -295,6 +298,18 @@ function App() {
 
     }, [activeNodeIds, rewindOriginNodeId, selectedNodeId, selectedEdge]);
 
+    useEffect(() => {
+        fetchGraphQL(BALANCE_QUERY)
+            .then(d => {
+                if (d.getYandexBalance.success) {
+                    setRealBalance(d.getYandexBalance);
+                } else {
+                    console.warn("Yandex balance fetch failed:", d.getYandexBalance.errorMessage);
+                }
+            })
+            .catch(err => console.error("Failed to fetch balance:", err));
+    }, []);
+
     const handleExecute = async () => {
         if (!input.trim() || !selected) return;
 
@@ -479,6 +494,7 @@ function App() {
                 graphs={graphs} selected={selected} collapsed={collapsed}
                 setCollapsed={setCollapsed} loadGraph={loadGraph}
                 copyGraphId={copyGraphId} copiedGraph={copiedGraph} handleDelete={handleDelete}
+                realBalance={realBalance}
             />
 
             {/* Main Content */}
