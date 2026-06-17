@@ -75,6 +75,14 @@ jobs:
           script: |
             set -e
             cd /opt/myapp
+            
+            cat <<'EOF' > .env
+            YC_API_KEY=${{ secrets.YC_API_KEY }}
+            YC_FOLDER_ID=${{ secrets.YC_FOLDER_ID }}
+            EOF
+            
+            chmod 600 .env
+            
             # Log in to GitHub so the VPS can download the images
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
