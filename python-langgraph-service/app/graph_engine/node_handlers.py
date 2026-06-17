@@ -106,7 +106,10 @@ class NodeHandler:
             return {
                 "last_node": n_id,
                 "output": response_text,
-                "variables": merged_vars
+                "variables": merged_vars,
+                "total_tokens": response_text.usage.get('total_tokens', 0),
+                "history": [
+                    {"node": n_id, "output": response_text, "tokens_used": response_text.usage.get('total_tokens', 0)}]
             }
         except JsonGenerationError as e:
             logger.error(f"Router {n_id} failed to parse JSON with an error: {e}")
@@ -176,7 +179,9 @@ class NodeHandler:
                 "last_node": n_id,
                 "output": response_text,
                 # Append to history safely
-                "history": [{"node": n_id, "output": response_text}]
+                "history": [
+                    {"node": n_id, "output": response_text, "tokens_used": response_text.usage.get('total_tokens', 0)}],
+                "total_tokens": response_text.usage.get('total_tokens', 0)
             }
 
         except Exception as e:
@@ -253,7 +258,8 @@ class NodeHandler:
                 "last_node": n_id,
                 "output": result_state.get("output", "Subgraph completed."),
                 "variables": result_state.get("variables", {}),
-                "history": result_state.get("history", [])
+                "history": result_state.get("history", []),
+                "total_tokens": result_state.get("total_tokens", -1)
             }
         except GraphInterrupt:
             logger.info(
@@ -333,7 +339,9 @@ class NodeHandler:
                 return {
                     "last_node": n_id,
                     "output": f"Tool executed successfully. Status: {response.status_code}",
-                    "variables": new_vars
+                    "variables": new_vars,
+                    "total_tokens": 0,
+                    "history": [{"node": n_id, "output": "Tool executed", "tokens_used": 0}]
                 }
             else:
                 logger.error(f"Node {n_id}: Tool Failed - {response.error_message}")
@@ -349,7 +357,9 @@ class NodeHandler:
                     "last_node": n_id,
                     "output": f"Tool Error: {response.error_message}",
                     "variables": new_vars,
-                    "error": response.error_message
+                    "error": response.error_message,
+                    "total_tokens": 0,
+                    "history": [{"node": n_id, "output": "Tool Error", "tokens_used": 0}]
                 }
 
         except grpc.RpcError as e:

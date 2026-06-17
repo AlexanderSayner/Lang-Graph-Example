@@ -7,6 +7,17 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
+class GenerationResult(str):
+    """
+    Preserves the string interface while adding usage metadata.
+    """
+
+    def __new__(cls, text, usage=None):
+        instance = super().__new__(cls, text)
+        instance.usage = usage or {}
+        return instance
+
+
 class YandexGPTClient:
     """
     Lightweight async client for YandexGPT API.
@@ -27,9 +38,9 @@ class YandexGPTClient:
             model_name: str = "yandexgpt",
             temperature: float = 0.6,
             max_tokens: int = 2000
-    ) -> str:
+    ) -> GenerationResult:
         """
-        Sends a request to YandexGPT and returns the text result.
+        Sends a request to YandexGPT and returns the text result along with token usage.
         """
         if not self.api_key:
             raise ValueError("Yandex API Key is not configured.")
@@ -71,8 +82,21 @@ class YandexGPTClient:
                 response.raise_for_status()
 
                 data = response.json()
-                # Parse the specific Yandex response structure
-                return data["result"]["alternatives"][0]["message"]["text"]
+
+                # Parse the text
+                text = data["result"]["alternatives"][0]["message"]["text"]
+
+                # Extract and parse usage data
+                # Yandex API returns token counts as strings, so we cast them to integers
+                raw_usage = data["result"].get("usage", {})
+                usage = {
+                    "input_tokens": int(raw_usage.get("inputTextTokens", 0)),
+                    "completion_tokens": int(raw_usage.get("completionTokens", 0)),
+                    "total_tokens": int(raw_usage.get("totalTokens", 0))
+                }
+
+                # Return the custom string subclass
+                return GenerationResult(text, usage)
 
             except httpx.HTTPStatusError as e:
                 logger.error(f"Yandex API Error: {e.response.status_code} - {e.response.text}")

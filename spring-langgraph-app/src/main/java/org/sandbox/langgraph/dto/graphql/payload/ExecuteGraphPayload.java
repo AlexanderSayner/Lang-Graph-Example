@@ -11,5 +11,6 @@ public record ExecuteGraphPayload(
         String output,
         String eventType,
         Map<String, Object> state,
+        Integer totalTokens,
         String errorMessage
 ) {}

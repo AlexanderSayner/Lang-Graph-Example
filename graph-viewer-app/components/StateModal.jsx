@@ -94,9 +94,24 @@ function StateModal({ modalData, modalViewMode, setModalData, setModalViewMode, 
         }}>
             <div className="modal-content" onClick={(e) => e.stopPropagation()}>
                 <div className="modal-header">
-                    <div className="modal-title">
-                        State: <strong>{getNodeDisplayName(modalData.nodeId)}</strong>
-                        <span style={{fontWeight: 'normal', marginLeft: '10px', fontSize: '12px', color: '#666'}}>{formatTimestamp(modalData.timestamp)}</span>
+                    <div className="modal-title" style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                        <span>State: <strong>{getNodeDisplayName(modalData.nodeId)}</strong></span>
+                        <span style={{fontWeight: 'normal', fontSize: '12px', color: '#666'}}>{formatTimestamp(modalData.timestamp)}</span>
+
+                        {/* ADDED: Token badge in modal header */}
+                        {modalData.tokensUsed != null && (
+                            <span style={{
+                                background: '#e8f5e9',
+                                color: '#2e7d32',
+                                padding: '2px 8px',
+                                borderRadius: '12px',
+                                fontSize: '11px',
+                                fontWeight: '600',
+                                border: '1px solid #a5d6a7'
+                            }}>
+                                🪙 {modalData.tokensUsed} tokens (Total: {modalData.totalTokens})
+                            </span>
+                        )}
                     </div>
                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                         {/* Toggle buttons - only show if diff exists */}

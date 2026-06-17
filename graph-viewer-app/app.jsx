@@ -326,7 +326,7 @@ function App() {
             }
 
             if (errorText) setMessages(prev => [...prev, { type: 'error', text: errorText }]);
-            else setMessages(prev => [...prev, { type: 'bot', text: outputText }]);
+            else setMessages(prev => [...prev, { type: 'bot', text: outputText, tokens: result.totalTokens || -1  }]);
 
             if (eventType === 'END') {
                 setGraphStatus('finished');
@@ -453,7 +453,7 @@ function App() {
             const result = data.askCopilot;
             if (result.success) {
                 // Add AI response to local state
-                setCopilotMessages(prev => [...prev, { role: 'ai', text: result.aiResponse }]);
+                setCopilotMessages(prev => [...prev, { role: 'ai', text: result.aiResponse, tokens: result.totalTokens || -1 }]);
             } else {
                 setCopilotMessages(prev => [...prev, { role: 'error', text: result.errorMessage }]);
             }

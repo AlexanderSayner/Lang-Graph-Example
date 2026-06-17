@@ -404,9 +404,11 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                 # made by the node that just ran, with the node name as the key.
                 # event looks like: {"node_name": {"output": "...", "variables": {...}}}
                 for node_name, updates in event.items():
+                    node_tokens = 0
                     if isinstance(updates, dict):
                         output_content = str(updates.get("output", ""))
                         serialized_state = _serialize_state(updates)
+                        node_tokens = updates.get("total_tokens", 0)
                     else:
                         # Fallback if the node handler returned a tuple or other type
                         logger.warning(
@@ -421,7 +423,8 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                         node_id=node_name,
                         output=output_content,
                         state=serialized_state,
-                        timestamp=int(time.time() * 1000)
+                        timestamp=int(time.time() * 1000),
+                        total_tokens=node_tokens
                     )
 
             # --- POST-STREAM CHECK ---
@@ -453,7 +456,8 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                     event_type="END",
                     output=str(final_values.get("output", "")),
                     state=_serialize_state(final_values),
-                    timestamp=int(time.time() * 1000)
+                    timestamp=int(time.time() * 1000),
+                    total_tokens=final_values.get("total_tokens", 0)
                 )
 
         except Exception as exec_error:
@@ -577,13 +581,27 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                 elif not node_id:
                     node_id = "start"
 
+                # Extract per-node tokens from the history list
+                history_items = state_values.get("history", [])
+                tokens_used = 0
+                if history_items and isinstance(history_items, list):
+                    last_item = history_items[-1]
+                    if isinstance(last_item, dict) and last_item.get("node") == node_id:
+                        tokens_used = last_item.get("tokens_used", 0)
+
+                # Extract cumulative tokens from the state
+                total_tokens = state_values.get("total_tokens", 0)
+
                 # Create the Proto message
                 history_list.append(langgraph_pb2.StateSnapshot(
                     node_id=str(node_id),
                     state_json=json.dumps(state_values, default=str),
-                    timestamp=str(snapshot.created_at) if snapshot.created_at else ""
+                    timestamp=str(snapshot.created_at) if snapshot.created_at else "",
+                    tokens_used = tokens_used,
+                    total_tokens = total_tokens
                 ))
 
+            history_list.reverse()
             return langgraph_pb2.GraphHistoryResponse(history=history_list)
 
         except Exception as e:
@@ -655,5 +673,6 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
 
         return langgraph_pb2.CopilotResponse(
             success=True,
-            ai_response=ai_response
+            ai_response=ai_response,
+            total_tokens=ai_response.usage.get('total_tokens', -1)
         )

@@ -33,6 +33,8 @@ const HISTORY_QUERY = `query History($graphId: String!, $threadId: String!) {
                 modified
                 summary
             }
+            tokensUsed
+            totalTokens
         }
         errorMessage
     }
@@ -44,6 +46,7 @@ const EXECUTE_MUTATION = `
             output
             eventType
             state
+            totalTokens
             errorMessage
         }
     }`;
@@ -62,6 +65,7 @@ const COPILOT_MUTATION = `
         askCopilot(graphId: $graphId, threadId: $threadId, message: $message, copilotChatHistoryJson: $chatHistory, selectedNodeId: $selectedNodeId, selectedEdgeJson: $selectedEdgeJson) {
             success
             aiResponse
+            totalTokens
             errorMessage
         }
     }

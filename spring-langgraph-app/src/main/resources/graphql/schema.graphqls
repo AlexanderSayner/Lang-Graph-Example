@@ -109,6 +109,7 @@ type ExecuteGraphPayload {
     output: String
     eventType: String
     state: JSON
+    totalTokens: Int
     errorMessage: String
 }
 
@@ -143,6 +144,8 @@ type StateSnapshot {
     stateJson: JSON!
     timestamp: String!
     diff: StateDiff
+    tokensUsed: Int
+    totalTokens: Int
 }
 
 type StateDiff {
@@ -160,6 +163,7 @@ type RewindPayload {
 type CopilotPayload {
     success: Boolean
     aiResponse: String!
+    totalTokens: Int
     errorMessage: String
 }
 

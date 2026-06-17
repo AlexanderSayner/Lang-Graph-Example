@@ -68,7 +68,17 @@ function ChatPanel({
             {activeTab === 'chat' ? (
                 <>
                     <div className="chat-messages">
-                        {messages.map((m, i) => ( <div key={i} className={`msg msg-${m.type}`}>{m.text}</div> ))}
+                        {messages.map((m, i) => (
+                            <div key={i} className={`msg msg-${m.type}`}>
+                                {m.text}
+                                {/* ADDED: Show token spend for bot messages */}
+                                {m.type === 'bot' && m.tokens > 0 && (
+                                    <div style={{ fontSize: '10px', color: '#888', marginTop: '4px', fontStyle: 'italic' }}>
+                                        🪙 Tokens used: {m.tokens}
+                                    </div>
+                                )}
+                            </div>
+                        ))}
                         {graphStatus === 'finished' && (
                             <div style={{
                                 padding: '8px 12px',
@@ -137,7 +147,9 @@ function ChatPanel({
                                     nodeId: h.nodeId,
                                     timestamp: h.timestamp,
                                     json: h.stateJson,
-                                    diff: h.diff  // Pass diff from backend
+                                    diff: h.diff,
+                                    tokensUsed: h.tokensUsed,
+                                    totalTokens: h.totalTokens
                                 })}
                                 style={{cursor: 'pointer'}}
                             >
@@ -152,11 +164,29 @@ function ChatPanel({
                                     </div>
                                     <div className="history-timestamp" style={{
                                         fontSize: '10px',
-                                        color: '#999'
+                                        color: '#999',
+                                        display: 'flex',
+                                        gap: '8px',
+                                        alignItems: 'center',
+                                        flexWrap: 'wrap'
                                     }}>
-                                        {formatTimestamp(h.timestamp)}
+                                        <span>{formatTimestamp(h.timestamp)}</span>
+                                        {/* ADDED: Token badge for history items */}
+                                        {h.tokensUsed != null && (
+                                            <span style={{
+                                                background: '#f3e5f5',
+                                                color: '#6a1b9a',
+                                                padding: '1px 6px',
+                                                borderRadius: '10px',
+                                                fontSize: '9px',
+                                                fontWeight: 'bold',
+                                                border: '1px solid #ce93d8'
+                                            }}>
+                                                🪙 {h.tokensUsed} / {h.totalTokens} total
+                                            </span>
+                                        )}
                                     </div>
-                                    {/* NEW: Show diff summary */}
+                                    {/* Show diff summary */}
                                     {renderDiffSummary(h.diff)}
                                 </div>
                                 <div className="history-actions" style={{
