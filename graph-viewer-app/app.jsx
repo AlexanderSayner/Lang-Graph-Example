@@ -103,11 +103,6 @@ function App() {
         }
     }, [messages, copilotMessages, copilotLoading, activeTab]);
 
-    // Load History
-    useEffect(() => {
-        if (activeTab === 'history' && selected && threadId) loadHistory();
-    }, [activeTab, selected, threadId, loadHistory]);
-
     const loadHistory = useCallback(async () => {
         try {
             const data = await fetchGraphQL(HISTORY_QUERY, {
@@ -138,6 +133,11 @@ function App() {
             setActiveNodeIds(new Set());
         }
     }, [selected, threadId]);
+
+    // Load History
+    useEffect(() => {
+        if (activeTab === 'history' && selected && threadId) loadHistory();
+    }, [activeTab, selected, threadId, loadHistory]);
 
     useEffect(() => {
         if (selected && graphs.length > 0) {
