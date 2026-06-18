@@ -76,17 +76,17 @@ jobs:
             set -e
             cd /opt/myapp
             
-            cat <<'EOF' > .env
+            cat <<'EOF' > ~/myapp.env
             YC_API_KEY=${{ secrets.YC_API_KEY }}
             YC_FOLDER_ID=${{ secrets.YC_FOLDER_ID }}
             EOF
             
-            chmod 600 .env
+            chmod 600 ~/myapp.env
             
             # Log in to GitHub so the VPS can download the images
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-            docker compose pull
-            docker compose up -d
+            docker compose --env-file ~/myapp.env pull
+            docker compose --env-file ~/myapp.env up -d
 
             docker image prune -f
