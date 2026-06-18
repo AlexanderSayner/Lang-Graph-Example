@@ -34,7 +34,7 @@ const renderDiffSummary = (diff) => {
     );
 };
 
-function ChatPanel({
+export default function ChatPanel({
     activeTab, setActiveTab, selected, threadId, copiedThread, copiedGraph,
     copyThreadId, copyGraphId, resetThread, panelHeight, panelRef, startResizing,
     messages, graphStatus, loading, input, setInput, handleExecute, chatEndRef,
