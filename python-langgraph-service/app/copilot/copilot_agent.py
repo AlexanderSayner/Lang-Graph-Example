@@ -114,6 +114,7 @@ class CopilotAgent:
                 user_message=formatted_user_message,
                 system_message=system_prompt
             )
+            logger.info(f"Spent {response_text.usage.get('total_tokens', -1)} tokens on copilot")
             return response_text
         except Exception as e:
             logger.error(f"Copilot LLM generation failed: {e}", exc_info=True)

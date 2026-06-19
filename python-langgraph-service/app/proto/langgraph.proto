@@ -84,6 +84,7 @@ message ExecuteGraphResponse {
   map<string, string> state = 4;
   int64 timestamp = 5;
   string error_message = 6;
+  int32 total_tokens = 7;
 }
 
 // Message for getting graph state
@@ -151,6 +152,8 @@ message StateSnapshot {
   string node_id = 1;       // The node that was just executed or is about to run
   string state_json = 2;    // The full state variables as a JSON string
   string timestamp = 3;     // When this step occurred
+  int32 tokens_used = 4;    // Tokens spent in THIS specific node
+  int32 total_tokens = 5;   // Cumulative tokens spent up to this node
 }
 
 message GraphHistoryResponse {
@@ -206,4 +209,5 @@ message CopilotResponse {
     bool success = 1;
     string ai_response = 2;
     string error_message = 3;
+    int32 total_tokens = 4;
 }

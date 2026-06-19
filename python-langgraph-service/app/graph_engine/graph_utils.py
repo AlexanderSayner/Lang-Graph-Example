@@ -26,6 +26,7 @@ class GraphState(TypedDict):
     # Automatically append new history items
     variables: Annotated[Dict[str, Any], merge_dicts]
     history: Annotated[List[Dict[str, Any]], operator.add]
+    total_tokens: Annotated[int, operator.add]
 
 
 class JsonGenerationError(Exception):

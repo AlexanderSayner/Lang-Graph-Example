@@ -15,6 +15,7 @@ public record GraphExecutionEventPayload(
         String output,
         Map<String, Object> state,
         long timestamp,
+        Integer totalTokens,
         String errorMessage
 ) {
 }

@@ -210,7 +210,9 @@ public class LangGraphGrpcService {
                         new StateSnapshot(snap.getNodeId(),
                                 currentState,
                                 snap.getTimestamp(),
-                                diff)
+                                diff,
+                                snap.getTokensUsed(),
+                                snap.getTotalTokens())
                 );
 
                 previousState = currentState;

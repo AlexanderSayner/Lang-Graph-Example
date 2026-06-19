@@ -10,6 +10,8 @@ public record StateSnapshot(
         String nodeId,
         Map<String, Object> stateJson,
         String timestamp,
-        JsonDiffUtil.StateDiff diff
+        JsonDiffUtil.StateDiff diff,
+        Integer tokensUsed,
+        Integer totalTokens
 ) {
 }

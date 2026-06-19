@@ -96,7 +96,7 @@ public class LangGraphController {
         return langGraphService.executeGraphStream(input, false)
                 .reduce(new ExecuteGraphPayloadAccumulator(), ExecuteGraphPayloadAccumulator::accumulate)
                 .map(ExecuteGraphPayloadAccumulator::toPayload)
-                .defaultIfEmpty(new ExecuteGraphPayload(true, "", "idle", null, null));
+                .defaultIfEmpty(new ExecuteGraphPayload(true, "", "idle", null, null, null));
     }
 
     @SubscriptionMapping
@@ -179,6 +179,7 @@ public class LangGraphController {
         private final Map<String, Object> state = new HashMap<>();
         private String errorMessage;
         private boolean hasError;
+        private Integer totalTokens = 0;
 
         ExecuteGraphPayloadAccumulator accumulate(GraphExecutionEventPayload event) {
             if (event.output() != null && !event.output().isEmpty()) {
@@ -192,6 +193,9 @@ public class LangGraphController {
                 this.hasError = true;
                 this.errorMessage = event.errorMessage();
             }
+            if (event.totalTokens() != null && event.totalTokens() > this.totalTokens) {
+                this.totalTokens = event.totalTokens();
+            }
             return this;
         }
 
@@ -201,6 +205,7 @@ public class LangGraphController {
                     output,
                     eventType,
                     state.isEmpty() ? null : state,
+                    totalTokens,
                     errorMessage
             );
         }

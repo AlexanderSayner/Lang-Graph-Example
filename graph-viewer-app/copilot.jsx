@@ -68,7 +68,25 @@ function CopilotTab({
                             {m.role === 'error' ? (
                                 <span style={{color: '#c62828', fontWeight: '500'}}>⚠️ {m.text}</span>
                             ) : (
-                                <div dangerouslySetInnerHTML={{ __html: formatMessage(m.text) }} />
+                                <>
+                                    <div dangerouslySetInnerHTML={{ __html: formatMessage(m.text) }} />
+
+                                    {m.role === 'ai' && m.tokens > 0 && (
+                                        <div style={{
+                                            marginTop: '8px',
+                                            paddingTop: '6px',
+                                            borderTop: '1px solid #f0f0f0',
+                                            fontSize: '10px',
+                                            color: '#999',
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '4px'
+                                        }}>
+                                            <span>⚡</span>
+                                            <span>{m.tokens} tokens</span>
+                                        </div>
+                                    )}
+                                </>
                             )}
                         </div>
                     </div>

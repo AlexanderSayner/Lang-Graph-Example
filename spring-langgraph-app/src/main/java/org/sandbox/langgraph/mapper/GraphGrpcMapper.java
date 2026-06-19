@@ -166,6 +166,7 @@ public interface GraphGrpcMapper {
                 response.getOutput(),
                 new HashMap<>(response.getStateMap()),
                 response.getTimestamp(),
+                response.getTotalTokens(),
                 response.getErrorMessage()
         );
     }
@@ -187,7 +188,7 @@ public interface GraphGrpcMapper {
     }
 
     default CopilotGraphPayload toCopilotGraphPayload(org.sandbox.langgraph.grpc.CopilotResponse response) {
-        return new CopilotGraphPayload(response.getSuccess(), response.getAiResponse(), response.getErrorMessage());
+        return new CopilotGraphPayload(response.getSuccess(), response.getAiResponse(), response.getTotalTokens(), response.getErrorMessage());
     }
 
     // ============== Helper Methods ==============
