@@ -4,9 +4,7 @@ WORKDIR /app
 
 # Copy dependency files
 COPY package.json package-lock.json ./
-# Install clean dependencies
-RUN npm ci --only=production && \
-    npm cache clean --force
+RUN npm install --include=dev
 
 COPY . .
 
@@ -17,7 +15,6 @@ FROM nginx:alpine
 
 # Clear default Nginx static assets
 RUN rm -rf /usr/share/nginx/html/*
-# Copy custom Nginx configuration
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 COPY --from=build /app/dist/. /usr/share/nginx/html/

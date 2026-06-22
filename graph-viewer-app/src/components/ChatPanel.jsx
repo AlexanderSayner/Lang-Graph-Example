@@ -1,3 +1,6 @@
+import React from 'react';
+import CopilotTab from '../copilot';
+
 // Helper: Render concise diff summary for history list
 const renderDiffSummary = (diff) => {
     if (!diff?.summary?.length) return null;
