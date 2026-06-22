@@ -1,11 +1,11 @@
 // --- Config ---
 const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-const API_URL = isLocalhost
+export const API_URL = isLocalhost
     ? "http://localhost:9191/graphql"
     : `http://${window.location.hostname}:9191/graphql`;
 
 // --- Helpers ---
-const fetchGraphQL = async (query, variables) => {
+export const fetchGraphQL = async (query, variables) => {
     const response = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -17,10 +17,10 @@ const fetchGraphQL = async (query, variables) => {
 };
 
 // --- Queries ---
-const LIST_QUERY = `query { listGraphs(pageSize: 100) { graphs { graphId graphName nodeCount } } }`;
-const VIEW_QUERY = `query Get($graphId: String!) { getGraphView(graphId: $graphId) { nodes { nodeId nodeType metadata position { x y } } edges { source target condition } } }`;
+export const LIST_QUERY = `query { listGraphs(pageSize: 100) { graphs { graphId graphName nodeCount } } }`;
+export const VIEW_QUERY = `query Get($graphId: String!) { getGraphView(graphId: $graphId) { nodes { nodeId nodeType metadata position { x y } } edges { source target condition } } }`;
 
-const HISTORY_QUERY = `query History($graphId: String!, $threadId: String!) {
+export const HISTORY_QUERY = `query History($graphId: String!, $threadId: String!) {
     getExecutionHistory(graphId: $graphId, threadId: $threadId) {
         success
         history {
@@ -40,7 +40,7 @@ const HISTORY_QUERY = `query History($graphId: String!, $threadId: String!) {
     }
 }`;
 
-const EXECUTE_MUTATION = `
+export const EXECUTE_MUTATION = `
     mutation Exec($input: ExecuteGraphInput!) {
         executeGraph(input: $input) {
             output
@@ -51,16 +51,16 @@ const EXECUTE_MUTATION = `
         }
     }`;
 
-const SAVE_MUTATION = `mutation Save($graphId: String!, $positions: [NodePositionInput!]!) { saveGraphCoordinates(graphId: $graphId, positions: $positions) { success } }`;
-const DELETE_MUTATION = `mutation Del($graphId: String!) { deleteGraph(graphId: $graphId) { success } }`;
+export const SAVE_MUTATION = `mutation Save($graphId: String!, $positions: [NodePositionInput!]!) { saveGraphCoordinates(graphId: $graphId, positions: $positions) { success } }`;
+export const DELETE_MUTATION = `mutation Del($graphId: String!) { deleteGraph(graphId: $graphId) { success } }`;
 
-const REWIND_MUTATION = `
+export const REWIND_MUTATION = `
     mutation Rewind($graphId: String!, $threadId: String!, $stateJson: String!, $targetNodeId: String) {
         rewindGraph(graphId: $graphId, threadId: $threadId, stateJson: $stateJson, targetNodeId: $targetNodeId) { success message }
     }
 `;
 
-const COPILOT_MUTATION = `
+export const COPILOT_MUTATION = `
     mutation AskCopilot($graphId: String!, $threadId: String!, $message: String!, $chatHistory: String!, $selectedNodeId: String, $selectedEdgeJson: String) {
         askCopilot(graphId: $graphId, threadId: $threadId, message: $message, copilotChatHistoryJson: $chatHistory, selectedNodeId: $selectedNodeId, selectedEdgeJson: $selectedEdgeJson) {
             success
@@ -72,7 +72,7 @@ const COPILOT_MUTATION = `
 `;
 
 // --- Layout Logic ---
-const layoutGraph = (nodes, edges) => {
+export const layoutGraph = (nodes, edges) => {
     const g = new dagre.graphlib.Graph();
     g.setGraph({ rankdir: 'TB', nodesep: 150, ranksep: 120 });
     g.setDefaultEdgeLabel(() => ({}));

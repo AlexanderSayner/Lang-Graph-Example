@@ -1,4 +1,4 @@
-function Sidebar({ graphs, selected, collapsed, setCollapsed, loadGraph, copyGraphId, copiedGraph, handleDelete }) {
+export default function Sidebar({ graphs, selected, collapsed, setCollapsed, loadGraph, copyGraphId, copiedGraph, handleDelete }) {
     return (
         <div className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
             <div className="sidebar-header">
