@@ -1,3 +1,5 @@
+import React from 'react';
+
 export default function StateModal({ modalData, modalViewMode, setModalData, setModalViewMode, handleRewind, getNodeDisplayName, formatTimestamp }) {
     if (!modalData) return null;
 
