@@ -7,8 +7,9 @@ import 'reactflow/dist/style.css'; // Import ReactFlow CSS directly!
 import './styles.css';
 import {
     fetchGraphQL, LIST_QUERY, VIEW_QUERY, HISTORY_QUERY,
-    EXECUTE_MUTATION, SAVE_MUTATION, DELETE_MUTATION,
-    REWIND_MUTATION, COPILOT_MUTATION, layoutGraph
+    BALANCE_QUERY, EXECUTE_MUTATION, SAVE_MUTATION,
+    DELETE_MUTATION, REWIND_MUTATION, COPILOT_MUTATION,
+    layoutGraph
 } from './constants';
 import CopilotTab from './copilot';
 import Sidebar from './components/Sidebar';
@@ -323,6 +324,14 @@ function App() {
             })
             .catch(err => console.error("Failed to fetch balance:", err));
     }, []);
+
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            window.dispatchEvent(new Event('resize'));
+        }, 350);
+
+        return () => clearTimeout(timer);
+    }, [collapsed]);
 
     const handleExecute = async () => {
         if (!input.trim() || !selected) return;
