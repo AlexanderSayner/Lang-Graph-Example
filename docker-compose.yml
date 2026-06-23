@@ -16,6 +16,8 @@ services:
       - DATABASE_URL=postgresql://langgraph:langgraph_password@postgres:5432/langgraph_db
       - REDIS_URL=redis://redis:6379/0
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - YC_API_KEY=${YC_API_KEY:-}
+      - YC_FOLDER_ID=${YC_FOLDER_ID:-}
       - TOOL_SERVICE_HOST=spring-service
     depends_on:
       spring-service:

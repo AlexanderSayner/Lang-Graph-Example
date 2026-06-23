@@ -1,34 +1,25 @@
-const { useState, useEffect, useCallback, useRef, useMemo } = React;
-const {
-    ReactFlow, Controls, Background, addEdge, useNodesState, useEdgesState,
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { createRoot } from 'react-dom/client';
+import ReactFlow, {
+    Controls, Background, addEdge, useNodesState, useEdgesState,
     MarkerType, Handle, Position, useReactFlow, ReactFlowProvider
-} = window.ReactFlow;
+} from 'reactflow';
 
-// --- Config & Helpers ---
-const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-const API_URL = isLocalhost
-    ? "http://localhost:9191/graphql"
-    : `http://${window.location.hostname}:9191/graphql`;
+// CSS imports (Order matters! ReactFlow first, custom second)
+import 'reactflow/dist/style.css';
+import './styles-builder.css';
+
+// Shared constants from your central file
+import { fetchGraphQL, LIST_QUERY, VIEW_QUERY, SAVE_MUTATION } from './constants';
+
+// --- Params ---
 const params = new URLSearchParams(window.location.search);
 const IS_NEW = params.get('isNew') === 'true';
 const URL_ID = params.get('graphId');
 const URL_NAME = params.get('graphName');
 
-const fetchGraphQL = async (query, variables) => {
-    const res = await fetch(API_URL, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, variables })
-    });
-    const json = await res.json();
-    if (json.errors) throw new Error(json.errors[0].message);
-    return json.data;
-};
-
-// --- GraphQL Queries & Mutations ---
-const LIST_QUERY = `query { listGraphs(pageSize: 100) { graphs { graphId graphName } } }`;
-const GET_GRAPH_QUERY = `query Get($id: String!) { getGraphView(graphId: $id) { nodes { nodeId nodeType metadata position { x y } } edges { source target condition } } }`;
+// --- GraphQL Mutations specific to Builder ---
 const BUILD_MUTATION = `mutation Build($input: BuildGraphInput!) { buildGraph(input: $input) { success } }`;
-const LAYOUT_MUTATION = `mutation Save($gid: String!, $pos: [NodePositionInput!]!) { saveGraphCoordinates(graphId: $gid, positions: $pos) { success } }`;
 const TOOL_DEBUG_MUTATION = `mutation Debug($input: ToolDebugInput!) { debugTool(input: $input) { success statusCode body errorMessage } }`;
 
 // --- Custom Node ---
@@ -105,7 +96,7 @@ function Builder() {
         if (IS_NEW) {
             setNodes([]);
         } else if (URL_ID) {
-            fetchGraphQL(GET_GRAPH_QUERY, { id: URL_ID }).then(data => {
+            fetchGraphQL(VIEW_QUERY, { graphId: URL_ID }).then(data => {
                 if (!data.getGraphView) return;
                 setNodes(data.getGraphView.nodes.map(n => ({
                     id: n.nodeId, type: 'designNode', position: n.position || { x: 0, y: 0 },
@@ -169,7 +160,6 @@ function Builder() {
         } else {
             setEdges(eds => eds.filter(e => e.id !== selectedElement.id));
         }
-        // No need to setSelectedElement(null), it will update automatically via useMemo
     };
 
     const handleSave = async () => {
@@ -189,7 +179,7 @@ function Builder() {
             const payloadEdges = edges.map(e => ({ source: e.source, target: e.target, condition: e.label || null }));
 
             await fetchGraphQL(BUILD_MUTATION, { input: { graphId: graphId, graphName: graphName, nodes: payloadNodes, edges: payloadEdges } });
-            await fetchGraphQL(LAYOUT_MUTATION, { gid: graphId, pos: nodes.map(n => ({ nodeId: n.id, x: n.position.x, y: n.position.y })) });
+            await fetchGraphQL(SAVE_MUTATION, { graphId: graphId, positions: nodes.map(n => ({ nodeId: n.id, x: n.position.x, y: n.position.y })) });
 
             alert("Saved Successfully!");
             window.location.href = 'index.html';
@@ -421,5 +411,9 @@ function Builder() {
     );
 }
 
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(<ReactFlowProvider><Builder /></ReactFlowProvider>);
+const root = createRoot(document.getElementById('root'));
+root.render(
+    <ReactFlowProvider>
+        <Builder />
+    </ReactFlowProvider>
+);

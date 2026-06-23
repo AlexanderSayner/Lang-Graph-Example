@@ -22,7 +22,7 @@ const copilotSuggestions = [
     "Why did the last execution fail?"
 ];
 
-function CopilotTab({
+export default function CopilotTab({
     copilotMessages, copilotInput, setCopilotInput, copilotLoading,
     handleCopilotSend, chatEndRef, onClearChat
 }) {

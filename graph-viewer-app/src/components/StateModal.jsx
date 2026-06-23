@@ -1,4 +1,6 @@
-function StateModal({ modalData, modalViewMode, setModalData, setModalViewMode, handleRewind, getNodeDisplayName, formatTimestamp }) {
+import React from 'react';
+
+export default function StateModal({ modalData, modalViewMode, setModalData, setModalViewMode, handleRewind, getNodeDisplayName, formatTimestamp }) {
     if (!modalData) return null;
 
     // Helper: Render detailed diff view in modal

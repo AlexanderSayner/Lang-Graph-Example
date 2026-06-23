@@ -1,6 +1,20 @@
-const { useState, useEffect, useRef, useCallback } = React;
-const { ReactFlow, Background, Controls, applyNodeChanges, applyEdgeChanges } = window.ReactFlow;
-const MarkerType = window.ReactFlow.MarkerType || { ArrowClosed: 'arrowclosed' };
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createRoot } from 'react-dom/client';
+import ReactFlow, { Background, Controls, applyNodeChanges, applyEdgeChanges, MarkerType } from 'reactflow';
+import dagre from 'dagre';
+
+import 'reactflow/dist/style.css'; // Import ReactFlow CSS directly!
+import './styles.css';
+import {
+    fetchGraphQL, LIST_QUERY, VIEW_QUERY, HISTORY_QUERY,
+    EXECUTE_MUTATION, SAVE_MUTATION, DELETE_MUTATION,
+    REWIND_MUTATION, COPILOT_MUTATION, layoutGraph
+} from './constants';
+import CopilotTab from './copilot';
+import Sidebar from './components/Sidebar';
+import ChatPanel from './components/ChatPanel';
+import StateModal from './components/StateModal';
+
 
 // --- Main App ---
 function App() {
@@ -549,5 +563,6 @@ function App() {
     );
 }
 
-const root = ReactDOM.createRoot(document.getElementById('root'));
+// Vite/React 18 uses createRoot
+const root = createRoot(document.getElementById('root'));
 root.render(<App />);

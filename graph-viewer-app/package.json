@@ -1,0 +1,25 @@
+{
+  "name": "graph-viewer-app",
+  "version": "1.0.0",
+  "description": "React Flow web client for Lang Graph back end",
+  "main": "constants.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "dagre": "^0.8.5",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "reactflow": "^11.11.4"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "vite": "^5.1.4"
+  }
+}

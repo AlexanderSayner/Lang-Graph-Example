@@ -1,4 +1,6 @@
-function Sidebar({ graphs, selected, collapsed, setCollapsed, loadGraph, copyGraphId, copiedGraph, handleDelete, realBalance }) {
+import React from 'react';
+
+export default function Sidebar({ graphs, selected, collapsed, setCollapsed, loadGraph, copyGraphId, copiedGraph, handleDelete, realBalance }) {
     return (
         <div className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
             <div className="sidebar-header">
