@@ -34,8 +34,8 @@ export default function Sidebar({ graphs, selected, collapsed, setCollapsed, loa
                     fontWeight: '600',
                     color: realBalance.success ? '#e65100' : '#b71c1c'
                 }}>
-                    <span>{realBalance.success ? '💰 Yandex Balance:' : '⚠️ Billing Error'}</span>
-                    <span style={{
+                    <span className="balance-label">{realBalance.success ? '💰 Yandex Balance:' : '⚠️ Billing Error'}</span>
+                    <span className="balance-value" style={{
                         background: '#fff',
                         padding: '2px 8px',
                         borderRadius: '12px',
@@ -51,12 +51,20 @@ export default function Sidebar({ graphs, selected, collapsed, setCollapsed, loa
 
             <div className="graph-list">
                 {graphs.map(g => (
-                    <div key={g.graphId} className={`graph-item ${g.graphId === selected ? 'active' : ''}`} onClick={() => loadGraph(g.graphId)}>
+                    <div
+                        key={g.graphId}
+                        className={`graph-item ${g.graphId === selected ? 'active' : ''}`}
+                        onClick={() => {
+                            loadGraph(g.graphId);
+                        }}
+                    >
+                        <div className="graph-icon-mini"></div>
                         <div className="graph-info">
                             <div className="name">{g.graphName}</div>
                             <div className="meta">{g.nodeCount} Nodes</div>
                         </div>
-                        <div className="graph-actions">
+
+                        <div className="graph-actions" style={{ display: 'flex', gap: '5px', alignItems: 'center' }}>
                             <button className="icon-btn" title="Copy ID" onClick={(e) => { e.stopPropagation(); copyGraphId(g.graphId); }}>{copiedGraph === g.graphId ? '✅' : '📋'}</button>
                             <button className="edit-btn" onClick={(e) => { e.stopPropagation(); window.location.href = `builder.html?graphId=${g.graphId}&graphName=${g.graphName}`; }}>Edit</button>
                             <button className="delete-btn" onClick={(e) => handleDelete(e, g.graphId)}>✕</button>

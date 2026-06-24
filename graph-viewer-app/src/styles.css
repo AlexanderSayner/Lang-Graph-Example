@@ -8,24 +8,35 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
     border-right: 1px solid #e0e0e0;
     display: flex;
     flex-direction: column;
-    transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: width 0.3s ease;
     position: relative;
     z-index: 10;
-    overflow: hidden;
 }
 .sidebar.collapsed { width: 60px; }
 
 .sidebar-header {
-    padding: 12px 15px;
+    padding: 15px;
     border-bottom: 1px solid #eee;
     background: #fafafa;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    min-height: 56px;
+    height: 56px;
     box-sizing: border-box;
-    flex-shrink: 0;
 }
+
+.sidebar.collapsed .sidebar-header {
+    padding: 0;
+    height: 56px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    border-bottom: 1px solid #eee;
+}
+
+.sidebar-header h3 { margin: 0; color: #333; font-size: 16px; white-space: nowrap; overflow: hidden; }
+.sidebar.collapsed .sidebar-header h3 { display: none; }
 
 .sidebar-actions {
     display: flex;
@@ -33,102 +44,101 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
     align-items: center;
 }
 
-.sidebar.collapsed .sidebar-header {
-    flex-direction: column;
-    padding: 10px;
-    gap: 8px;
-    align-items: center;
-    justify-content: flex-start;
-}
-
 .sidebar.collapsed .sidebar-actions {
-    flex-direction: column-reverse;
-    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
     gap: 8px;
-}
-
-.sidebar-header h3 {
-    margin: 0;
-    color: #333;
-    font-size: 16px;
-    white-space: nowrap;
-}
-.sidebar.collapsed .sidebar-header h3 {
-    display: none;
+    width: 100%;
 }
 
 .new-graph-btn {
-    background: #e8e8e8;
-    color: #555;
-    border: 1px solid #d0d0d0;
-    padding: 6px 14px;
-    border-radius: 6px;
+    background: #2196f3;
+    color: white;
+    border: none;
+    padding: 5px 10px;
+    border-radius: 4px;
     cursor: pointer;
     font-size: 12px;
-    font-weight: 600;
     white-space: nowrap;
-    transition: all 0.2s ease;
+    transition: background 0.2s ease;
 }
-.new-graph-btn:hover {
-    background: #ddd;
-    border-color: #bbb;
-}
+.new-graph-btn:hover { background: #1976d2; }
 
-/* UPDATED: Forces perfect 40x40 square in collapsed mode */
 .sidebar.collapsed .new-graph-btn {
     width: 40px;
-    height: 40px;
+    height: 28px;
     min-width: 40px;
-    min-height: 40px;
+    min-height: 28px;
     padding: 0;
-    font-size: 24px;
+    font-size: 20px;
     font-weight: bold;
-    text-align: center;
-    background: #f0f0f0;
-    border-color: #ddd;
-    color: #666;
     display: flex;
     align-items: center;
     justify-content: center;
-    box-sizing: border-box; /* Ensures border doesn't break the 40px dimension */
-}
-.sidebar.collapsed .new-graph-btn:hover {
-    background: #e0e0e0;
+    box-sizing: border-box;
 }
 
 .toggle-btn {
     background: none;
-    border: 1px solid #ddd;
+    border: none;
     cursor: pointer;
-    font-size: 16px;
-    color: #666;
-    width: 36px;
-    height: 36px;
-    min-width: 36px;
-    min-height: 36px;
-    padding: 0;
-    margin: 0;
-    border-radius: 6px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    transition: background 0.2s ease, border-color 0.2s ease;
+    font-size: 20px;
+    color: #999;
+    padding: 0 5px;
+    transition: color 0.2s ease;
 }
-.toggle-btn:hover {
-    background: #f0f0f0;
-    border-color: #bbb;
+.toggle-btn:hover { color: #2196f3; }
+
+.sidebar.collapsed .toggle-btn {
+    position: absolute;
+    right: -18px;
+    top: 20px;
+    z-index: 100;
+
+    width: auto !important;
+    height: auto !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    display: block !important;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
 }
 
-/* UPDATED: Forces perfect 40x40 square in collapsed mode */
-.sidebar.collapsed .toggle-btn {
-    width: 40px;
-    height: 40px;
-    min-width: 40px;
-    min-height: 40px;
-    margin: 0;
-    font-size: 20px;
-    box-sizing: border-box; /* Ensures border doesn't break the 40px dimension */
+/* --- Balance Section --- */
+.balance-section {
+    transition: padding 0.3s ease, gap 0.3s ease, background 0.3s ease;
+}
+
+.sidebar.collapsed .balance-section {
+    background: transparent !important;
+    border-bottom: none !important;
+    flex-direction: column;
+    justify-content: center;
+    padding: 8px 5px;
+    gap: 2px;
+}
+
+.sidebar.collapsed .balance-label {
+    display: none;
+}
+
+.sidebar.collapsed .balance-value {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0;
+    font-size: 11px;
+    font-weight: bold;
+    text-align: center;
+    width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* --- Graph List & Items --- */
@@ -141,7 +151,9 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
     padding: 12px 15px;
     cursor: pointer;
     border-bottom: 1px solid #f0f0f0;
-    transition: background 0.2s ease;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 .graph-item:hover { background: #f5f5f5; }
 .graph-item.active { background: #e3f2fd; border-left: 4px solid #2196f3; }
@@ -149,87 +161,87 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
 .sidebar.collapsed .graph-item {
     padding: 10px 8px;
     justify-content: flex-start;
+    cursor: pointer;
 }
-.sidebar.collapsed .graph-item.active { padding-left: 8px; }
 
-.graph-info {
-    flex-grow: 1;
-    margin-right: 10px;
-    overflow: hidden;
-    transition: opacity 0.2s ease, margin 0.3s ease;
-}
 .sidebar.collapsed .graph-info {
-    opacity: 1;
-    margin-right: 0;
+    display: block;
     width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-right: 0;
 }
 
 .graph-item .name {
-    font-weight: 600; color: #333; font-size: 13px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-weight: 600;
+    color: #333;
+    font-size: 13px;
 }
-.graph-item .meta { font-size: 10px; color: #888; margin-top: 2px; }
 
-.graph-item > div:last-child {
-    transition: opacity 0.2s ease, max-width 0.3s ease;
-    opacity: 1;
-    max-width: 120px;
+.sidebar.collapsed .graph-item .name {
+    font-size: 11px;
+    font-weight: 600;
+    color: #333;
+    white-space: nowrap;
     overflow: hidden;
-}
-.sidebar.collapsed .graph-item > div:last-child {
-    opacity: 0;
-    max-width: 0;
-    pointer-events: none;
-}
-
-.graph-icon-mini {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #2196f3;
-    opacity: 0;
-    transition: opacity 0.2s ease 0.1s;
-}
-.sidebar.collapsed .graph-icon-mini {
-    opacity: 1;
+    text-overflow: ellipsis;
     display: block;
 }
 
+.graph-item .meta {
+    font-size: 10px;
+    color: #888;
+    margin-top: 2px;
+}
+
+.sidebar.collapsed .graph-item .meta {
+    display: none;
+}
+
+/* Hide action buttons in collapsed mode */
 .graph-actions {
     display: flex;
     gap: 5px;
     align-items: center;
-    transition: opacity 0.2s ease, width 0.3s ease;
-    opacity: 1;
-    width: auto;
-    overflow: hidden;
-    flex-shrink: 0;
 }
 .sidebar.collapsed .graph-actions {
-    opacity: 0;
-    width: 0;
-    pointer-events: none;
+    display: none !important;
 }
 
-.balance-section {
-    transition: max-height 0.3s ease, opacity 0.2s ease, padding 0.3s ease, border 0.3s ease;
-    max-height: 60px; opacity: 1; overflow: hidden;
-}
-.sidebar.collapsed .balance-section {
-    max-height: 0; opacity: 0;
-    padding-top: 0 !important; padding-bottom: 0 !important; border-bottom: none !important;
-}
+.graph-icon-mini { display: none; width: 8px; height: 8px; border-radius: 50%; background: #2196f3; }
+.sidebar.collapsed .graph-icon-mini { display: none; }
 
 .edit-btn {
-    background: transparent; border: 1px solid #2196f3; color: #2196f3;
-    padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 10px; font-weight: bold;
+    background: transparent;
+    border: 1px solid #2196f3;
+    color: #2196f3;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 10px;
+    font-weight: bold;
 }
-.delete-btn { background: transparent; border: 1px solid #e0e0e0; color: #999; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 10px; }
+
+.delete-btn {
+    background: transparent;
+    border: 1px solid #e0e0e0;
+    color: #999;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 10px;
+}
+.sidebar.collapsed .delete-btn { display: none; }
 .delete-btn:hover { background: #ffebee; color: #c62828; }
 
+/* --- Main Content Area --- */
 .main-area { flex-grow: 1; display: flex; flex-direction: column; height: 100%; position: relative; }
+
+/* --- Graph Canvas --- */
 .canvas-container { flex-grow: 1; position: relative; background: #fff; border-bottom: 1px solid #ddd; }
 
+/* --- Nodes --- */
 .react-flow__node { font-size: 12px; border-radius: 8px; padding: 0; width: 220px; text-align: left; border: 1px solid rgba(0,0,0,0.1); box-shadow: 0 2px 6px rgba(0,0,0,0.1); background: #fff; transition: box-shadow 0.2s, border-color 0.2s; }
 
 .react-flow__node.node-start { background: #e8f5e9; border-color: #c8e6c9; }
@@ -268,13 +280,8 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
     transition: stroke 0.2s ease, stroke-width 0.2s ease;
 }
 
-.react-flow__edge.edge-selected .react-flow__edge-textbg {
-    fill: #2196f3 !important;
-}
-.react-flow__edge.edge-selected .react-flow__edge-text {
-    fill: white !important;
-    font-weight: bold;
-}
+.react-flow__edge.edge-selected .react-flow__edge-textbg { fill: #2196f3 !important; }
+.react-flow__edge.edge-selected .react-flow__edge-text { fill: white !important; font-weight: bold; }
 
 .node-header { padding: 8px 12px; border-bottom: 1px solid rgba(0,0,0,0.05); font-weight: bold; font-size: 12px; display: flex; justify-content: space-between; align-items: center; }
 .node-start .node-header { color: #2e7d32; }
@@ -293,24 +300,10 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
 .subgraph-link { display: block; margin-top: 8px; font-size: 10px; color: #7b1fa2; background: rgba(255,255,255,0.5); padding: 4px 8px; border-radius: 4px; text-decoration: none; text-align: center; border: 1px solid #ce93d8; cursor: pointer; }
 .subgraph-link:hover { background: #e1bee7; color: #4a148c; }
 
-.chat-panel {
-    min-height: 150px;
-    background: #fafafa;
-    display: flex;
-    flex-direction: column;
-    border-top: 1px solid #ddd;
-}
+/* --- Chat Panel --- */
+.chat-panel { min-height: 150px; background: #fafafa; display: flex; flex-direction: column; border-top: 1px solid #ddd; }
 
-.resizer {
-    height: 6px;
-    background: #eee;
-    cursor: ns-resize;
-    border-bottom: 1px solid #ddd;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-}
+.resizer { height: 6px; background: #eee; cursor: ns-resize; border-bottom: 1px solid #ddd; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .resizer::after { content: ''; width: 30px; height: 3px; background: #ccc; border-radius: 2px; }
 .resizer:hover { background: #e0e0e0; }
 
@@ -335,10 +328,8 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
 .history-actions { display: flex; gap: 5px; align-items: center; }
 
 .chat-input-area { padding: 10px; background: #fff; display: flex; gap: 10px; border-top: 1px solid #eee; flex-shrink: 0; }
-
 .chat-input { flex-grow: 1; border: 1px solid #ddd; border-radius: 4px; padding: 8px 12px; font-size: 13px; outline: none; }
 .chat-input:focus { border-color: #2196f3; }
-
 .send-btn { background: #2196f3; color: white; border: none; padding: 0 20px; border-radius: 4px; cursor: pointer; font-weight: bold; }
 .send-btn:disabled { background: #ccc; }
 
@@ -349,6 +340,7 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
 .icon-btn { background: transparent; border: none; cursor: pointer; font-size: 14px; padding: 0 5px; opacity: 0.6; }
 .icon-btn:hover { opacity: 1; }
 
+/* --- Modal Styles --- */
 .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; display: flex; align-items: center; justify-content: center; }
 .modal-content { background: white; padding: 20px; border-radius: 8px; width: 80%; height: 80%; display: flex; flex-direction: column; box-shadow: 0 4px 20px rgba(0,0,0,0.15); }
 .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
