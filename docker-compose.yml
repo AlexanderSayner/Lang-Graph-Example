@@ -18,6 +18,8 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - YC_API_KEY=${YC_API_KEY:-}
       - YC_FOLDER_ID=${YC_FOLDER_ID:-}
+      - YC_BILLING_ACCOUNT_ID=${YC_BILLING_ACCOUNT_ID:-}
+      - YC_SA_KEY_JSON=${YC_SA_KEY_JSON:-}
       - TOOL_SERVICE_HOST=spring-service
     depends_on:
       spring-service:
