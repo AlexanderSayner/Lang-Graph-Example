@@ -79,6 +79,8 @@ jobs:
             cat <<'EOF' > ~/myapp.env
             YC_API_KEY=${{ secrets.YC_API_KEY }}
             YC_FOLDER_ID=${{ secrets.YC_FOLDER_ID }}
+            YC_BILLING_ACCOUNT_ID=${{ secrets.YC_BILLING_ACCOUNT_ID }}
+            YC_SA_KEY_JSON=${{ secrets.YC_SA_KEY_JSON }}
             EOF
             
             chmod 600 ~/myapp.env
