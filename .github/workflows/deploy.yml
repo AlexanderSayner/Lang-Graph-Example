@@ -68,10 +68,10 @@ jobs:
       # ------------------------------------------------------------------
       - name: Prepare Secrets
         id: prepare-secrets
+        env:
+          SA_KEY_JSON: ${{ secrets.YC_SA_KEY_JSON }}
         run: |
-          # Base64 encode the JSON secret on the GitHub runner
-          # This completely avoids any shell escaping or multi-line issues
-          SA_KEY_B64=$(echo -n "${{ secrets.YC_SA_KEY_JSON }}" | base64 -w 0)
+          SA_KEY_B64=$(echo -n "$SA_KEY_JSON" | base64 -w 0)
           echo "SA_KEY_B64=$SA_KEY_B64" >> $GITHUB_OUTPUT
 
       # ------------------------------------------------------------------
