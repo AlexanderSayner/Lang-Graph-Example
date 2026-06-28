@@ -40,6 +40,15 @@ export const HISTORY_QUERY = `query History($graphId: String!, $threadId: String
     }
 }`;
 
+export const BALANCE_QUERY = `query {
+    getYandexBalance {
+        success
+        balance
+        currency
+        errorMessage
+    }
+}`;
+
 export const EXECUTE_MUTATION = `
     mutation Exec($input: ExecuteGraphInput!) {
         executeGraph(input: $input) {

@@ -7,8 +7,9 @@ import 'reactflow/dist/style.css'; // Import ReactFlow CSS directly!
 import './styles.css';
 import {
     fetchGraphQL, LIST_QUERY, VIEW_QUERY, HISTORY_QUERY,
-    EXECUTE_MUTATION, SAVE_MUTATION, DELETE_MUTATION,
-    REWIND_MUTATION, COPILOT_MUTATION, layoutGraph
+    BALANCE_QUERY, EXECUTE_MUTATION, SAVE_MUTATION,
+    DELETE_MUTATION, REWIND_MUTATION, COPILOT_MUTATION,
+    layoutGraph
 } from './constants';
 import CopilotTab from './copilot';
 import Sidebar from './components/Sidebar';
@@ -73,6 +74,9 @@ function App() {
     const [panelHeight, setPanelHeight] = useState(300);
     const panelRef = useRef(null);
     const isResizing = useRef(false);
+
+    // Economy State
+    const [realBalance, setRealBalance] = useState(null);
 
     // Resizer Handlers
     const stopResizing = useCallback((e) => {
@@ -309,6 +313,26 @@ function App() {
 
     }, [activeNodeIds, rewindOriginNodeId, selectedNodeId, selectedEdge]);
 
+    useEffect(() => {
+        fetchGraphQL(BALANCE_QUERY)
+            .then(d => {
+                if (d.getYandexBalance.success) {
+                    setRealBalance(d.getYandexBalance);
+                } else {
+                    console.warn("Yandex balance fetch failed:", d.getYandexBalance.errorMessage);
+                }
+            })
+            .catch(err => console.error("Failed to fetch balance:", err));
+    }, []);
+
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            window.dispatchEvent(new Event('resize'));
+        }, 350);
+
+        return () => clearTimeout(timer);
+    }, [collapsed]);
+
     const handleExecute = async () => {
         if (!input.trim() || !selected) return;
 
@@ -493,6 +517,7 @@ function App() {
                 graphs={graphs} selected={selected} collapsed={collapsed}
                 setCollapsed={setCollapsed} loadGraph={loadGraph}
                 copyGraphId={copyGraphId} copiedGraph={copiedGraph} handleDelete={handleDelete}
+                realBalance={realBalance}
             />
 
             {/* Main Content */}

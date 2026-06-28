@@ -1,5 +1,4 @@
 body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; height: 100vh; background: #f0f2f5; }
-
 #root { display: flex; width: 100%; height: 100%; }
 
 /* --- Sidebar --- */
@@ -16,6 +15,7 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
 .sidebar.collapsed { width: 60px; }
 
 .sidebar-header {
+    position: relative;
     padding: 15px;
     border-bottom: 1px solid #eee;
     background: #fafafa;
@@ -25,11 +25,130 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
     height: 56px;
     box-sizing: border-box;
 }
+
+.sidebar.collapsed .sidebar-header {
+    padding: 10px 0;
+    height: auto;
+    min-height: 56px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    border-bottom: 1px solid #eee;
+}
+
 .sidebar-header h3 { margin: 0; color: #333; font-size: 16px; white-space: nowrap; overflow: hidden; }
 .sidebar.collapsed .sidebar-header h3 { display: none; }
 
-.toggle-btn { background: none; border: none; cursor: pointer; font-size: 20px; color: #666; padding: 5px; }
+.sidebar-actions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
 
+.sidebar.collapsed .sidebar-actions {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+}
+
+.new-graph-btn {
+    background: #2196f3;
+    color: white;
+    border: none;
+    padding: 5px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    white-space: nowrap;
+    transition: background 0.2s ease;
+}
+.new-graph-btn:hover { background: #1976d2; }
+
+.sidebar.collapsed .new-graph-btn {
+    width: 40px;
+    height: 28px;
+    min-width: 40px;
+    min-height: 28px;
+    padding: 0;
+    font-size: 20px;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+}
+
+.toggle-btn {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 20px;
+    color: #999;
+    padding: 0 5px;
+    transition: color 0.2s ease;
+}
+.toggle-btn:hover { color: #2196f3; }
+
+.sidebar.collapsed .toggle-btn {
+    position: absolute;
+    right: -38px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 100;
+
+    background: none;
+    border: none;
+    box-shadow: none;
+    border-radius: 0;
+    padding: 8px 12px;
+    font-size: 20px;
+    color: #999;
+    cursor: pointer;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.sidebar.collapsed .toggle-btn:hover {
+    color: #2196f3;
+}
+
+/* --- Balance Section --- */
+.balance-section {
+    transition: padding 0.3s ease, gap 0.3s ease, background 0.3s ease;
+}
+
+.sidebar.collapsed .balance-section {
+    background: transparent !important;
+    border-bottom: none !important;
+    flex-direction: column;
+    justify-content: center;
+    padding: 8px 5px;
+    gap: 2px;
+}
+
+.sidebar.collapsed .balance-label {
+    display: none;
+}
+
+.sidebar.collapsed .balance-value {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0;
+    font-size: 11px;
+    font-weight: bold;
+    text-align: center;
+    width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* --- Graph List & Items --- */
 .graph-list { flex-grow: 1; overflow-y: auto; overflow-x: hidden; }
 
 .graph-item {
@@ -46,19 +165,80 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
 .graph-item:hover { background: #f5f5f5; }
 .graph-item.active { background: #e3f2fd; border-left: 4px solid #2196f3; }
 
-.sidebar.collapsed .graph-item { padding: 12px; justify-content: center; }
-.sidebar.collapsed .graph-item.active { padding-left: 12px; border-left-width: 4px; }
+.sidebar.collapsed .graph-item {
+    padding: 10px 8px;
+    justify-content: flex-start;
+    cursor: pointer;
+}
 
-.graph-info { flex-grow: 1; margin-right: 10px; overflow: hidden; }
-.sidebar.collapsed .graph-info { display: none; }
+.sidebar.collapsed .graph-info {
+    display: block;
+    width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-right: 0;
+}
 
-.graph-item .name { font-weight: 600; color: #333; font-size: 13px; }
-.graph-item .meta { font-size: 10px; color: #888; margin-top: 2px; }
+.graph-item .name {
+    font-weight: 600;
+    color: #333;
+    font-size: 13px;
+}
+
+.sidebar.collapsed .graph-item .name {
+    font-size: 11px;
+    font-weight: 600;
+    color: #333;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: block;
+}
+
+.graph-item .meta {
+    font-size: 10px;
+    color: #888;
+    margin-top: 2px;
+}
+
+.sidebar.collapsed .graph-item .meta {
+    display: none;
+}
+
+/* Hide action buttons in collapsed mode */
+.graph-actions {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+}
+.sidebar.collapsed .graph-actions {
+    display: none !important;
+}
 
 .graph-icon-mini { display: none; width: 8px; height: 8px; border-radius: 50%; background: #2196f3; }
-.sidebar.collapsed .graph-icon-mini { display: block; }
+.sidebar.collapsed .graph-icon-mini { display: none; }
 
-.delete-btn { background: transparent; border: 1px solid #e0e0e0; color: #999; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 10px; }
+.edit-btn {
+    background: transparent;
+    border: 1px solid #2196f3;
+    color: #2196f3;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 10px;
+    font-weight: bold;
+}
+
+.delete-btn {
+    background: transparent;
+    border: 1px solid #e0e0e0;
+    color: #999;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 10px;
+}
 .sidebar.collapsed .delete-btn { display: none; }
 .delete-btn:hover { background: #ffebee; color: #c62828; }
 
@@ -78,49 +258,37 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
 .react-flow__node.node-graph { background: #f3e5f5; border-color: #e1bee7; border-style: dashed; }
 .react-flow__node.node-tool { background: #e0f2f1; border-color: #80cbc4; }
 
-/* Visual Path Tracing - Active State */
 .react-flow__node.node-active-path {
     border-color: #4caf50 !important;
     box-shadow: 0 0 0 2px rgba(76, 175, 80, 0.3), 0 4px 12px rgba(76, 175, 80, 0.2);
 }
-/* Purple highlight for the rewind origin node only - THINNER FRAME */
 .react-flow__node.node-rewind-origin {
-    border-color: #9c27b0 !important;  /* Material purple */
-    border-width: 2px !important;       /* 👈 Thinner border */
-    box-shadow: 0 0 0 2px rgba(156, 39, 176, 0.25);  /* 👈 Subtler shadow */
-    /* Removed pulse animation for cleaner look */
+    border-color: #9c27b0 !important;
+    border-width: 2px !important;
+    box-shadow: 0 0 0 2px rgba(156, 39, 176, 0.25);
 }
 
-/* Keep smooth transitions */
 .react-flow__node {
     transition: border-color 0.2s ease, box-shadow 0.2s ease, border-width 0.2s ease;
 }
 
-/* --- Node Selection Highlight (Blue) --- */
 .react-flow__node.node-selected {
-    border-color: #2196f3 !important; /* Material Blue */
+    border-color: #2196f3 !important;
     border-width: 2px !important;
     box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.3), 0 4px 12px rgba(33, 150, 243, 0.2) !important;
-    z-index: 10 !important; /* Ensure selected node is visually above others */
+    z-index: 10 !important;
     transition: border-color 0.2s ease, box-shadow 0.2s ease, border-width 0.2s ease;
 }
 
-/* --- Edge Selection Highlight (Blue) --- */
 .react-flow__edge.edge-selected .react-flow__edge-path {
-    stroke: #2196f3 !important; /* Material Blue */
+    stroke: #2196f3 !important;
     stroke-width: 3px !important;
     filter: drop-shadow(0 0 4px rgba(33, 150, 243, 0.5));
     transition: stroke 0.2s ease, stroke-width 0.2s ease;
 }
 
-/* Make the condition label pop when selected */
-.react-flow__edge.edge-selected .react-flow__edge-textbg {
-    fill: #2196f3 !important;
-}
-.react-flow__edge.edge-selected .react-flow__edge-text {
-    fill: white !important;
-    font-weight: bold;
-}
+.react-flow__edge.edge-selected .react-flow__edge-textbg { fill: #2196f3 !important; }
+.react-flow__edge.edge-selected .react-flow__edge-text { fill: white !important; font-weight: bold; }
 
 .node-header { padding: 8px 12px; border-bottom: 1px solid rgba(0,0,0,0.05); font-weight: bold; font-size: 12px; display: flex; justify-content: space-between; align-items: center; }
 .node-start .node-header { color: #2e7d32; }
@@ -140,29 +308,12 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
 .subgraph-link:hover { background: #e1bee7; color: #4a148c; }
 
 /* --- Chat Panel --- */
-.chat-panel {
-    min-height: 150px;
-    background: #fafafa;
-    display: flex;
-    flex-direction: column;
-    border-top: 1px solid #ddd;
-}
+.chat-panel { min-height: 150px; background: #fafafa; display: flex; flex-direction: column; border-top: 1px solid #ddd; }
 
-/* Custom Resizer */
-.resizer {
-    height: 6px;
-    background: #eee;
-    cursor: ns-resize;
-    border-bottom: 1px solid #ddd;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-}
+.resizer { height: 6px; background: #eee; cursor: ns-resize; border-bottom: 1px solid #ddd; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .resizer::after { content: ''; width: 30px; height: 3px; background: #ccc; border-radius: 2px; }
 .resizer:hover { background: #e0e0e0; }
 
-/* Tabs */
 .chat-tabs { display: flex; background: #fff; border-bottom: 1px solid #eee; flex-shrink: 0; }
 .chat-tab { padding: 10px 20px; cursor: pointer; font-size: 12px; font-weight: 600; color: #666; border-bottom: 2px solid transparent; }
 .chat-tab.active { color: #2196f3; border-bottom-color: #2196f3; }
@@ -175,7 +326,6 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
 .msg-bot { align-self: flex-start; background: white; border: 1px solid #e0e0e0; color: #333; }
 .msg-error { background: #ffebee; color: #c62828; border: 1px solid #ffcdd2; font-size: 11px; }
 
-/* History List */
 .history-list { flex-grow: 1; overflow-y: auto; padding: 10px; }
 .history-item { background: white; border: 1px solid #e0e0e0; padding: 10px; margin-bottom: 8px; border-radius: 6px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
 .history-item:hover { background: #f5f5f5; border-color: #bdbdbd; }
@@ -185,10 +335,8 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
 .history-actions { display: flex; gap: 5px; align-items: center; }
 
 .chat-input-area { padding: 10px; background: #fff; display: flex; gap: 10px; border-top: 1px solid #eee; flex-shrink: 0; }
-
 .chat-input { flex-grow: 1; border: 1px solid #ddd; border-radius: 4px; padding: 8px 12px; font-size: 13px; outline: none; }
 .chat-input:focus { border-color: #2196f3; }
-
 .send-btn { background: #2196f3; color: white; border: none; padding: 0 20px; border-radius: 4px; cursor: pointer; font-weight: bold; }
 .send-btn:disabled { background: #ccc; }
 
