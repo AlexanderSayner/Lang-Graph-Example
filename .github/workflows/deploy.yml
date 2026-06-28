@@ -87,12 +87,10 @@ jobs:
             set -e
             cd /opt/myapp
             
-            cat <<EOF > ~/myapp.env
-            YC_API_KEY=${{ secrets.YC_API_KEY }}
-            YC_FOLDER_ID=${{ secrets.YC_FOLDER_ID }}
-            YC_BILLING_ACCOUNT_ID=${{ secrets.YC_BILLING_ACCOUNT_ID }}
-            YC_SA_KEY_JSON_B64=${{ steps.prepare-secrets.outputs.SA_KEY_B64 }}
-            EOF
+            echo "YC_API_KEY=${{ secrets.YC_API_KEY }}" > ~/myapp.env
+            echo "YC_FOLDER_ID=${{ secrets.YC_FOLDER_ID }}" >> ~/myapp.env
+            echo "YC_BILLING_ACCOUNT_ID=${{ secrets.YC_BILLING_ACCOUNT_ID }}" >> ~/myapp.env
+            echo "YC_SA_KEY_JSON_B64=${{ steps.prepare-secrets.outputs.SA_KEY_B64 }}" >> ~/myapp.env
             
             chmod 600 ~/myapp.env
             
@@ -100,6 +98,6 @@ jobs:
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
             docker compose --env-file ~/myapp.env pull
-            docker compose --env-file ~/myapp.env up -d
+            docker compose --env-file ~/myapp.env up -d --force-recreate spring-service
 
             docker image prune -f
