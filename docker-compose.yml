@@ -18,8 +18,6 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - YC_API_KEY=${YC_API_KEY:-}
       - YC_FOLDER_ID=${YC_FOLDER_ID:-}
-      - YC_BILLING_ACCOUNT_ID=${YC_BILLING_ACCOUNT_ID:-}
-      - YC_SA_KEY_JSON=${YC_SA_KEY_JSON:-}
       - TOOL_SERVICE_HOST=spring-service
     depends_on:
       spring-service:
@@ -56,6 +54,8 @@ services:
       - SPRING_REDIS_PORT=6379
       - LANGGRAPH_SERVICE_ADDRESS=langgraph-service:50051
       - JAVA_OPTS=-Xmx256m -Xms128m
+      - YC_BILLING_ACCOUNT_ID=${YC_BILLING_ACCOUNT_ID:-}
+      - YC_SA_KEY_JSON=${YC_SA_KEY_JSON:-}
     depends_on:
       postgres:
         condition: service_healthy
