@@ -54,7 +54,7 @@ jobs:
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/spring-service:latest
 
       # ------------------------------------------------------------------
-      # 4.5️⃣ Build & push Graph Viewer App (Frontend)
+      # 5. Build & push Graph Viewer App (Frontend)
       # ------------------------------------------------------------------
       - name: Build and push Graph Viewer App
         uses: docker/build-push-action@v5
@@ -64,7 +64,18 @@ jobs:
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/graph-viewer-app:latest
 
       # ------------------------------------------------------------------
-      # 5️⃣ Deploy to VPS via SSH
+      # 6. Prepare Secrets (Base64 encode JSON to avoid shell escaping issues)
+      # ------------------------------------------------------------------
+      - name: Prepare Secrets
+        id: prepare-secrets
+        run: |
+          # Base64 encode the JSON secret on the GitHub runner
+          # This completely avoids any shell escaping or multi-line issues
+          SA_KEY_B64=$(echo -n "${{ secrets.YC_SA_KEY_JSON }}" | base64 -w 0)
+          echo "SA_KEY_B64=$SA_KEY_B64" >> $GITHUB_OUTPUT
+
+      # ------------------------------------------------------------------
+      # 7. Deploy to VPS via SSH
       # ------------------------------------------------------------------
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.0.0
@@ -76,11 +87,11 @@ jobs:
             set -e
             cd /opt/myapp
             
-            cat <<'EOF' > ~/myapp.env
+            cat <<EOF > ~/myapp.env
             YC_API_KEY=${{ secrets.YC_API_KEY }}
             YC_FOLDER_ID=${{ secrets.YC_FOLDER_ID }}
             YC_BILLING_ACCOUNT_ID=${{ secrets.YC_BILLING_ACCOUNT_ID }}
-            YC_SA_KEY_JSON=${{ secrets.YC_SA_KEY_JSON }}
+            YC_SA_KEY_JSON_B64=${{ steps.prepare-secrets.outputs.SA_KEY_B64 }}
             EOF
             
             chmod 600 ~/myapp.env

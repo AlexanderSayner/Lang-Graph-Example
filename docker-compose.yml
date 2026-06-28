@@ -55,7 +55,8 @@ services:
       - LANGGRAPH_SERVICE_ADDRESS=langgraph-service:50051
       - JAVA_OPTS=-Xmx256m -Xms128m
       - YC_BILLING_ACCOUNT_ID=${YC_BILLING_ACCOUNT_ID:-}
-      - YC_SA_KEY_JSON=${YC_SA_KEY_JSON:-}
+      - YC_SA_KEY_JSON_B64=${YC_SA_KEY_JSON_B64:-}
+    entrypoint: ["sh", "-c", "if [ -n \"$$YC_SA_KEY_JSON_B64\" ]; then export YC_SA_KEY_JSON=$$(echo \"$$YC_SA_KEY_JSON_B64\" | base64 -d); fi && exec java $$JAVA_OPTS -jar /app/app.jar"]
     depends_on:
       postgres:
         condition: service_healthy
