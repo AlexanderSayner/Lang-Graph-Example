@@ -75,6 +75,19 @@ jobs:
           echo "SA_KEY_B64=$SA_KEY_B64" >> $GITHUB_OUTPUT
 
       # ------------------------------------------------------------------
+      # 6.5. Copy docker-compose.yml and scripts to VPS
+      # ------------------------------------------------------------------
+      - name: Copy deployment files to VPS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          source: "docker-compose.yml,scripts"
+          target: "/opt/myapp"
+          overwrite: true
+
+      # ------------------------------------------------------------------
       # 7. Deploy to VPS via SSH
       # ------------------------------------------------------------------
       - name: Deploy to VPS
