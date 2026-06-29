@@ -1,19 +1,20 @@
 package org.sandbox.langgraph.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jspecify.annotations.NonNull;
+import org.sandbox.langgraph.dto.GraphDefinition;
 import org.sandbox.langgraph.dto.graphql.payload.redis.GraphViewData;
+import org.sandbox.langgraph.exception.LangGraphException;
 import org.sandbox.langgraph.service.ui.RedisGraphCoordinatesService;
 import org.springframework.data.redis.core.ReactiveRedisOperations;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
+import java.util.Objects;
 
 /**
  * Service for reading graph data from Redis in read-only mode.
@@ -42,71 +43,73 @@ public class RedisGraphViewService {
     public Mono<@NonNull GraphViewData> getGraphViewData(String graphId) {
         String key = GRAPH_META_KEY_PREFIX + graphId;
 
-        Mono<@NonNull Map<String, Object>> graphDataMono = redisOperations.opsForValue().get(key)
-                .switchIfEmpty(Mono.error(new RuntimeException("Graph not found: " + graphId)))
-                .flatMap(data -> {
-                    try {
-                        TypeReference<Map<String, Object>> typeRef = new TypeReference<>() {
-                        };
-                        return Mono.just(objectMapper.readValue(data, typeRef));
-                    } catch (JsonProcessingException e) {
-                        return Mono.error(e);
-                    }
-                });
+        Mono<@NonNull GraphDefinition> graphDataMono = redisOperations.opsForValue().get(key)
+                .switchIfEmpty(Mono.error(new LangGraphException.GraphNotFoundException("Graph not found: " + graphId)))
+                .flatMap(this::parseGraphDefinition);
 
-        Mono<@NonNull Map<String, Map<String, Double>>> coordsMono = coordinatesService.getCoordinates(graphId);
+        Mono<@NonNull Map<String, Map<String, Double>>> coordsMono =
+                coordinatesService.getCoordinates(graphId);
 
+        // Mono.zip runs both subscriptions in parallel.
+        // .map() (not .flatMap()) is correct here because mapToGraphViewData is synchronous.
         return Mono.zip(graphDataMono, coordsMono)
-                .flatMap(tuple -> {
-                    Map<String, Object> graphData = tuple.getT1();
-                    Map<String, Map<String, Double>> coords = tuple.getT2();
+                .map(tuple -> mapToGraphViewData(graphId, tuple.getT1(), tuple.getT2()));
+    }
 
-                    // Parse nodes and edges
-                    TypeReference<List<Map<String, Object>>> nodesTypeRef = new TypeReference<>() {
-                    };
-                    List<Map<String, Object>> rawNodes = objectMapper.convertValue(graphData.get("nodes"), nodesTypeRef);
+    private Mono<@NonNull GraphDefinition> parseGraphDefinition(@NonNull String json) {
+        try {
+            return Mono.just(objectMapper.readValue(json, GraphDefinition.class));
+        } catch (JsonProcessingException e) {
+            return Mono.error(new IllegalArgumentException("Failed to parse graph definition JSON", e));
+        }
+    }
 
-                    List<Map<String, Object>> nodes = rawNodes.stream()
-                            .map(node -> {
-                                if (node == null) {
-                                    return new HashMap<String, Object>();
-                                }
+    private @NonNull GraphViewData mapToGraphViewData(
+            @NonNull String graphId,
+            @NonNull GraphDefinition graphDef,
+            @NonNull Map<String, Map<String, Double>> coords) {
 
-                                Map<String, Object> metadata = Optional.ofNullable(node.get("metadata"))
-                                        .map(m -> objectMapper.convertValue(m, new TypeReference<Map<String, Object>>() {
-                                        }))
-                                        .orElse(new HashMap<>());
+        List<Map<String, Object>> nodes = graphDef.nodes().stream()
+                .filter(Objects::nonNull)
+                .map(node -> mapNode(node, coords))
+                .toList();
 
-                                Map<String, Object> nodeMap = new HashMap<>();
-                                String nodeId = (String) node.get("node_id");
-                                nodeMap.put("nodeId", nodeId);
-                                nodeMap.put("nodeType", node.get("node_type"));
-                                nodeMap.put("handlerName", node.get("handler_name"));
-                                nodeMap.put("metadata", metadata);
+        // EdgeDefinition.toMap() preserves ALL fields (source, target, condition, + extras)
+        List<Map<String, Object>> edges = graphDef.edges().stream()
+                .filter(Objects::nonNull)
+                .map(GraphDefinition.EdgeDefinition::toMap)
+                .toList();
 
-                                Map<String, Double> pos = coords.getOrDefault(nodeId, new HashMap<>());
-                                Map<String, Object> positionMap = new HashMap<>();
-                                positionMap.put("x", pos.getOrDefault("x", 0.0));
-                                positionMap.put("y", pos.getOrDefault("y", 0.0));
+        return new GraphViewData(
+                graphId,
+                graphDef.name(),
+                graphDef.status(),
+                nodes,
+                edges
+        );
+    }
 
-                                // Note: If x/y are 0.0, the frontend might apply auto-layout
-                                nodeMap.put("position", positionMap);
-                                return nodeMap;
-                            })
-                            .toList();
+    private @NonNull Map<String, Object> mapNode(
+            GraphDefinition.NodeDefinition node,
+            @NonNull Map<String, Map<String, Double>> coordinates) {
 
-                    TypeReference<List<Map<String, Object>>> edgesTypeRef = new TypeReference<>() {
-                    };
-                    List<Map<String, Object>> edges = objectMapper.convertValue(graphData.get("edges"), edgesTypeRef);
+        Map<String, Double> pos = coordinates.getOrDefault(node.nodeId(), Map.of());
 
-                    return Mono.just(new GraphViewData(
-                            graphId,
-                            (String) graphData.get("name"),
-                            (String) graphData.get("status"),
-                            nodes,
-                            edges
-                    ));
-                });
+        // Note: If x/y are 0.0, the frontend might apply auto-layout.
+        // LinkedHashMap is used (instead of Map.of) to allow null values,
+        // preserving the exact behavior of the original HashMap-based code.
+        Map<String, Object> positionMap = new LinkedHashMap<>();
+        positionMap.put("x", pos.getOrDefault("x", 0.0));
+        positionMap.put("y", pos.getOrDefault("y", 0.0));
+
+        Map<String, Object> nodeMap = new LinkedHashMap<>();
+        nodeMap.put("nodeId", node.nodeId());
+        nodeMap.put("nodeType", node.nodeType());
+        nodeMap.put("handlerName", node.handlerName());
+        nodeMap.put("metadata", node.metadata() != null ? node.metadata() : new LinkedHashMap<>());
+        nodeMap.put("position", positionMap);
+
+        return nodeMap;
     }
 
 }
