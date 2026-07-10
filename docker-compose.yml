@@ -52,6 +52,9 @@ services:
     environment:
       - SPRING_REDIS_HOST=redis
       - SPRING_REDIS_PORT=6379
+      - SPRING_R2DBC_URL=r2dbc:postgresql://postgres:5432/langgraph_db
+      - SPRING_R2DBC_USERNAME=langgraph
+      - SPRING_R2DBC_PASSWORD=langgraph_password
       - LANGGRAPH_SERVICE_ADDRESS=langgraph-service:50051
       - JAVA_OPTS=-Xmx256m -Xms128m
       - YC_BILLING_ACCOUNT_ID=${YC_BILLING_ACCOUNT_ID:-}
