@@ -53,6 +53,7 @@ services:
       - SPRING_REDIS_HOST=redis
       - SPRING_REDIS_PORT=6379
       - SPRING_R2DBC_URL=r2dbc:postgresql://postgres:5432/langgraph_db
+      - POSTGRES_FLYWAY_URL=jdbc:postgresql://postgres:5432/langgraph_db
       - SPRING_R2DBC_USERNAME=langgraph
       - SPRING_R2DBC_PASSWORD=langgraph_password
       - LANGGRAPH_SERVICE_ADDRESS=langgraph-service:50051
