@@ -1,5 +1,6 @@
 package org.sandbox.langgraph.dto;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -47,9 +48,15 @@ public record GraphDefinition(
      */
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record NodeDefinition(
-            @JsonProperty("node_id") String nodeId,
-            @JsonProperty("node_type") String nodeType,
-            @JsonProperty("handler_name") String handlerName,
+            @JsonAlias({"nodeId", "node_id"})
+            @JsonProperty("nodeId")
+            String nodeId,
+            @JsonAlias({"nodeType", "node_type"})
+            @JsonProperty("nodeType")
+            String nodeType,
+            @JsonAlias({"handlerName", "handler_name"})
+            @JsonProperty("handlerName")
+            String handlerName,
             Map<String, Object> metadata) {
     }
 
@@ -91,17 +98,27 @@ public record GraphDefinition(
          */
         public Map<String, Object> toMap() {
             Map<String, Object> map = new LinkedHashMap<>();
-            if (source != null) map.put("source", source);
-            if (target != null) map.put("target", target);
-            if (condition != null) map.put("condition", condition);
+            if (source != null) {
+                map.put("source", source);
+            }
+            if (target != null) {
+                map.put("target", target);
+            }
+            if (condition != null) {
+                map.put("condition", condition);
+            }
             map.putAll(additionalProperties);
             return map;
         }
 
         @Override
         public boolean equals(Object o) {
-            if (this == o) return true;
-            if (!(o instanceof EdgeDefinition that)) return false;
+            if (this == o) {
+                return true;
+            }
+            if (!(o instanceof EdgeDefinition that)) {
+                return false;
+            }
             return Objects.equals(source, that.source)
                     && Objects.equals(target, that.target)
                     && Objects.equals(condition, that.condition)

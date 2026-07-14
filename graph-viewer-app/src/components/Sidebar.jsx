@@ -1,6 +1,16 @@
 import React from 'react';
 
-export default function Sidebar({ graphs, selected, collapsed, setCollapsed, loadGraph, copyGraphId, copiedGraph, handleDelete, realBalance }) {
+export default function Sidebar({
+    graphs,
+    selected,
+    collapsed,
+    setCollapsed,
+    onSelectGraph,
+    copyGraphId,
+    copiedGraph,
+    handleDelete,
+    realBalance
+}) {
     return (
         <div className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
             <div className="sidebar-header">
@@ -54,9 +64,7 @@ export default function Sidebar({ graphs, selected, collapsed, setCollapsed, loa
                     <div
                         key={g.graphId}
                         className={`graph-item ${g.graphId === selected ? 'active' : ''}`}
-                        onClick={() => {
-                            loadGraph(g.graphId);
-                        }}
+                        onClick={() => onSelectGraph(g.graphId)}
                     >
                         <div className="graph-icon-mini"></div>
                         <div className="graph-info">

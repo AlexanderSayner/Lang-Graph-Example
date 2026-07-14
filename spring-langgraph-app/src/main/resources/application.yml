@@ -7,6 +7,7 @@ spring:
     name: spring-langgraph-app
   lifecycle:
     timeout-per-shutdown-phase: 30s
+
   graphql:
     http:
       enabled: true
@@ -16,8 +17,25 @@ spring:
       path: /graphiql
     websocket:
       path: /graphql/ws
+
   jackson:
     default-property-inclusion: non_null
+
+  r2dbc:
+    url: ${SPRING_R2DBC_URL:r2dbc:postgresql://localhost:7432/langgraph_db}
+    username: ${SPRING_R2DBC_USERNAME:langgraph}
+    password: ${SPRING_R2DBC_PASSWORD:langgraph_password}
+    pool:
+      initial-size: 5
+      max-size: 20
+      max-idle-time: 30m
+  flyway:
+    enabled: true
+    schemas: public,core
+    default-schema: public
+    url: ${POSTGRES_FLYWAY_URL:}
+    user: ${SPRING_R2DBC_USERNAME:}
+    password: ${SPRING_R2DBC_PASSWORD:}
 
   data:
     redis:

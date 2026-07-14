@@ -158,13 +158,13 @@ function App() {
     }, [activeTab, selected, threadId, loadHistory]);
 
     useEffect(() => {
-        if (selected && graphs.length > 0) {
+        if (selected) {
             loadGraph(selected);
         }
-    }, [graphs, selected]); // Re-run when graphs are loaded
+    }, [selected]);
 
     const loadGraph = (id) => {
-        setSelected(id);
+
         setGraphStatus('idle');
 
         setActiveNodeIds(new Set());
@@ -172,70 +172,78 @@ function App() {
         setSelectedNodeId(null);
         setSelectedEdge(null);
 
-        fetchGraphQL(VIEW_QUERY, { graphId: id }).then(d => {
-            const view = d.getGraphView;
+        fetchGraphQL(VIEW_QUERY, { graphId: id })
+            .then(d => {
+                if (!d || !d.getGraphView) {
+                    console.error("❌ Failed to load graph view. Backend returned:", d);
+                    return;
+                }
 
-            // Create Label Map
-            const labels = {};
-            view.nodes.forEach(n => { if(n.metadata?.label) labels[n.nodeId] = n.metadata.label; });
-            setNodeLabels(labels);
+                const view = d.getGraphView;
 
-            // Map Backend Nodes to React Flow Nodes
-            const rN = view.nodes.map(n => {
-                const hasPos = n.position && (n.position.x || n.position.y);
-                const prompt = n.metadata?.system_prompt || "";
-                const subgraphId = n.metadata?.subgraph_id;
-                const label = n.metadata?.label;
-                const toolUrl = n.metadata?.url || "";
+                // Create Label Map
+                const labels = {};
+                view.nodes.forEach(n => { if(n.metadata?.label) labels[n.nodeId] = n.metadata.label; });
+                setNodeLabels(labels);
 
-                const subgraphName = graphs.find(g => g.graphId === subgraphId)?.graphName || "Unknown Graph";
+                // Map Backend Nodes to React Flow Nodes
+                const rN = view.nodes.map(n => {
+                    const hasPos = n.position && (n.position.x !== 0 || n.position.y !== 0);
+                    const prompt = n.metadata?.system_prompt || "";
+                    const subgraphId = n.metadata?.subgraph_id;
+                    const label = n.metadata?.label;
+                    const toolUrl = n.metadata?.url || "";
+                    const subgraphName = graphs.find(g => g.graphId === subgraphId)?.graphName || "Unknown Graph";
 
-                return {
-                    id: n.nodeId,
-                    className: `node-${n.nodeType.toLowerCase()}`,
-                    data: {
-                        label: (
-                            <div>
-                                <div className="node-header">
-                                    {/* Use Label if exists, else ID */}
-                                    <span>{label || n.nodeId}</span>
-                                    <span className="node-type-badge">{n.nodeType}</span>
+                    return {
+                        id: n.nodeId,
+                        className: `node-${n.nodeType.toLowerCase()}`,
+                        data: {
+                            label: (
+                                <div>
+                                    <div className="node-header">
+                                        <span>{label || n.nodeId}</span>
+                                        <span className="node-type-badge">{n.nodeType}</span>
+                                    </div>
+                                    <div className="node-body">
+                                        {n.nodeType === 'GRAPH' ? (
+                                            <div>
+                                                <div style={{marginBottom: '5px'}}><strong>Subgraph:</strong><br/>{subgraphName}</div>
+                                                <div className="subgraph-link" onClick={(e) => { e.stopPropagation(); if(subgraphId) loadGraph(subgraphId); }}>View Subgraph &rarr;</div>
+                                            </div>
+                                        ) : n.nodeType === 'TOOL' ? (
+                                            <div>
+                                                <strong>Tool:</strong> {n.metadata?.method || 'GET'}<br/>
+                                                <span style={{fontSize: '9px', color: '#666'}}>{toolUrl}</span>
+                                            </div>
+                                        ) : (
+                                            <div className="node-prompt">{prompt}</div>
+                                        )}
+                                    </div>
                                 </div>
+                            ),
+                            nodeType: n.nodeType
+                        },
+                        position: hasPos ? n.position : { x: 0, y: 0 }
+                    };
+                });
 
-                                <div className="node-body">
-                                    {n.nodeType === 'GRAPH' ? (
-                                        <div>
-                                            <div style={{marginBottom: '5px'}}><strong>Subgraph:</strong><br/>{subgraphName}</div>
-                                            <div className="subgraph-link" onClick={(e) => { e.stopPropagation(); if(subgraphId) loadGraph(subgraphId); }}>View Subgraph &rarr;</div>
-                                        </div>
-                                    ) : n.nodeType === 'TOOL' ? (
-                                        <div>
-                                            <strong>Tool:</strong> {n.metadata?.method || 'GET'}<br/>
-                                            <span style={{fontSize: '9px', color: '#666'}}>{toolUrl}</span>
-                                        </div>
-                                    ) : (
-                                        <div className="node-prompt">{prompt}</div>
-                                    )}
-                                </div>
-                            </div>
-                        ),
-                        nodeType: n.nodeType
-                    },
-                    position: hasPos ? n.position : { x: 0, y: 0 }
-                };
+                const rE = view.edges.map((e, i) => ({
+                    id: `e${i}`, source: e.source, target: e.target,
+                    label: e.condition,
+                    animated: true,
+                    markerEnd: { type: MarkerType.ArrowClosed }
+                }));
+
+                const needsLayout = rN.every(n => n.position.x === 0 && n.position.y === 0);
+
+                console.log(`✅ Loaded ${rN.length} nodes, ${rE.length} edges. Needs layout:`, needsLayout);
+                setNodes(needsLayout ? layoutGraph(rN, rE) : rN);
+                setEdges(rE);
+            })
+            .catch(err => {
+                console.error("❌ Network or GraphQL error loading graph:", err);
             });
-
-            const rE = view.edges.map((e, i) => ({
-                id: `e${i}`, source: e.source, target: e.target,
-                label: e.condition,
-                animated: true,
-                markerEnd: { type: MarkerType.ArrowClosed }
-            }));
-
-            const needsLayout = rN.every(n => n.position.x === 0 && n.position.y === 0);
-            setNodes(needsLayout ? layoutGraph(rN, rE) : rN);
-            setEdges(rE);
-        });
     };
 
     // Re-apply node and edge styles when selection or execution state changes
@@ -515,7 +523,7 @@ function App() {
             {/* Sidebar */}
             <Sidebar
                 graphs={graphs} selected={selected} collapsed={collapsed}
-                setCollapsed={setCollapsed} loadGraph={loadGraph}
+                setCollapsed={setCollapsed} onSelectGraph={setSelected}
                 copyGraphId={copyGraphId} copiedGraph={copiedGraph} handleDelete={handleDelete}
                 realBalance={realBalance}
             />
@@ -525,6 +533,7 @@ function App() {
                 <div className="canvas-container">
                     <button className="save-layout-btn" onClick={handleSaveLayout}>Save Layout</button>
                     <ReactFlow
+                        key={selected}
                         nodes={nodes}
                         edges={edges}
                         onNodesChange={onNodesChange}

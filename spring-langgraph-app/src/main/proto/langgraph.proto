@@ -20,12 +20,6 @@ service LangGraphService {
   // Update graph state
   rpc UpdateGraphState (UpdateGraphStateRequest) returns (UpdateGraphStateResponse);
 
-  // List available graphs
-  rpc ListGraphs (ListGraphsRequest) returns (ListGraphsResponse);
-
-  // Delete a graph
-  rpc DeleteGraph (DeleteGraphRequest) returns (DeleteGraphResponse);
-
   // Get a graph history
   rpc GetExecutionHistory (GraphHistoryRequest) returns (GraphHistoryResponse);
 
@@ -43,6 +37,13 @@ service ToolService {
   // Execute an HTTP Request Tool
   rpc ExecuteHttpRequest (HttpRequestInput) returns (HttpRequestOutput);
 }
+
+service JavaGraphProvider {
+  rpc GetGraphDefinition (GetGraphDefinitionRequest) returns (GetGraphDefinitionResponse);
+}
+
+message GetGraphDefinitionRequest {string graph_id = 1;}
+message GetGraphDefinitionResponse {string definition_json = 1;}
 
 // Message for building a graph
 message BuildGraphRequest {

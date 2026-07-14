@@ -12,7 +12,7 @@ import org.sandbox.langgraph.grpc.LangGraphServiceGrpc;
 import org.sandbox.langgraph.mapper.GraphGrpcMapper;
 import org.sandbox.langgraph.service.CopilotService;
 import org.sandbox.langgraph.service.LangGraphGrpcService;
-import org.sandbox.langgraph.service.RedisGraphViewService;
+import org.sandbox.langgraph.service.PostgresGraphViewService;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -25,7 +25,7 @@ import java.util.concurrent.TimeUnit;
 public class CopilotServiceImpl implements CopilotService {
     private final LangGraphServiceGrpc.LangGraphServiceFutureStub futureStub;
     private final LangGraphGrpcService langGraphGrpcService;
-    private final RedisGraphViewService redisGraphViewService;
+    private final PostgresGraphViewService postgresGraphViewService;
     private final GraphGrpcMapper mapper;
     private final ObjectMapper objectMapper;
 
@@ -39,7 +39,7 @@ public class CopilotServiceImpl implements CopilotService {
         log.debug("Copilot request for graph: {}, thread: {}", graphId, threadId);
 
         return Mono.zip(
-                redisGraphViewService.getGraphViewData(graphId),
+                postgresGraphViewService.getGraphViewData(graphId),
                 langGraphGrpcService.getExecutionHistory(graphId, threadId)
         ).flatMap(tuple -> {
             GraphViewData graphView = tuple.getT1();
