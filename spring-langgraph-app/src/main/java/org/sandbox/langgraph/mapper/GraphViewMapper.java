@@ -8,10 +8,10 @@ import org.springframework.stereotype.Component;
 import java.util.Map;
 
 @Component
-public class RedisGraphStorageMapper {
+public class GraphViewMapper {
     private final ObjectMapper objectMapper;
 
-    public RedisGraphStorageMapper(ObjectMapper objectMapper) {
+    public GraphViewMapper(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
     }
 

@@ -39,6 +39,8 @@ class Settings(BaseSettings):
 
     # Redis
     REDIS_URL: str = "redis://localhost:6380"
+    # Postgres (Checkpointer / Execution State)
+    DATABASE_URL: str = "postgresql://langgraph:langgraph_password@localhost:7432/langgraph_db"
 
     # Java back end service
     TOOL_SERVICE_HOST: str = "localhost"

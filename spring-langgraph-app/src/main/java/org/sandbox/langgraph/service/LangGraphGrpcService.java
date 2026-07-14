@@ -1,18 +1,21 @@
 package org.sandbox.langgraph.service;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
 import lombok.RequiredArgsConstructor;
 import org.jspecify.annotations.NonNull;
+import org.sandbox.langgraph.core.service.GraphPostgresService;
 import org.sandbox.langgraph.dto.graphql.input.BuildGraphInput;
 import org.sandbox.langgraph.dto.graphql.input.ExecuteGraphInput;
 import org.sandbox.langgraph.dto.graphql.input.UpdateGraphStateInput;
 import org.sandbox.langgraph.dto.graphql.payload.*;
 import org.sandbox.langgraph.dto.graphql.payload.RewindGraphPayload;
 import org.sandbox.langgraph.dto.graphql.payload.StateSnapshot;
+import org.sandbox.langgraph.dto.graphql.payload.meta.PageInfo;
 import org.sandbox.langgraph.exception.LangGraphException;
 import org.sandbox.langgraph.grpc.*;
 import org.sandbox.langgraph.mapper.GraphGrpcMapper;
@@ -28,7 +31,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 @Service
@@ -43,15 +45,18 @@ public class LangGraphGrpcService {
     private final GraphGrpcMapper mapper;
     private final ObjectMapper objectMapper;
 
+    private final GraphPostgresService graphPostgresService;
+
     public Mono<@NonNull BuildGraphPayload> buildGraph(BuildGraphInput input) {
-        return Mono.fromCallable(() -> {
+        return graphPostgresService.saveGraph(input)
+                .then(Mono.fromCallable(() -> {
                     log.debug("Building graph: {}", input.graphId());
                     BuildGraphRequest request = mapper.toBuildGraphRequest(input);
                     return futureStub.buildGraph(request).get(TIMEOUT, TimeUnit.SECONDS);
-                })
+                }))
                 .map(mapper::toBuildGraphPayload)
                 .doOnSuccess(response -> log.info("Graph built successfully: {}", input.graphId()))
-                .doOnError(this::logAndWrapGrpcError)
+                .doOnError(this::logAndWrapDbError)
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
@@ -113,30 +118,70 @@ public class LangGraphGrpcService {
     }
 
     public Mono<@NonNull GraphListPayload> listGraphs(int pageSize, String pageToken) {
-        return Mono.fromCallable(() -> {
-                    log.debug("Listing graphs with page size: {}", pageSize);
-                    ListGraphsRequest request = mapper.toListGraphsRequest(pageSize, pageToken);
-                    return futureStub.listGraphs(request).get(TIMEOUT, TimeUnit.SECONDS);
+        log.debug("Listing graphs with page size: {}", pageSize);
+
+        int parsedOffset = 0;
+        if (pageToken != null && !pageToken.isEmpty()) {
+            try {
+                parsedOffset = Integer.parseInt(pageToken);
+            } catch (NumberFormatException e) {
+                log.warn("Failed to parse page token {}: {}", pageToken, e.getMessage());
+            }
+        }
+
+        final int offset = parsedOffset;
+
+        return graphPostgresService.listGraphs(pageSize, offset)
+                .map(pageData -> {
+                    List<GraphSummary> infos = pageData.entities().stream()
+                            .map(entity -> {
+                                int nodeCount = 0;
+                                try {
+                                    JsonNode root = objectMapper.readTree(entity.definition().asString());
+                                    if (root.has("nodes") && root.get("nodes").isArray()) {
+                                        nodeCount = root.get("nodes").size();
+                                    }
+                                } catch (Exception e) {
+                                    log.warn("Failed to parse node count for graph {}", entity.graphId(), e);
+                                }
+
+                                return mapper.toGraphSummary(GraphInfo.newBuilder()
+                                        .setGraphId(entity.graphId())
+                                        .setGraphName(entity.name())
+                                        .setNodeCount(nodeCount)
+                                        .setCreatedAt(entity.createdAt() != null ? entity.createdAt().toString() : "")
+                                        .setStatus(entity.status())
+                                        .build()
+                                );
+                            })
+                            .toList();
+
+                    int nextOffset = offset + pageSize;
+                    boolean hasNext = nextOffset < pageData.totalCount();
+                    String nextToken = hasNext ? String.valueOf(nextOffset) : null;
+
+                    return new GraphListPayload(
+                            infos,
+                            new PageInfo(hasNext, nextToken),
+                            pageData.totalCount()
+                    );
                 })
-                .map(mapper::toGraphListPayload)
                 .doOnSuccess(response -> {
-                    Objects.requireNonNull(response, "gRPC returned null response for listGraphs");
-                    log.debug("Listed {} graphs", response.totalCount());
+                    assert response != null;
+                    log.debug("Listed {} graphs", response.graphs().size());
                 })
-                .doOnError(this::logAndWrapGrpcError)
+                .doOnError(this::logAndWrapDbError)
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
     public Mono<@NonNull DeleteGraphPayload> deleteGraph(String graphId) {
-        return Mono.fromCallable(() -> {
-                    log.debug("Deleting graph: {}", graphId);
-                    DeleteGraphRequest request = mapper.toDeleteGraphRequest(graphId);
-                    return futureStub.deleteGraph(request).get(TIMEOUT, TimeUnit.SECONDS);
-                })
-                .map(mapper::toDeleteGraphPayload)
+        return graphPostgresService.deleteGraph(graphId)
+                .map(bIsDeleted -> mapper.toDeleteGraphPayload(DeleteGraphResponse.newBuilder()
+                        .setSuccess(bIsDeleted)
+                        .setMessage("Deletion status: %s" .formatted(bIsDeleted ? "success" : "failure"))
+                        .build()))
                 .doOnSuccess(response -> log.info("Deleted graph: {}", graphId))
-                .doOnError(this::logAndWrapGrpcError)
-                .subscribeOn(Schedulers.boundedElastic());
+                .doOnError(this::logAndWrapDbError);
     }
 
     public Mono<@NonNull GraphHistoryPayload> getExecutionHistory(String graphId, String threadId) {
@@ -183,6 +228,11 @@ public class LangGraphGrpcService {
         throw new LangGraphException.GraphExecutionException("Unexpected error: " + error.getMessage(), error);
     }
 
+    private void logAndWrapDbError(Throwable error) {
+        log.error("Database operation failed", error);
+        throw new LangGraphException.GraphExecutionException("Database error: " + error.getMessage(), error);
+    }
+
     private GraphHistoryPayload apply(GraphHistoryResponse response) {
         try {
             List<StateSnapshot> cooking = new ArrayList<>(response.getHistoryList().size());
@@ -224,4 +274,5 @@ public class LangGraphGrpcService {
             return GraphHistoryPayload.error("Failed to process history: " + e.getMessage());
         }
     }
+
 }

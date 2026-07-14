@@ -5,20 +5,20 @@ import logging
 import time
 from typing import Dict, Any, Callable
 
-from cachetools import LRUCache
-
 import grpc
+from cachetools import LRUCache
 from langchain_core.runnables import Runnable, RunnableConfig
 from langgraph.constants import END
 from langgraph.graph import StateGraph
 
+from app.clients.java_client import JavaGraphClient
 from app.clients.yandex_client import YandexGPTClient
 from app.config import settings
 from app.copilot.copilot_agent import CopilotAgent
 from app.generated import langgraph_pb2_grpc, langgraph_pb2
 from app.graph_engine.graph_utils import parse_condition, GraphState
 from app.graph_engine.node_handlers import NodeHandler
-from app.services.graph_store import GraphStore, GraphDefinition
+from app.models import GraphDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -70,30 +70,27 @@ def _serialize_state(state: Dict[str, Any]) -> Dict[str, str]:
 
 
 # --- Servicer ---
-# TODO: that's a service layer which manages there graphs are saved. Provide a repository for Redis/In-memory persistence control
 class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
     """Async gRPC service implementation for LangGraph operations."""
 
-    def __init__(self, store: GraphStore, checkpointer: Any):
-        self.store = store
+    def __init__(self, checkpointer: Any, java_channel: grpc.aio.Channel):
+        # Initialize Java Client instead of Redis Store
+        self.java_client = JavaGraphClient(java_channel)
+
         # LRU Cache for compiled graphs
         max_cache_size = getattr(settings, "MAX_CACHED_GRAPHS", 100)
         self._compiled_graphs = LRUCache(maxsize=max_cache_size)
         self._compile_lock = asyncio.Lock()
 
         self._checkpointer = checkpointer
-
-        self._llm_client = YandexGPTClient(
-            api_key=settings.YC_API_KEY,
-            folder_id=settings.YC_FOLDER_ID
-        )
+        self._llm_client = YandexGPTClient(api_key=settings.YC_API_KEY, folder_id=settings.YC_FOLDER_ID)
         self.copilot = CopilotAgent(self._llm_client)
 
         async def graph_loader(graph_id: str):
             if graph_id in self._compiled_graphs:
                 return self._compiled_graphs[graph_id]
 
-            data = await self.store.get_graph(graph_id)
+            data = await self.java_client.get_graph_definition(graph_id)
             if not data:
                 raise ValueError(f"Subgraph not found: {graph_id}")
 
@@ -105,29 +102,16 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         self.node_handler = NodeHandler(self._llm_client, graph_loader)
 
     async def _get_compiled_graph(self, graph_id: str) -> Runnable:
-        """
-        Load compiled graph from cache or store.
-        Raises KeyError if graph not found, ValueError if build fails.
-        """
         # Check in-memory cache first
         async with self._compile_lock:
             if graph_id in self._compiled_graphs:
                 return self._compiled_graphs[graph_id]
 
-            # Load from persistent store
-            stored_data = await self.store.get_graph(graph_id)
-            if not stored_data:
+            # Fetch from Java (Source of Truth)
+            graph_dict = await self.java_client.get_graph_definition(graph_id)
+            if not graph_dict:
                 raise KeyError(f"Graph {graph_id} not found")
 
-            # Normalize to dict (handle Pydantic model or raw dict)
-            if hasattr(stored_data, 'model_dump'):
-                graph_dict = stored_data.model_dump()
-            elif hasattr(stored_data, 'dict'):
-                graph_dict = stored_data.dict()
-            else:
-                graph_dict = stored_data
-
-            # Validate and compile
             validated = GraphDefinition(**graph_dict)
             compiled = self._build_langgraph(validated)
 
@@ -282,18 +266,17 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
     async def BuildGraph(self, request, context):
         graph_id = request.graph_id
 
-        # 🔥 EVICT OLD COMPILED VERSION IF IT EXISTS
+        # Evict old compiled version if it exists
         if graph_id in self._compiled_graphs:
             del self._compiled_graphs[graph_id]
             logger.debug(f"Evicted stale compiled graph: {graph_id}")
 
-        # Convert proto to dict for Pydantic validation in store
+        # Convert proto to dict
         nodes = [{"node_id": n.node_id, "node_type": n.node_type,
                   "handler_name": n.handler_name, "metadata": dict(n.metadata)} for n in request.nodes]
         edges = [{"source": e.source, "target": e.target, "condition": e.condition or None}
                  for e in request.edges]
 
-        # 1. Prepare the dictionary
         graph_dict = {
             "name": request.graph_name,
             "nodes": nodes,
@@ -301,13 +284,8 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             "config": dict(request.config)
         }
 
-        # 2. Save the Dictionary to Store (Redis)
-        await self.store.add_graph(graph_id, graph_dict)
-
-        # 3. Convert Dict -> Pydantic Model for the internal builder
+        # Compile and cache in memory
         validated_graph_data = GraphDefinition(**graph_dict)
-
-        # 4. Build the graph using the validated model
         compiled_graph = self._build_langgraph(validated_graph_data)
         self._compiled_graphs[graph_id] = compiled_graph
 
@@ -523,34 +501,6 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         )
 
     @handle_grpc_errors
-    async def ListGraphs(self, request, context):
-        page_size = request.page_size if request.page_size > 0 else 10
-        graphs, next_token = await self.store.list_graphs(page_size, request.page_token)
-
-        graph_infos = []
-        for gid, graph_obj in graphs:
-            graph_infos.append(langgraph_pb2.GraphInfo(
-                graph_id=gid,
-                graph_name=graph_obj.get("name", "Unknown"),
-                node_count=len(graph_obj.get("nodes", [])),
-                created_at=graph_obj.get("created_at", ""),
-                status=graph_obj.get("status", "active")
-            ))
-
-        return langgraph_pb2.ListGraphsResponse(graphs=graph_infos, next_page_token=next_token)
-
-    @handle_grpc_errors
-    async def DeleteGraph(self, request, context):
-        success = await self.store.delete_graph(request.graph_id)
-        if request.graph_id in self._compiled_graphs:
-            del self._compiled_graphs[request.graph_id]
-
-        return langgraph_pb2.DeleteGraphResponse(
-            success=success,
-            message=f"Graph {request.graph_id} deleted" if success else "Not found"
-        )
-
-    @handle_grpc_errors
     async def GetExecutionHistory(self, request, context):
         graph_id = request.graph_id
         thread_id = request.thread_id or "default"
@@ -597,8 +547,8 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                     node_id=str(node_id),
                     state_json=json.dumps(state_values, default=str),
                     timestamp=str(snapshot.created_at) if snapshot.created_at else "",
-                    tokens_used = tokens_used,
-                    total_tokens = total_tokens
+                    tokens_used=tokens_used,
+                    total_tokens=total_tokens
                 ))
 
             history_list.reverse()

@@ -2,17 +2,15 @@ import asyncio
 import logging
 
 import grpc
-import redis.asyncio as redis
 from grpc_reflection.v1alpha import reflection
-from langgraph.checkpoint.redis import AsyncRedisSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from psycopg_pool import AsyncConnectionPool
 
 from app.config import settings
 from app.generated import langgraph_pb2_grpc, langgraph_pb2
 from app.interceptors import LoggingInterceptor
-from app.services.graph_store import GraphStore
 from app.services.langgraph_servicer import LangGraphServiceServicer
 
-# Configure structured logging
 logging.basicConfig(
     level=settings.LOG_LEVEL.upper(),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -21,31 +19,36 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def init_postgres_checkpointer():
+    """Initialize the Postgres connection pool and LangGraph checkpointer."""
+
+    pool = AsyncConnectionPool(
+        conninfo=settings.DATABASE_URL,
+        min_size=5,
+        max_size=20,
+        open=False,
+        kwargs={"autocommit": True, "prepare_threshold": None},
+    )
+
+    await pool.open()
+
+    checkpointer = AsyncPostgresSaver(pool)
+
+    await checkpointer.setup()
+    logger.info("Postgres Checkpointer initialized and tables verified.")
+
+    return checkpointer
+
+
 async def create_server() -> grpc.aio.Server:
     """Factory to create and configure the gRPC server."""
 
-    # Init Redis
-    redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+    # Init Postgres Checkpointer
+    checkpointer = await init_postgres_checkpointer()
 
-    # 1. Initialize GraphStore with Redis client
-    graph_store = GraphStore(redis_client)
+    # Create a gRPC channel to the Java Service (Source of Truth)
+    java_channel = grpc.aio.insecure_channel(f"{settings.TOOL_SERVICE_HOST}:{settings.TOOL_SERVICE_PORT}")
 
-    # Redis LangChain checkpoint for a human in loop feature
-    checkpointer = AsyncRedisSaver(settings.REDIS_URL)
-
-    try:
-        # Connect and create indices
-        await checkpointer.asetup()
-        logger.info("Redis Checkpointer initialized.")
-    except Exception as e:
-        logger.error(f"Failed to init Redis: {e}. Falling back to MemorySaver.")
-        # Fallback if Redis is down
-        from langgraph.checkpoint.memory import MemorySaver
-        checkpointer = MemorySaver()
-
-    # 2. Create the Async Server
-    # Note: We do NOT pass a ThreadPoolExecutor. grpc.aio handles concurrency
-    # via the event loop. Blocking code must be offloaded manually or made async.
     server = grpc.aio.server(
         interceptors=[LoggingInterceptor()],
         options=[
@@ -54,19 +57,20 @@ async def create_server() -> grpc.aio.Server:
         ]
     )
 
-    # 3. Register Servicers
     langgraph_pb2_grpc.add_LangGraphServiceServicer_to_server(
-        LangGraphServiceServicer(store=graph_store, checkpointer=checkpointer), server
+        LangGraphServiceServicer(
+            checkpointer=checkpointer,
+            java_channel=java_channel
+        ),
+        server
     )
 
-    # 4. Register Reflection
     service_names = (
         langgraph_pb2.DESCRIPTOR.services_by_name['LangGraphService'].full_name,
         reflection.SERVICE_NAME,
     )
     reflection.enable_server_reflection(service_names, server)
 
-    # 5. Bind Port
     bind_address = f'[::]:{settings.SERVER_PORT}'
     server.add_insecure_port(bind_address)
 
