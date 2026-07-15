@@ -6,6 +6,7 @@ import time
 from typing import Dict, Any, Callable
 
 import grpc
+import redis.asyncio as redis
 from cachetools import LRUCache
 from langchain_core.runnables import Runnable, RunnableConfig
 from langgraph.constants import END
@@ -73,9 +74,11 @@ def _serialize_state(state: Dict[str, Any]) -> Dict[str, str]:
 class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
     """Async gRPC service implementation for LangGraph operations."""
 
-    def __init__(self, checkpointer: Any, java_channel: grpc.aio.Channel):
+    def __init__(self, checkpointer: Any, java_channel: grpc.aio.Channel, redis_client: redis.Redis):
         # Initialize Java Client instead of Redis Store
         self.java_client = JavaGraphClient(java_channel)
+        # Use Redis for building graph cache
+        self.redis_client = redis_client
 
         # LRU Cache for compiled graphs
         max_cache_size = getattr(settings, "MAX_CACHED_GRAPHS", 100)
@@ -90,11 +93,41 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             if graph_id in self._compiled_graphs:
                 return self._compiled_graphs[graph_id]
 
-            data = await self.java_client.get_graph_definition(graph_id)
-            if not data:
-                raise ValueError(f"Subgraph not found: {graph_id}")
+            # Try Redis first (reduces load on Java Service)
+            cached_def = await self.redis_client.get(f"graph:def:{graph_id}")
+            if cached_def:
+                graph_dict = json.loads(cached_def)
+            else:
+                raw_graph_dict = await self.java_client.get_graph_definition(graph_id)
+                if not raw_graph_dict:
+                    raise ValueError(f"Subgraph not found: {graph_id}")
 
-            validated = GraphDefinition(**data)
+                graph_dict = {
+                    "name": raw_graph_dict.get("graphName") or raw_graph_dict.get("name", ""),
+                    "nodes": [
+                        {
+                            "node_id": n.get("nodeId") or n.get("node_id", ""),
+                            "node_type": n.get("nodeType") or n.get("node_type", ""),
+                            "handler_name": n.get("handlerName") or n.get("handler_name", ""),
+                            "metadata": n.get("metadata", {})
+                        }
+                        for n in raw_graph_dict.get("nodes", [])
+                    ],
+                    "edges": [
+                        {
+                            "source": e.get("source", ""),
+                            "target": e.get("target", ""),
+                            "condition": e.get("condition")
+                        }
+                        for e in raw_graph_dict.get("edges", [])
+                    ],
+                    "config": raw_graph_dict.get("config", {})
+                }
+
+                # Cache in Redis for 1 hour
+                await self.redis_client.setex(f"graph:def:{graph_id}", 3600, json.dumps(graph_dict))
+
+            validated = GraphDefinition(**graph_dict)
             compiled = self._build_langgraph(validated)
             self._compiled_graphs[graph_id] = compiled
             return compiled
@@ -108,16 +141,39 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                 return self._compiled_graphs[graph_id]
 
             # Fetch from Java (Source of Truth)
-            graph_dict = await self.java_client.get_graph_definition(graph_id)
-            if not graph_dict:
+            raw_graph_dict = await self.java_client.get_graph_definition(graph_id)
+            if not raw_graph_dict:
                 raise KeyError(f"Graph {graph_id} not found")
+
+            # The Java service returns camelCase, but Pydantic expects snake_case
+            graph_dict = {
+                "name": raw_graph_dict.get("graphName") or raw_graph_dict.get("name", ""),
+                "nodes": [
+                    {
+                        "node_id": n.get("nodeId") or n.get("node_id", ""),
+                        "node_type": n.get("nodeType") or n.get("node_type", ""),
+                        "handler_name": n.get("handlerName") or n.get("handler_name", ""),
+                        "metadata": n.get("metadata", {})
+                    }
+                    for n in raw_graph_dict.get("nodes", [])
+                ],
+                "edges": [
+                    {
+                        "source": e.get("source", ""),
+                        "target": e.get("target", ""),
+                        "condition": e.get("condition")
+                    }
+                    for e in raw_graph_dict.get("edges", [])
+                ],
+                "config": raw_graph_dict.get("config", {})
+            }
 
             validated = GraphDefinition(**graph_dict)
             compiled = self._build_langgraph(validated)
 
             # Cache for next time
             self._compiled_graphs[graph_id] = compiled
-            logger.info(f"Graph {graph_id} compiled and cached")
+            logger.info(f"Graph {graph_id} compiled and cached locally")
             return compiled
 
     def _build_langgraph(self, graph_data: GraphDefinition) -> Runnable:
@@ -288,6 +344,9 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         validated_graph_data = GraphDefinition(**graph_dict)
         compiled_graph = self._build_langgraph(validated_graph_data)
         self._compiled_graphs[graph_id] = compiled_graph
+
+        await self.redis_client.setex(f"graph:def:{graph_id}", 3600, json.dumps(graph_dict))
+        await self.redis_client.publish("graph:invalidation", graph_id)  # Replica awareness
 
         return langgraph_pb2.BuildGraphResponse(
             success=True,
@@ -626,3 +685,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             ai_response=ai_response,
             total_tokens=ai_response.usage.get('total_tokens', -1)
         )
+
+    @property
+    def compiled_graphs(self):
+        return self._compiled_graphs

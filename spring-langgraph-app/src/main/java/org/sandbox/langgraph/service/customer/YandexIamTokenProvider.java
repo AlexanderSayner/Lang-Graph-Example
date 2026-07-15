@@ -6,6 +6,7 @@ import org.jspecify.annotations.NonNull;
 import org.sandbox.langgraph.config.props.YandexCloudProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
@@ -16,6 +17,7 @@ import java.security.Signature;
 import java.security.spec.MGF1ParameterSpec;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.PSSParameterSpec;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.regex.Matcher;
@@ -27,19 +29,22 @@ public class YandexIamTokenProvider {
     private static final Logger log = LoggerFactory.getLogger(YandexIamTokenProvider.class);
     private static final String IAM_URL = "https://iam.api.cloud.yandex.net/iam/v1/tokens";
 
+    private static final String REDIS_TOKEN_KEY = "yandex:iam_token";
+    private static final Duration REDIS_KEY_EXPIRATION = Duration.ofHours(10);
+
     private final WebClient webClient;
-    private final ObjectMapper objectMapper; // <--- ADDED: Save the mapper as a field
+    private final ReactiveStringRedisTemplate redisTemplate;
+    private final ObjectMapper objectMapper;
     private final String serviceAccountId;
     private final String keyId;
     private final String privateKeyPem;
 
-    private String cachedToken = null;
-    private Instant tokenExpiresAt = Instant.MIN;
-
     public YandexIamTokenProvider(WebClient.Builder webClientBuilder,
+                                  ReactiveStringRedisTemplate redisTemplate,
                                   ObjectMapper objectMapper,
                                   YandexCloudProperties properties) throws Exception {
         this.webClient = webClientBuilder.build();
+        this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;
 
         String keyJson = properties.serviceAccountKeyJson();
@@ -57,10 +62,27 @@ public class YandexIamTokenProvider {
     }
 
     public synchronized Mono<String> getIamToken() {
-        if (cachedToken != null && Instant.now().isBefore(tokenExpiresAt)) {
-            return Mono.just(cachedToken);
-        }
-        return generateIamToken().flatMap(this::exchangeForIamToken);
+        return redisTemplate.opsForValue().get(REDIS_TOKEN_KEY)
+                .switchIfEmpty(
+                        generateAndCacheToken()
+                );
+    }
+
+    private Mono<String> generateAndCacheToken() {
+        return generateIamToken()
+                .flatMap(this::exchangeForIamToken)
+                .flatMap(token ->
+                        redisTemplate.opsForValue()
+                                .set(REDIS_TOKEN_KEY, token, REDIS_KEY_EXPIRATION)
+                                .doOnSuccess(success -> {
+                                    if (success != null && success) {
+                                        log.info("Cached new Yandex IAM Token in Redis");
+                                    } else {
+                                        log.warn("Failed to cache Yandex IAM Token in Redis");
+                                    }
+                                })
+                                .thenReturn(token)
+                );
     }
 
     private Mono<String> generateIamToken() {
@@ -140,8 +162,6 @@ public class YandexIamTokenProvider {
                         }
 
                         String iamToken = response.get("iamToken").asText();
-                        this.cachedToken = iamToken;
-                        this.tokenExpiresAt = Instant.now().plusSeconds(11 * 3600); // Cache for 11 hours
                         log.info("Successfully refreshed Yandex IAM Token");
                         return iamToken;
                     } catch (Exception e) {

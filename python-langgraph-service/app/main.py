@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 import grpc
+import redis.asyncio as redis
 from grpc_reflection.v1alpha import reflection
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg_pool import AsyncConnectionPool
@@ -40,7 +41,28 @@ async def init_postgres_checkpointer():
     return checkpointer
 
 
-async def create_server() -> grpc.aio.Server:
+async def listen_for_invalidation(redis_client: redis.Redis, servicer: LangGraphServiceServicer):
+    """Background task to listen for cache invalidation events from other replicas."""
+    pubsub = redis_client.pubsub()
+    await pubsub.subscribe("graph:invalidation")
+    logger.info("Started listening for graph invalidation events...")
+
+    try:
+        # pubsub.listen() is an async generator
+        async for message in pubsub.listen():
+            if message["type"] == "message":
+                graph_id = message["data"]
+                # Evict from the LOCAL in-memory LRU cache of this specific replica
+                if graph_id in servicer.compiled_graphs:
+                    del servicer.compiled_graphs[graph_id]
+                    logger.info(f"🔄 Evicted local LRU cache for graph: {graph_id} via Pub/Sub")
+    except asyncio.CancelledError:
+        logger.info("Invalidation listener shutting down.")
+    finally:
+        await pubsub.unsubscribe("graph:invalidation")
+        await pubsub.close()
+
+async def create_server(redis_client) -> tuple[grpc.aio.Server, asyncio.Task]:
     """Factory to create and configure the gRPC server."""
 
     # Init Postgres Checkpointer
@@ -57,13 +79,18 @@ async def create_server() -> grpc.aio.Server:
         ]
     )
 
+    servicer = LangGraphServiceServicer(
+        checkpointer=checkpointer,
+        java_channel=java_channel,
+        redis_client=redis_client
+    )
+
     langgraph_pb2_grpc.add_LangGraphServiceServicer_to_server(
-        LangGraphServiceServicer(
-            checkpointer=checkpointer,
-            java_channel=java_channel
-        ),
+        servicer,
         server
     )
+
+    invalidation_task = asyncio.create_task(listen_for_invalidation(redis_client, servicer))
 
     service_names = (
         langgraph_pb2.DESCRIPTOR.services_by_name['LangGraphService'].full_name,
@@ -74,7 +101,7 @@ async def create_server() -> grpc.aio.Server:
     bind_address = f'[::]:{settings.SERVER_PORT}'
     server.add_insecure_port(bind_address)
 
-    return server
+    return server, invalidation_task
 
 
 async def serve():
@@ -88,7 +115,9 @@ async def serve():
     except ImportError:
         logger.info("Uvloop not available, using default asyncio loop.")
 
-    server = await create_server()
+
+    redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+    server, invalidation_task = await create_server(redis_client)
 
     await server.start()
     logger.info(f"LangGraph gRPC server started on port {settings.SERVER_PORT}")
@@ -99,6 +128,13 @@ async def serve():
         logger.info("Shutdown signal received.")
         await server.stop(grace=5)
         logger.info("Server shut down gracefully.")
+    finally:
+        invalidation_task.cancel()
+        try:
+            await invalidation_task
+        except asyncio.CancelledError:
+            pass
+        await redis_client.close()
 
 
 if __name__ == '__main__':

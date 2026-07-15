@@ -93,7 +93,8 @@ class YandexGPTClient:
 
 
                 while True:
-                    await asyncio.sleep(2)  # Wait 2 seconds between polls
+                    # TODO: optimize with Celery
+                    await asyncio.sleep(1)  # Wait 1 second between polls
 
                     poll_response = await client.get(
                         poll_url,
