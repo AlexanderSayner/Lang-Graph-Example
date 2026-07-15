@@ -3,6 +3,7 @@ import functools
 import json
 import logging
 import time
+from collections import defaultdict
 from typing import Dict, Any, Callable
 
 import grpc
@@ -35,24 +36,21 @@ def handle_grpc_errors(func: Callable):
             return await func(self, request, context)
         except ValueError as e:
             logger.warning(f"Validation error: {e}")
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
         except KeyError as e:
             logger.warning(f"Resource not found: {e}")
-            await context.abort(grpc.StatusCode.NOT_FOUND, str(e))
+            context.abort(grpc.StatusCode.NOT_FOUND, str(e))
         except Exception as e:
             logger.error(f"Internal error in {func.__name__}: {e}", exc_info=True)
-            await context.abort(grpc.StatusCode.INTERNAL, f"Internal server error: {e}")
+            context.abort(grpc.StatusCode.INTERNAL, f"Internal server error: {e}")
 
     return wrapper
 
 
-# --- Helper ---
+# --- Helpers ---
 
 def _serialize_state(state: Dict[str, Any]) -> Dict[str, str]:
-    """
-    Converts state values to strings for Protobuf map<string, string> compatibility.
-    Preserves JSON semantics: True -> "true", None -> "null", etc.
-    """
+    """Converts state values to strings for Protobuf map<string, string> compatibility."""
 
     def _to_proto_str(v):
         if v is None:
@@ -70,148 +68,106 @@ def _serialize_state(state: Dict[str, Any]) -> Dict[str, str]:
     return {str(k): _to_proto_str(v) for k, v in state.items()}
 
 
+def _normalize_graph_definition(raw_graph_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalizes camelCase from Java/Proto to snake_case for Pydantic validation."""
+    return {
+        "name": raw_graph_dict.get("graphName") or raw_graph_dict.get("name", ""),
+        "nodes": [
+            {
+                "node_id": n.get("nodeId") or n.get("node_id", ""),
+                "node_type": n.get("nodeType") or n.get("node_type", ""),
+                "handler_name": n.get("handlerName") or n.get("handler_name", ""),
+                "metadata": n.get("metadata", {})
+            }
+            for n in raw_graph_dict.get("nodes", [])
+        ],
+        "edges": [
+            {
+                "source": e.get("source", ""),
+                "target": e.get("target", ""),
+                "condition": e.get("condition")
+            }
+            for e in raw_graph_dict.get("edges", [])
+        ],
+        "config": raw_graph_dict.get("config", {})
+    }
+
+
 # --- Servicer ---
 class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
     """Async gRPC service implementation for LangGraph operations."""
 
     def __init__(self, checkpointer: Any, java_channel: grpc.aio.Channel, redis_client: redis.Redis):
-        # Initialize Java Client instead of Redis Store
         self.java_client = JavaGraphClient(java_channel)
-        # Use Redis for building graph cache
         self.redis_client = redis_client
 
-        # LRU Cache for compiled graphs
         max_cache_size = getattr(settings, "MAX_CACHED_GRAPHS", 100)
-        self._compiled_graphs = LRUCache(maxsize=max_cache_size)
+        self._compiled_graphs: LRUCache = LRUCache(maxsize=max_cache_size)
         self._compile_lock = asyncio.Lock()
 
         self._checkpointer = checkpointer
         self._llm_client = YandexGPTClient(api_key=settings.YC_API_KEY, folder_id=settings.YC_FOLDER_ID)
         self.copilot = CopilotAgent(self._llm_client)
 
-        async def graph_loader(graph_id: str):
+        # Pass the unified loader to NodeHandler for subgraph resolution
+        self.node_handler = NodeHandler(self._llm_client, self._load_and_compile_graph)
+
+    async def _load_and_compile_graph(self, graph_id: str) -> Runnable:
+        """Unified method to fetch, normalize, and compile a graph (prevents thundering herd)."""
+        if graph_id in self._compiled_graphs:
+            return self._compiled_graphs[graph_id]
+
+        async with self._compile_lock:
+            # Double-check after acquiring lock
             if graph_id in self._compiled_graphs:
                 return self._compiled_graphs[graph_id]
 
-            # Try Redis first (reduces load on Java Service)
+            # 1. Try Redis first
             cached_def = await self.redis_client.get(f"graph:def:{graph_id}")
             if cached_def:
                 graph_dict = json.loads(cached_def)
             else:
+                # 2. Fetch from Java (Source of Truth)
                 raw_graph_dict = await self.java_client.get_graph_definition(graph_id)
                 if not raw_graph_dict:
-                    raise ValueError(f"Subgraph not found: {graph_id}")
+                    raise KeyError(f"Graph {graph_id} not found")
 
-                graph_dict = {
-                    "name": raw_graph_dict.get("graphName") or raw_graph_dict.get("name", ""),
-                    "nodes": [
-                        {
-                            "node_id": n.get("nodeId") or n.get("node_id", ""),
-                            "node_type": n.get("nodeType") or n.get("node_type", ""),
-                            "handler_name": n.get("handlerName") or n.get("handler_name", ""),
-                            "metadata": n.get("metadata", {})
-                        }
-                        for n in raw_graph_dict.get("nodes", [])
-                    ],
-                    "edges": [
-                        {
-                            "source": e.get("source", ""),
-                            "target": e.get("target", ""),
-                            "condition": e.get("condition")
-                        }
-                        for e in raw_graph_dict.get("edges", [])
-                    ],
-                    "config": raw_graph_dict.get("config", {})
-                }
+                graph_dict = _normalize_graph_definition(raw_graph_dict)
 
                 # Cache in Redis for 1 hour
                 await self.redis_client.setex(f"graph:def:{graph_id}", 3600, json.dumps(graph_dict))
 
-            validated = GraphDefinition(**graph_dict)
-            compiled = self._build_langgraph(validated)
-            self._compiled_graphs[graph_id] = compiled
-            return compiled
-
-        self.node_handler = NodeHandler(self._llm_client, graph_loader)
-
-    async def _get_compiled_graph(self, graph_id: str) -> Runnable:
-        # Check in-memory cache first
-        async with self._compile_lock:
-            if graph_id in self._compiled_graphs:
-                return self._compiled_graphs[graph_id]
-
-            # Fetch from Java (Source of Truth)
-            raw_graph_dict = await self.java_client.get_graph_definition(graph_id)
-            if not raw_graph_dict:
-                raise KeyError(f"Graph {graph_id} not found")
-
-            # The Java service returns camelCase, but Pydantic expects snake_case
-            graph_dict = {
-                "name": raw_graph_dict.get("graphName") or raw_graph_dict.get("name", ""),
-                "nodes": [
-                    {
-                        "node_id": n.get("nodeId") or n.get("node_id", ""),
-                        "node_type": n.get("nodeType") or n.get("node_type", ""),
-                        "handler_name": n.get("handlerName") or n.get("handler_name", ""),
-                        "metadata": n.get("metadata", {})
-                    }
-                    for n in raw_graph_dict.get("nodes", [])
-                ],
-                "edges": [
-                    {
-                        "source": e.get("source", ""),
-                        "target": e.get("target", ""),
-                        "condition": e.get("condition")
-                    }
-                    for e in raw_graph_dict.get("edges", [])
-                ],
-                "config": raw_graph_dict.get("config", {})
-            }
-
+            # 3. Validate and Compile
             validated = GraphDefinition(**graph_dict)
             compiled = self._build_langgraph(validated)
 
-            # Cache for next time
+            # 4. Cache in memory
             self._compiled_graphs[graph_id] = compiled
             logger.info(f"Graph {graph_id} compiled and cached locally")
             return compiled
 
     def _build_langgraph(self, graph_data: GraphDefinition) -> Runnable:
         """Internal method to build and compile the graph."""
-        # Use GraphState TypedDict for type safety
         workflow = StateGraph(GraphState)
 
-        from collections import defaultdict
-
-        # --- 1. Pre-process Edges to handle Conditions ---
-        # We separate conditional and unconditional edges for cleaner logic.
+        # --- 1. Pre-process Edges ---
         conditional_map = defaultdict(list)
         unconditional_edges = []
 
         for edge in graph_data.edges:
             if getattr(edge, "condition", None):
-                # Store condition: (source, target, condition_string)
                 conditional_map[edge.source].append((edge.target, edge.condition))
             else:
                 unconditional_edges.append(edge)
 
-        # Identify nodes that require human input (Pause points)
-        # We assume if node_type is 'HUMAN', we should pause before executing it.
-        interrupt_nodes = [
-            n.node_id for n in graph_data.nodes if n.node_type == "HUMAN"
-        ]
+        interrupt_nodes = [n.node_id for n in graph_data.nodes if n.node_type == "HUMAN"]
 
         # --- 2. Build Nodes ---
         for node in graph_data.nodes:
             node_id = node.node_id
-            # Ensure metadata is a dict (handle potential protobuf MapComposite)
-            metadata = dict(node.metadata) if hasattr(node.metadata, 'items') else node.metadata
-
-            # Check if this node is a "Router" node (has conditional outgoing edges)
+            metadata = dict(node.metadata) if hasattr(node.metadata, 'items') else (node.metadata or {})
             is_router = node_id in conditional_map
 
-            # Extract expected keys for Router Nodes to improve LLM prompting.
-            # This allows the LLM to know exactly what JSON keys to output.
             expected_keys = set()
             if is_router:
                 for _, cond_str in conditional_map[node_id]:
@@ -219,60 +175,44 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                     if key:
                         expected_keys.add(str(key))
 
-            node_type = node.node_type
-
-            # Use default arguments in closure to capture loop variables safely.
-            # Without `n_id=node_id`, closures might reference the *last* node_id in the loop.
-            def create_node_handler(
-                    n_id: str,
-                    n_meta: Dict[str, Any],
-                    n_type: str,
-                    is_router_node: bool,
-                    router_keys: set,
-                    processor: NodeHandler):
+            # Factory function to safely capture loop variables (avoids late-binding closure issues)
+            def make_handler(n_id=node_id, n_meta=metadata, n_type=node.node_type,
+                             is_router_node=is_router, router_keys=expected_keys):
                 async def handler(state: GraphState, config: RunnableConfig) -> Dict[str, Any]:
-                    logger.info(f"Executing node: {n_id} Type: {n_type})")
-                    return await processor.process(
+                    logger.info(f"Executing node: {n_id} Type: {n_type}")
+                    return await self.node_handler.process(
                         n_id=n_id,
                         n_meta=n_meta,
                         node_type=n_type,
                         is_router_node=is_router_node,
                         router_keys=router_keys,
                         state=state,
-                        config=config)
+                        config=config
+                    )
 
                 return handler
 
-            workflow.add_node(
-                node_id,
-                create_node_handler(node_id, metadata, node_type, is_router, expected_keys, self.node_handler)
-            )
+            workflow.add_node(node_id, make_handler())
 
         # --- 3. Add Unconditional Edges ---
         for edge in unconditional_edges:
             workflow.add_edge(edge.source, edge.target)
 
-        # --- 4. Add Conditional Edges (Grouped by Source) ---
+        # --- 4. Add Conditional Edges ---
         for source, conditions in conditional_map.items():
-            # Create the routing function
-            def make_router(condition_list, src=source):
+            def make_router(condition_list=conditions, src=source):
                 def router(state: GraphState) -> str:
                     logger.info(f"Routing from {src}...")
-
-                    # Check each condition
                     for target, condition_str in condition_list:
                         parsed_key, expected_val = parse_condition(condition_str)
                         if not parsed_key:
                             continue
 
-                        # Look up value in state 'variables' (from routers) or top-level state
                         vars_dict = state.get("variables", {}) or {}
-                        # Check variables first, then top level
                         current_val = vars_dict.get(parsed_key)
                         if current_val is None and parsed_key in state:
                             current_val = state[parsed_key]
 
-                        # For numeric conditions, avoid string comparison
                         if isinstance(expected_val, (int, float)) and isinstance(current_val, (int, float)):
                             match = current_val == expected_val
                         else:
@@ -280,73 +220,65 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
 
                         logger.debug(
                             f"Router Check: Key='{parsed_key}', Expected='{expected_val}', Actual='{current_val}', Match='{match}'")
-
-                        # if current_val is not None and str(current_val) == str(expected_val):
                         if match:
                             return target
 
-                    # If no condition matches, go to END (or a default fallback)
-                    logger.warning(f"No condition matched for node {source}. Ending.")
+                    logger.warning(f"No condition matched for node {src}. Ending.")
                     return END
 
                 return router
 
-            # Map possible return values to node names
-            # LangGraph needs to know possible paths
             path_map = {target: target for target, _ in conditions}
             path_map[END] = END
+            workflow.add_conditional_edges(source, make_router(), path_map)
 
-            workflow.add_conditional_edges(source, make_router(conditions), path_map)
-
-        # Set Entry Point
-        if graph_data.nodes:
-            # --- Generally find the start node somewhere in an array ---
-            start_node = next((n for n in graph_data.nodes if n.node_type == "START"), None)
-            if not start_node:
-                raise ValueError("Graph definition has no node with type 'START'.")
-
-            workflow.set_entry_point(start_node.node_id)
-        else:
+        # --- 5. Set Entry Point & Compile ---
+        if not graph_data.nodes:
             raise ValueError("Graph definition has no nodes.")
 
-        # Compile with checkpointer and interrupts
-        compiled = workflow.compile(
+        start_node = next((n for n in graph_data.nodes if n.node_type == "START"), None)
+        if not start_node:
+            raise ValueError("Graph definition has no node with type 'START'.")
+
+        workflow.set_entry_point(start_node.node_id)
+
+        return workflow.compile(
             checkpointer=self._checkpointer,
-            # This tells LangGraph to STOP before executing any node in this list
             interrupt_before=interrupt_nodes
         )
-
-        return compiled
 
     @handle_grpc_errors
     async def BuildGraph(self, request, context):
         graph_id = request.graph_id
 
-        # Evict old compiled version if it exists
-        if graph_id in self._compiled_graphs:
-            del self._compiled_graphs[graph_id]
-            logger.debug(f"Evicted stale compiled graph: {graph_id}")
-
-        # Convert proto to dict
-        nodes = [{"node_id": n.node_id, "node_type": n.node_type,
-                  "handler_name": n.handler_name, "metadata": dict(n.metadata)} for n in request.nodes]
-        edges = [{"source": e.source, "target": e.target, "condition": e.condition or None}
-                 for e in request.edges]
+        nodes = [
+            {
+                "node_id": n.node_id,
+                "node_type": n.node_type,
+                "handler_name": n.handler_name,
+                "metadata": dict(n.metadata) if hasattr(n.metadata, 'items') else {}
+            }
+            for n in request.nodes
+        ]
+        edges = [
+            {"source": e.source, "target": e.target, "condition": e.condition or None}
+            for e in request.edges
+        ]
 
         graph_dict = {
             "name": request.graph_name,
             "nodes": nodes,
             "edges": edges,
-            "config": dict(request.config)
+            "config": dict(request.config) if hasattr(request.config, 'items') else {}
         }
 
-        # Compile and cache in memory
         validated_graph_data = GraphDefinition(**graph_dict)
         compiled_graph = self._build_langgraph(validated_graph_data)
-        self._compiled_graphs[graph_id] = compiled_graph
 
+        # Update caches
+        self._compiled_graphs[graph_id] = compiled_graph
         await self.redis_client.setex(f"graph:def:{graph_id}", 3600, json.dumps(graph_dict))
-        await self.redis_client.publish("graph:invalidation", graph_id)  # Replica awareness
+        await self.redis_client.publish("graph:invalidation", graph_id)
 
         return langgraph_pb2.BuildGraphResponse(
             success=True,
@@ -355,36 +287,26 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         )
 
     async def ExecuteGraph(self, request, context):
-        """
-                Streaming RPC: yields ExecuteGraphResponse messages as the graph runs.
-                NOTE: Not wrapped with handle_grpc_errors because this is an async generator;
-                we handle errors inline to ensure proper streaming semantics.
-                """
+        """Streaming RPC: yields ExecuteGraphResponse messages as the graph runs."""
         graph_id = request.graph_id
-
         if not graph_id:
-            # immediate error message then stop the stream
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "graph_id is required")
-            return  # defensive
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "graph_id is required")
+            return  # Unreachable, but satisfies type checkers
 
         try:
-            compiled_graph = await self._get_compiled_graph(graph_id)
+            compiled_graph = await self._load_and_compile_graph(graph_id)
         except KeyError:
-            await context.abort(grpc.StatusCode.NOT_FOUND, f"Graph {graph_id} not found")
-            return
+            context.abort(grpc.StatusCode.NOT_FOUND, f"Graph {graph_id} not found")
         except Exception as e:
-            logger.error(f"Failed to rebuild graph {graph_id}: {e}", exc_info=True)
-            await context.abort(grpc.StatusCode.INTERNAL, f"Failed to rebuild graph: {e}")
-            return
+            logger.error(f"Failed to load graph {graph_id}: {e}", exc_info=True)
+            context.abort(grpc.StatusCode.INTERNAL, f"Failed to load graph: {e}")
 
         config: RunnableConfig = {
             "configurable": {
-                "thread_id": request.thread_id if getattr(request, "thread_id", None) else "default_session"
+                "thread_id": getattr(request, "thread_id", None) or "default_session"
             }
         }
 
-        # --- CHECK CURRENT STATE ---
-        # Fetch the current snapshot (it may be paused or fresh)
         try:
             current_snapshot = await compiled_graph.aget_state(config)
         except Exception as e:
@@ -397,49 +319,26 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             return
 
         try:
-            # If snapshot.next indicates a pause, we are resuming
             next_nodes = getattr(current_snapshot, "next", None) or getattr(current_snapshot, "next_nodes", None) or []
 
             if next_nodes:
-                # --- RESUME SCENARIO ---
-                # The graph is paused (e.g., waiting at 'verify_billing')
                 logger.info(f"Resuming graph from node: {current_snapshot.next}")
-
-                # Update the state with the new user input
-                # We merge the new input into the existing state
                 if getattr(request, "input", None):
-                    await compiled_graph.aupdate_state(
-                        config,
-                        {"input": request.input},
-                        # Since we are paused BEFORE this node,
-                        # attributing the input to it is semantically incorrect.
-                        # None applies the update to the global state.
-                        as_node=None
-                    )
-
-                # Resume execution (pass None to continue from checkpoint)
+                    await compiled_graph.aupdate_state(config, {"input": request.input}, as_node=None)
                 stream_input = None
             else:
-                # --- NEW START SCENARIO ---
                 stream_input = {
                     "input": request.input,
-                    "context": dict(request.context),
+                    "context": dict(request.context) if hasattr(request, "context") else {},
                     "timestamp": time.time()
                 }
-
-                # Yield START event only for new runs
                 yield langgraph_pb2.ExecuteGraphResponse(
                     event_type="START",
                     timestamp=int(time.time() * 1000),
                     state=_serialize_state(stream_input)
                 )
 
-            # Use astream to get events as they happen
-            # stream_mode="updates" yields the state after each node
             async for event in compiled_graph.astream(stream_input, config=config, stream_mode="updates"):
-                # In 'updates' mode, LangGraph yields a dictionary of only the changes
-                # made by the node that just ran, with the node name as the key.
-                # event looks like: {"node_name": {"output": "...", "variables": {...}}}
                 for node_name, updates in event.items():
                     node_tokens = 0
                     if isinstance(updates, dict):
@@ -447,12 +346,8 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                         serialized_state = _serialize_state(updates)
                         node_tokens = updates.get("total_tokens", 0)
                     else:
-                        # Fallback if the node handler returned a tuple or other type
-                        logger.warning(
-                            f"Node '{node_name}' returned a non-dict update (type: {type(updates).__name__}). "
-                            "Ensure your NodeHandler returns a dictionary.")
+                        logger.warning(f"Node '{node_name}' returned non-dict update (type: {type(updates).__name__})")
                         output_content = str(updates)
-                        # 'updates' contains the actual state changes (e.g., {"output": "...", "variables": {...}})
                         serialized_state = _serialize_state({"raw_output": updates})
 
                     yield langgraph_pb2.ExecuteGraphResponse(
@@ -464,20 +359,13 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                         total_tokens=node_tokens
                     )
 
-            # --- POST-STREAM CHECK ---
-            # After the stream finishes, check the state to see if we are paused
-            # If the subgraph raised GraphInterrupt, the loop above finishes.
-            # We must check the state to see if we are paused.
             final_snapshot = await compiled_graph.aget_state(config)
             final_next = getattr(final_snapshot, "next", None) or []
             final_values = getattr(final_snapshot, "values", {}) or {}
 
             if final_next:
-                # If snapshot.next is not empty, the graph is paused at a node
-                # Graph is paused waiting for input
                 waiting_node = final_next[0] if isinstance(final_next, (list, tuple)) and final_next else final_next
                 logger.info(f"Graph paused waiting for input at node: {waiting_node}")
-
                 yield langgraph_pb2.ExecuteGraphResponse(
                     event_type="WAITING_FOR_INPUT",
                     node_id=waiting_node,
@@ -486,9 +374,6 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                     timestamp=int(time.time() * 1000)
                 )
             else:
-                # Otherwise, the graph is truly finished
-                # Retrieve final output from the last event in the loop,
-                # or fetch from snapshot.values if loop was empty (edge case)
                 yield langgraph_pb2.ExecuteGraphResponse(
                     event_type="END",
                     output=str(final_values.get("output", "")),
@@ -498,9 +383,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                 )
 
         except Exception as exec_error:
-            # GraphInterrupt is handled internally by astream and the post-stream check.
             logger.error(f"Execution error: {exec_error}", exc_info=True)
-
             yield langgraph_pb2.ExecuteGraphResponse(
                 event_type="ERROR",
                 error_message=str(exec_error),
@@ -509,51 +392,29 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
 
     @handle_grpc_errors
     async def GetGraphState(self, request, context):
-        graph_id = request.graph_id
-        thread_id = request.thread_id or "default"
-
-        if graph_id not in self._compiled_graphs:
-            raise KeyError(f"Graph {graph_id} not found")
-
-        compiled_graph = self._compiled_graphs[graph_id]
-
-        # Use the checkpointer-aware method to get state
-        config = {"configurable": {"thread_id": thread_id}}
+        compiled_graph = await self._load_and_compile_graph(request.graph_id)
+        config = {"configurable": {"thread_id": request.thread_id or "default"}}
         current_state = await compiled_graph.aget_state(config)
 
-        # current_state is a StateSnapshot object
-        # We convert it to the proto response format
         return langgraph_pb2.GetGraphStateResponse(
             success=True,
-            # current_state.values contains the actual dict state
             state=_serialize_state(current_state.values),
             current_node=current_state.next[0] if current_state.next else "",
-            node_history=[]  # Logic to parse history can be added here
+            node_history=[]
         )
 
     @handle_grpc_errors
     async def UpdateGraphState(self, request, context):
-        graph_id = request.graph_id
-        thread_id = request.thread_id or "default"
+        compiled_graph = await self._load_and_compile_graph(request.graph_id)
+        config = {"configurable": {"thread_id": request.thread_id or "default"}}
 
-        if graph_id not in self._compiled_graphs:
-            raise KeyError(f"Graph {graph_id} not found")
-
-        compiled_graph = self._compiled_graphs[graph_id]
-        config = {"configurable": {"thread_id": thread_id}}
-
-        as_node = request.as_node if request.as_node else None
-
-        # Update the state
         await compiled_graph.aupdate_state(
             config,
             dict(request.state_updates),
-            as_node=as_node
+            as_node=request.as_node or None
         )
 
-        # Get the updated state to return
         updated_snapshot = await compiled_graph.aget_state(config)
-
         return langgraph_pb2.UpdateGraphStateResponse(
             success=True,
             updated_state=_serialize_state(updated_snapshot.values)
@@ -561,116 +422,62 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
 
     @handle_grpc_errors
     async def GetExecutionHistory(self, request, context):
-        graph_id = request.graph_id
-        thread_id = request.thread_id or "default"
-
-        try:
-            compiled_graph = await self._get_compiled_graph(graph_id)
-        except KeyError:
-            raise ValueError(f"Graph {graph_id} not found")  # Let decorator handle gRPC response
-        except Exception as e:
-            logger.error(f"Failed to load graph {graph_id}: {e}", exc_info=True)
-            raise ValueError(f"Failed to load graph: {e}")
-
-        config = {"configurable": {"thread_id": thread_id}}
+        compiled_graph = await self._load_and_compile_graph(request.graph_id)
+        config = {"configurable": {"thread_id": request.thread_id or "default"}}
         history_list = []
 
-        try:
-            # 3. Iterate through history (This works now because compiled_graph is a Pregel object)
-            async for snapshot in compiled_graph.aget_state_history(config):
+        async for snapshot in compiled_graph.aget_state_history(config):
+            state_values = snapshot.values or {}
+            node_id = state_values.get("last_node")
 
-                # Extract state variables safely
-                state_values = snapshot.values or {}
+            if not node_id and snapshot.next:
+                node_id = f"Pending: {snapshot.next[0]}"
+            elif not node_id:
+                node_id = "start"
 
-                # Determine node_id
-                # We look for 'last_node' which your nodes are setting, or fallback to 'next'
-                node_id = state_values.get("last_node")
-                if not node_id and snapshot.next:
-                    node_id = f"Pending: {snapshot.next[0]}"
-                elif not node_id:
-                    node_id = "start"
+            history_items = state_values.get("history", [])
+            tokens_used = 0
+            if history_items and isinstance(history_items, list):
+                last_item = history_items[-1]
+                if isinstance(last_item, dict) and last_item.get("node") == node_id:
+                    tokens_used = last_item.get("tokens_used", 0)
 
-                # Extract per-node tokens from the history list
-                history_items = state_values.get("history", [])
-                tokens_used = 0
-                if history_items and isinstance(history_items, list):
-                    last_item = history_items[-1]
-                    if isinstance(last_item, dict) and last_item.get("node") == node_id:
-                        tokens_used = last_item.get("tokens_used", 0)
+            history_list.append(langgraph_pb2.StateSnapshot(
+                node_id=str(node_id),
+                state_json=json.dumps(state_values, default=str),
+                timestamp=str(snapshot.created_at) if snapshot.created_at else "",
+                tokens_used=tokens_used,
+                total_tokens=state_values.get("total_tokens", 0)
+            ))
 
-                # Extract cumulative tokens from the state
-                total_tokens = state_values.get("total_tokens", 0)
-
-                # Create the Proto message
-                history_list.append(langgraph_pb2.StateSnapshot(
-                    node_id=str(node_id),
-                    state_json=json.dumps(state_values, default=str),
-                    timestamp=str(snapshot.created_at) if snapshot.created_at else "",
-                    tokens_used=tokens_used,
-                    total_tokens=total_tokens
-                ))
-
-            history_list.reverse()
-            return langgraph_pb2.GraphHistoryResponse(history=history_list)
-
-        except Exception as e:
-            logger.error(f"History fetch error: {e}", exc_info=True)
-            # Raising the exception lets the @handle_grpc_errors decorator handle the gRPC response
-            raise e
+        history_list.reverse()
+        return langgraph_pb2.GraphHistoryResponse(history=history_list)
 
     @handle_grpc_errors
     async def RewindGraph(self, request, context):
-        graph_id = request.graph_id
-        thread_id = request.thread_id
-        target_state_json = request.target_state_json
+        compiled_graph = await self._load_and_compile_graph(request.graph_id)
+        config = {"configurable": {"thread_id": request.thread_id}}
 
         try:
-            compiled_graph = await self._get_compiled_graph(graph_id)
-        except KeyError:
-            context.set_code(grpc.StatusCode.NOT_FOUND)
-            context.set_details(f"Graph '{graph_id}' not found")
-            return langgraph_pb2.RewindGraphPayload(success=False, message=f"Graph '{graph_id}' not found")
-        except Exception as e:
-            logger.error(f"Failed to load graph {graph_id}: {e}", exc_info=True)
-            context.set_code(grpc.StatusCode.INTERNAL)
-            context.set_details(f"Failed to load graph: {e}")
-            return langgraph_pb2.RewindGraphPayload(success=False, message=f"Build error: {e}")
-
-        config = {"configurable": {"thread_id": thread_id}}
-
-        try:
-            target_values = json.loads(target_state_json)
-
-            await compiled_graph.aupdate_state(
-                config,
-                values=target_values,
-                as_node=request.target_node_id or None
-            )
-
-            logger.info(f"Graph {graph_id} rewound successfully for thread {thread_id}")
-            return langgraph_pb2.RewindGraphPayload(
-                success=True,
-                message="State rewound. Send a new message to continue."
-            )
-
+            target_values = json.loads(request.target_state_json)
         except json.JSONDecodeError as e:
-            context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
-            context.set_details(f"Invalid state JSON: {e}")
-            return langgraph_pb2.RewindGraphPayload(success=False, message=f"Invalid state format: {e}")
+            raise ValueError(f"Invalid state JSON: {e}")
 
-        except Exception as e:
-            logger.exception(f"Rewind failed: {e}")
-            context.set_code(grpc.StatusCode.INTERNAL)
-            context.set_details(str(e))
-            return langgraph_pb2.RewindGraphPayload(success=False, message=f"Rewind error: {e}")
+        await compiled_graph.aupdate_state(
+            config,
+            values=target_values,
+            as_node=request.target_node_id or None
+        )
+
+        logger.info(f"Graph {request.graph_id} rewound successfully for thread {request.thread_id}")
+        return langgraph_pb2.RewindGraphPayload(
+            success=True,
+            message="State rewound. Send a new message to continue."
+        )
 
     @handle_grpc_errors
     async def AskCopilot(self, request, context):
-        """
-        Handles Copilot chat requests
-        """
-        logger.info(f"Copilot request received.")
-
+        logger.info("Copilot request received.")
         ai_response = await self.copilot.ask(
             user_message=request.user_message,
             graph_context_json=request.graph_context_json,
@@ -683,7 +490,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         return langgraph_pb2.CopilotResponse(
             success=True,
             ai_response=ai_response,
-            total_tokens=ai_response.usage.get('total_tokens', -1)
+            total_tokens=ai_response.usage.get('total_tokens', -1) if hasattr(ai_response, 'usage') else -1
         )
 
     @property
