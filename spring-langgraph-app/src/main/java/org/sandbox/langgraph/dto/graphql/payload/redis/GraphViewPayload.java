@@ -1,5 +1,7 @@
 package org.sandbox.langgraph.dto.graphql.payload.redis;
 
+import org.sandbox.langgraph.core.model.GraphStatus;
+
 import java.util.List;
 
 /**
@@ -10,12 +12,12 @@ public record GraphViewPayload(
         boolean success,
         String graphId,
         String graphName,
-        String status,
+        GraphStatus status,
         List<GraphNode> nodes,
         List<GraphEdge> edges,
         String message
 ) {
-    public static GraphViewPayload success(String graphId, String graphName, String status, 
+    public static GraphViewPayload success(String graphId, String graphName, GraphStatus status,
                                            List<GraphNode> nodes, List<GraphEdge> edges) {
         return new GraphViewPayload(true, graphId, graphName, status, nodes, edges, "Graph loaded successfully");
     }

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
+import { getUnsyncedThreads, addLocalThread } from './utils/localThreadStore';
 import ReactFlow, { Background, Controls, applyNodeChanges, applyEdgeChanges, MarkerType } from 'reactflow';
 import dagre from 'dagre';
 
@@ -9,6 +10,7 @@ import {
     fetchGraphQL, LIST_QUERY, VIEW_QUERY, HISTORY_QUERY,
     BALANCE_QUERY, EXECUTE_MUTATION, SAVE_MUTATION,
     DELETE_MUTATION, REWIND_MUTATION, COPILOT_MUTATION,
+    CLAIM_THREADS_MUTATION,
     layoutGraph
 } from './constants';
 import CopilotTab from './copilot';
@@ -162,6 +164,33 @@ function App() {
             loadGraph(selected);
         }
     }, [selected]);
+
+    const handleUserLoggedIn = async () => {
+        const unsynced = getUnsyncedThreads();
+        if (unsynced.length === 0) {
+            console.log("No unsynced threads. Nothing to do.");
+            return;
+        }
+
+        try {
+            const data = await fetchGraphQL(CLAIM_THREADS_MUTATION, {
+                threads: unsynced.map(t => ({
+                    threadId: t.threadId,
+                    graphId: t.graphId,
+                    title: t.title
+                }))
+            });
+
+            if (data.claimLocalThreads.success) {
+                console.log(`✅ Successfully synced ${data.claimLocalThreads.syncedCount} threads!`);
+                markThreadsAsSynced(unsynced.map(t => t.threadId));
+            } else {
+                console.error("❌ Sync failed:", data.claimLocalThreads.message);
+            }
+        } catch (err) {
+            console.error("❌ Network error during thread sync:", err);
+        }
+    };
 
     const loadGraph = (id) => {
 
@@ -343,6 +372,8 @@ function App() {
 
     const handleExecute = async () => {
         if (!input.trim() || !selected) return;
+
+        addLocalThread(threadId, selected, `Chat on ${selected.slice(0, 8)}...`);
 
         const userText = input;
         setMessages(prev => [...prev, { type: 'user', text: userText }]);
@@ -526,6 +557,7 @@ function App() {
                 setCollapsed={setCollapsed} onSelectGraph={setSelected}
                 copyGraphId={copyGraphId} copiedGraph={copiedGraph} handleDelete={handleDelete}
                 realBalance={realBalance}
+                onUserLoggedIn={handleUserLoggedIn}
             />
 
             {/* Main Content */}

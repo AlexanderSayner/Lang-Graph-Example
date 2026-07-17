@@ -9,6 +9,7 @@ import org.sandbox.langgraph.dto.graphql.input.ExecuteGraphInput;
 import org.sandbox.langgraph.dto.graphql.input.NodePositionInput;
 import org.sandbox.langgraph.dto.graphql.input.UpdateGraphStateInput;
 import org.sandbox.langgraph.dto.graphql.payload.*;
+import org.sandbox.langgraph.dto.graphql.payload.redis.GraphViewData;
 import org.sandbox.langgraph.dto.graphql.payload.redis.GraphViewPayload;
 import org.sandbox.langgraph.exception.LangGraphException;
 import org.sandbox.langgraph.mapper.GraphViewMapper;
@@ -44,34 +45,30 @@ public class LangGraphController {
     private final CopilotService copilotService;
 
     @QueryMapping
-    public Mono<@NonNull GraphListPayload> listGraphs(@Argument int pageSize, @Argument String pageToken) {
+    public @NonNull GraphListPayload listGraphs(@Argument int pageSize, @Argument String pageToken) {
         return langGraphService.listGraphs(pageSize, pageToken);
     }
 
     @QueryMapping
-    public Mono<@NonNull GraphStatePayload> getGraphState(@Argument String graphId, @Argument String threadId) {
+    public @NonNull GraphStatePayload getGraphState(@Argument String graphId, @Argument String threadId) {
         return langGraphService.getGraphState(graphId, threadId);
     }
 
     @QueryMapping
-    public Mono<@NonNull GraphViewPayload> getGraphView(@Argument String graphId) {
+    public @NonNull GraphViewPayload getGraphView(@Argument String graphId) {
         log.info("Getting graph view for: {}", graphId);
-        return graphViewService.getGraphViewData(graphId)
-                .map(graphStorageMapper::toPayload)
-                .onErrorResume(e -> {
-                    log.error("Error loading graph view for {}: {}", graphId, e.getMessage());
-                    return Mono.just(GraphViewPayload.error("Failed to load graph: " + e.getMessage()));
-                });
+        GraphViewData graph = graphViewService.getGraphViewData(graphId);
+        return graphStorageMapper.toPayload(graph);
     }
 
     @QueryMapping
-    public Mono<@NonNull GraphHistoryPayload> getExecutionHistory(@Argument String graphId, @Argument String threadId) {
+    public @NonNull GraphHistoryPayload getExecutionHistory(@Argument String graphId, @Argument String threadId) {
         log.info("Getting execution history for: '{}'-'{}'", graphId, threadId);
         return langGraphService.getExecutionHistory(graphId, threadId);
     }
 
     @MutationMapping
-    public Mono<@NonNull BuildGraphPayload> buildGraph(@Valid @Argument BuildGraphInput input) {
+    public @NonNull BuildGraphPayload buildGraph(@Valid @Argument BuildGraphInput input) {
         log.info("Building graph mutation: {}", input.graphId());
         return langGraphService.buildGraph(input);
     }
@@ -82,7 +79,18 @@ public class LangGraphController {
         return langGraphService.executeGraphStream(input, false)
                 .reduce(new ExecuteGraphPayloadAccumulator(), ExecuteGraphPayloadAccumulator::accumulate)
                 .map(ExecuteGraphPayloadAccumulator::toPayload)
-                .defaultIfEmpty(new ExecuteGraphPayload(true, "", "idle", null, null, null));
+                .defaultIfEmpty(new ExecuteGraphPayload(true, "", "idle", null, null, null))
+                .onErrorResume(e -> {
+                    log.error("Graph execution failed for {}: {}", input.graphId(), e.getMessage(), e);
+                    return Mono.just(new ExecuteGraphPayload(
+                            false,
+                            null,
+                            "ERROR",
+                            null,
+                            0,
+                            "Execution failed: " + e.getMessage()
+                    ));
+                });
     }
 
     @SubscriptionMapping
@@ -92,32 +100,31 @@ public class LangGraphController {
     }
 
     @MutationMapping
-    public Mono<@NonNull UpdateGraphStatePayload> updateGraphState(@Valid @Argument UpdateGraphStateInput input) {
+    public @NonNull UpdateGraphStatePayload updateGraphState(@Valid @Argument UpdateGraphStateInput input) {
         log.info("Updating graph state: {}", input.graphId());
         return langGraphService.updateGraphState(input);
     }
 
     @MutationMapping
-    public Mono<@NonNull DeleteGraphPayload> deleteGraph(@Argument String graphId) {
+    public @NonNull DeleteGraphPayload deleteGraph(@Argument String graphId) {
         log.info("Deleting graph: {}", graphId);
         return langGraphService.deleteGraph(graphId);
     }
 
     @MutationMapping
-    public Mono<@NonNull RewindGraphPayload> rewindGraph(@Argument String graphId,
-                                                         @Argument String threadId,
-                                                         @Argument String stateJson,
-                                                         @Argument String targetNodeId) {
+    public @NonNull RewindGraphPayload rewindGraph(@Argument String graphId,
+                                                   @Argument String threadId,
+                                                   @Argument String stateJson,
+                                                   @Argument String targetNodeId) {
         log.info("Rewinding graph: {}:{}:{}", graphId, threadId, stateJson);
         return langGraphService.rewindGraph(graphId, threadId, stateJson, targetNodeId);
     }
 
     @MutationMapping
-    public Mono<@NonNull GraphViewPayload> saveGraphCoordinates(
+    public @NonNull GraphViewPayload saveGraphCoordinates(
             @Argument String graphId,
             @Argument List<NodePositionInput> positions) {
 
-        // Convert List<Input> to Map<String, Map<String, Double>> for storage
         Map<String, Map<String, Double>> coordsMap = new HashMap<>();
         if (positions != null) {
             for (NodePositionInput p : positions) {
@@ -128,23 +135,21 @@ public class LangGraphController {
             }
         }
 
-        return coordinatesService.saveCoordinates(graphId, coordsMap)
-                .flatMap(savedSuccess -> {
-                    if (!savedSuccess) {
-                        return Mono.error(new LangGraphException.GraphNotFoundException(graphId));
-                    }
-                    // Fetch the fresh state (which includes new coords)
-                    return graphViewService.getGraphViewData(graphId);
-                })
-                .map(graphStorageMapper::toPayload)
-                .onErrorResume(e -> {
-                    log.error("Error save graph coordinates for {}: {}", graphId, e.getMessage());
-                    return Mono.just(GraphViewPayload.error("Failed to save graph coordinates: " + e.getMessage()));
-                });
+        try {
+            boolean savedSuccess = coordinatesService.saveCoordinates(graphId, coordsMap);
+            if (!savedSuccess) {
+                throw new LangGraphException.GraphNotFoundException(graphId);
+            }
+            GraphViewData graph = graphViewService.getGraphViewData(graphId);
+            return graphStorageMapper.toPayload(graph);
+        } catch (Exception e) {
+            log.error("Error save graph coordinates for {}: {}", graphId, e.getMessage());
+            return GraphViewPayload.error("Failed to save graph coordinates: " + e.getMessage());
+        }
     }
 
     @MutationMapping
-    public Mono<@NonNull CopilotGraphPayload> askCopilot(
+    public @NonNull CopilotGraphPayload askCopilot(
             @Argument String graphId,
             @Argument String threadId,
             @Argument String message,

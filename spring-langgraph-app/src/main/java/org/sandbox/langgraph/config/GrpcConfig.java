@@ -16,20 +16,13 @@ import org.springframework.grpc.client.GrpcChannelFactory;
 public class GrpcConfig {
 
     @Bean
-    public LangGraphServiceGrpc.LangGraphServiceFutureStub futureStub(GrpcChannelFactory channelFactory) {
-        final ManagedChannel channel = channelFactory.createChannel("langgraph-service");
-        log.info("Created future stub channel: {}\n{}", channel.getState(true), channel);
-        return LangGraphServiceGrpc.newFutureStub(
-                channel
-        );
+    public LangGraphServiceGrpc.LangGraphServiceBlockingStub langGraphServiceBlockingStub(GrpcChannelFactory channelFactory) {
+        String channelName = "langgraph-service";
+
+        ManagedChannel channel = channelFactory.createChannel(channelName);
+        log.info("Created blocking stub channel for '{}': {}", channelName, channel);
+
+        return LangGraphServiceGrpc.newBlockingStub(channel);
     }
 
-    @Bean
-    public LangGraphServiceGrpc.LangGraphServiceStub asyncStub(GrpcChannelFactory channelFactory) {
-        final ManagedChannel channel = channelFactory.createChannel("langgraph-service");
-        log.info("Created async stub channel: {}\n{}", channel.getState(true), channel);
-        return LangGraphServiceGrpc.newStub(
-                channel
-        );
-    }
 }

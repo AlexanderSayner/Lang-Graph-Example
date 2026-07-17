@@ -1,19 +1,20 @@
 package org.sandbox.langgraph.core.repository;
 
-import io.r2dbc.postgresql.codec.Json;
 import org.sandbox.langgraph.core.model.GraphEntity;
-import org.springframework.data.r2dbc.repository.Modifying;
-import org.springframework.data.r2dbc.repository.Query;
-import org.springframework.data.repository.reactive.ReactiveCrudRepository;
-import reactor.core.publisher.Mono;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.CrudRepository;
+import org.springframework.data.repository.PagingAndSortingRepository;
 
-public interface GraphRepository extends ReactiveCrudRepository<GraphEntity, String> {
+import java.util.Optional;
+
+public interface GraphRepository extends CrudRepository<GraphEntity, String>, PagingAndSortingRepository<GraphEntity, String> {
 
     @Modifying
-    @Query("UPDATE core.graphs SET coordinates = CAST(:coords AS jsonb), updated_at = NOW(), version = version + 1 WHERE graph_id = :graphId")
-    Mono<Integer> updateCoordinates(String graphId, String coords);
+    @Query(value = "UPDATE core.graphs SET coordinates = CAST(:coords AS jsonb), updated_at = NOW(), version = version + 1 WHERE graph_id = :graphId", nativeQuery = true)
+    int updateCoordinates(String graphId, String coords);
 
-    @Query("SELECT coordinates FROM core.graphs WHERE graph_id = :graphId")
-    Mono<Json> findCoordinatesByGraphId(String graphId);
+    @Query("SELECT coordinates FROM GraphEntity g WHERE g.graphId = :graphId")
+    Optional<String> findCoordinatesByGraphId(String graphId);
 
 }

@@ -11,14 +11,18 @@ import java.time.Duration;
 public class RestClientConfig {
 
     @Bean
-    public RestClient toolRestClient() {
+    public RestClient.Builder toolRestClientBuilder() {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(Duration.ofSeconds(5)); // Time to establish connection
         factory.setReadTimeout(Duration.ofSeconds(15));   // Time to wait for data
 
         // Note: add default headers, interceptors for logging, etc.
         return RestClient.builder()
-                .requestFactory(factory)
-                .build();
+                .requestFactory(factory);
+    }
+
+    @Bean
+    public RestClient toolRestClient(RestClient.Builder builder) {
+        return builder.build();
     }
 }

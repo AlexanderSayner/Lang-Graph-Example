@@ -1,6 +1,5 @@
 import dagre from 'dagre';
 
-// --- Config ---
 const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
 export const API_URL = isLocalhost
     ? "http://localhost:9191/graphql"
@@ -11,6 +10,7 @@ export const fetchGraphQL = async (query, variables) => {
     const response = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ query, variables })
     });
     const json = await response.json();
@@ -18,69 +18,66 @@ export const fetchGraphQL = async (query, variables) => {
     return json.data;
 };
 
-// --- Queries ---
+// --- Auth Queries & Mutations ---
+export const GET_CURRENT_USER_QUERY = `
+    query {
+        getCurrentUser {
+            success
+            username
+            userId
+            message
+        }
+    }
+`;
+
+export const CLAIM_THREADS_MUTATION = `
+    mutation ClaimThreads($threads: [ClaimThreadInput!]!) {
+        claimLocalThreads(threads: $threads) {
+            success
+            message
+            syncedCount
+        }
+    }
+`;
+
+export const LOGIN_MUTATION = `
+    mutation Login($username: String!, $password: String!) {
+        login(username: $username, password: $password) {
+            success
+            message
+            username
+        }
+    }
+`;
+
+export const REGISTER_MUTATION = `
+    mutation Register($username: String!, $password: String!) {
+        register(username: $username, password: $password) {
+            success
+            message
+            username
+        }
+    }
+`;
+
+export const LOGOUT_MUTATION = `mutation { logout }`;
+
+// --- Existing Queries/Mutations ---
 export const LIST_QUERY = `query { listGraphs(pageSize: 100) { graphs { graphId graphName nodeCount } } }`;
 export const VIEW_QUERY = `query Get($graphId: String!) { getGraphView(graphId: $graphId) { nodes { nodeId nodeType metadata position { x y } } edges { source target condition } } }`;
-
 export const HISTORY_QUERY = `query History($graphId: String!, $threadId: String!) {
     getExecutionHistory(graphId: $graphId, threadId: $threadId) {
         success
-        history {
-            nodeId
-            stateJson
-            timestamp
-            diff {
-                added
-                removed
-                modified
-                summary
-            }
-            tokensUsed
-            totalTokens
-        }
+        history { nodeId stateJson timestamp diff { added removed modified summary } tokensUsed totalTokens }
         errorMessage
     }
 }`;
-
-export const BALANCE_QUERY = `query {
-    getYandexBalance {
-        success
-        balance
-        currency
-        errorMessage
-    }
-}`;
-
-export const EXECUTE_MUTATION = `
-    mutation Exec($input: ExecuteGraphInput!) {
-        executeGraph(input: $input) {
-            output
-            eventType
-            state
-            totalTokens
-            errorMessage
-        }
-    }`;
-
+export const BALANCE_QUERY = `query { getYandexBalance { success balance currency errorMessage } }`;
+export const EXECUTE_MUTATION = `mutation Exec($input: ExecuteGraphInput!) { executeGraph(input: $input) { output eventType state totalTokens errorMessage } }`;
 export const SAVE_MUTATION = `mutation Save($graphId: String!, $positions: [NodePositionInput!]!) { saveGraphCoordinates(graphId: $graphId, positions: $positions) { success } }`;
 export const DELETE_MUTATION = `mutation Del($graphId: String!) { deleteGraph(graphId: $graphId) { success } }`;
-
-export const REWIND_MUTATION = `
-    mutation Rewind($graphId: String!, $threadId: String!, $stateJson: String!, $targetNodeId: String) {
-        rewindGraph(graphId: $graphId, threadId: $threadId, stateJson: $stateJson, targetNodeId: $targetNodeId) { success message }
-    }
-`;
-
-export const COPILOT_MUTATION = `
-    mutation AskCopilot($graphId: String!, $threadId: String!, $message: String!, $chatHistory: String!, $selectedNodeId: String, $selectedEdgeJson: String) {
-        askCopilot(graphId: $graphId, threadId: $threadId, message: $message, copilotChatHistoryJson: $chatHistory, selectedNodeId: $selectedNodeId, selectedEdgeJson: $selectedEdgeJson) {
-            success
-            aiResponse
-            totalTokens
-            errorMessage
-        }
-    }
-`;
+export const REWIND_MUTATION = `mutation Rewind($graphId: String!, $threadId: String!, $stateJson: String!, $targetNodeId: String) { rewindGraph(graphId: $graphId, threadId: $threadId, stateJson: $stateJson, targetNodeId: $targetNodeId) { success message } }`;
+export const COPILOT_MUTATION = `mutation AskCopilot($graphId: String!, $threadId: String!, $message: String!, $chatHistory: String!, $selectedNodeId: String, $selectedEdgeJson: String) { askCopilot(graphId: $graphId, threadId: $threadId, message: $message, copilotChatHistoryJson: $chatHistory, selectedNodeId: $selectedNodeId, selectedEdgeJson: $selectedEdgeJson) { success aiResponse totalTokens errorMessage } }`;
 
 // --- Layout Logic ---
 export const layoutGraph = (nodes, edges) => {

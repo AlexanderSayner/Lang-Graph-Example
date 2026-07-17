@@ -1,5 +1,7 @@
 package org.sandbox.langgraph.dto.graphql.payload.redis;
 
+import org.sandbox.langgraph.core.model.GraphStatus;
+
 import java.util.List;
 import java.util.Map;
 
@@ -9,7 +11,7 @@ import java.util.Map;
 public record GraphViewData(
         String graphId,
         String graphName,
-        String status,
+        GraphStatus status,
         List<Map<String, Object>> nodes,
         List<Map<String, Object>> edges
 ) {
