@@ -2,12 +2,14 @@ package org.sandbox.langgraph.service.grpc;
 
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
+import org.sandbox.langgraph.core.model.GraphEntity;
 import org.sandbox.langgraph.core.repository.GraphRepository;
 import org.sandbox.langgraph.grpc.GetGraphDefinitionRequest;
 import org.sandbox.langgraph.grpc.GetGraphDefinitionResponse;
 import org.sandbox.langgraph.grpc.JavaGraphProviderGrpc;
 import org.springframework.grpc.server.service.GrpcService;
-import reactor.core.publisher.Mono;
+
+import java.util.Optional;
 
 @GrpcService
 public class JavaGraphProviderGrpcService extends JavaGraphProviderGrpc.JavaGraphProviderImplBase {
@@ -20,35 +22,37 @@ public class JavaGraphProviderGrpcService extends JavaGraphProviderGrpc.JavaGrap
 
     @Override
     public void getGraphDefinition(GetGraphDefinitionRequest request, StreamObserver<GetGraphDefinitionResponse> responseObserver) {
+        String graphId = request.getGraphId();
 
-        repository.findById(request.getGraphId())
-                .map(entity -> GetGraphDefinitionResponse.newBuilder()
-                        .setDefinitionJson(entity.definition().asString())
-                        .build())
+        try {
+            Optional<GraphEntity> entityOpt = repository.findById(graphId);
 
-                .switchIfEmpty(Mono.defer(() -> {
-                    responseObserver.onError(
-                            Status.NOT_FOUND
-                                    .withDescription("Graph not found: " + request.getGraphId())
-                                    .asRuntimeException()
-                    );
-                    return Mono.empty();
-                }))
+            if (entityOpt.isPresent()) {
+                GraphEntity entity = entityOpt.get();
 
-                .doOnNext(response -> {
-                    responseObserver.onNext(response);
-                    responseObserver.onCompleted();
-                })
+                GetGraphDefinitionResponse response = GetGraphDefinitionResponse.newBuilder()
+                        .setDefinitionJson(entity.getDefinition())
+                        .build();
 
-                .doOnError(e -> {
-                    if (!(e instanceof io.grpc.StatusRuntimeException)) {
-                        responseObserver.onError(
-                                Status.INTERNAL
-                                        .withDescription("Database error: " + e.getMessage())
-                                        .asRuntimeException()
-                        );
-                    }
-                })
-                .subscribe();
+                responseObserver.onNext(response);
+                responseObserver.onCompleted();
+            } else {
+                responseObserver.onError(
+                        Status.NOT_FOUND
+                                .withDescription("Graph not found: " + graphId)
+                                .asRuntimeException()
+                );
+            }
+        } catch (Exception e) {
+            if (!(e instanceof io.grpc.StatusRuntimeException)) {
+                responseObserver.onError(
+                        Status.INTERNAL
+                                .withDescription("Database error: " + e.getMessage())
+                                .asRuntimeException()
+                );
+            } else {
+                responseObserver.onError(e);
+            }
+        }
     }
 }

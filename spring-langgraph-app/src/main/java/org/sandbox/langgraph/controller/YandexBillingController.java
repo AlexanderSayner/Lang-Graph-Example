@@ -5,7 +5,6 @@ import org.sandbox.langgraph.dto.graphql.customer.YandexBalancePayload;
 import org.sandbox.langgraph.service.customer.YandexBillingService;
 import org.springframework.graphql.data.method.annotation.QueryMapping;
 import org.springframework.stereotype.Controller;
-import reactor.core.publisher.Mono;
 
 @Controller
 public class YandexBillingController {
@@ -17,7 +16,7 @@ public class YandexBillingController {
     }
 
     @QueryMapping
-    public Mono<@NonNull YandexBalancePayload> getYandexBalance() {
+    public @NonNull YandexBalancePayload getYandexBalance() {
         return billingService.getBalance();
     }
 }

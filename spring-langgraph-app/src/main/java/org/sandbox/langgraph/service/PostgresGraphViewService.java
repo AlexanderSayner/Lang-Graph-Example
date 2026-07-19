@@ -3,8 +3,8 @@ package org.sandbox.langgraph.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import io.r2dbc.postgresql.codec.Json;
 import lombok.RequiredArgsConstructor;
+import org.jspecify.annotations.NonNull;
 import org.sandbox.langgraph.core.model.GraphEntity;
 import org.sandbox.langgraph.core.repository.GraphRepository;
 import org.sandbox.langgraph.dto.GraphDefinition;
@@ -13,7 +13,6 @@ import org.sandbox.langgraph.exception.LangGraphException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-import reactor.core.publisher.Mono;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -34,18 +33,18 @@ public class PostgresGraphViewService {
      * 🔥 OPTIMIZATION: Because the blueprint and coordinates are in the SAME ROW in Postgres,
      * we no longer need Mono.zip to fetch them from two different places!
      */
-    public Mono<GraphViewData> getGraphViewData(String graphId) {
+    public @NonNull GraphViewData getGraphViewData(String graphId) {
         return repository.findById(graphId)
-                .switchIfEmpty(Mono.error(new LangGraphException.GraphNotFoundException("Graph not found: " + graphId)))
-                .map(this::mapEntityToViewData);
+                .map(this::mapEntityToViewData)
+                .orElseThrow(() -> new LangGraphException.GraphNotFoundException("Graph not found: " + graphId));
     }
 
     private GraphViewData mapEntityToViewData(GraphEntity entity) {
         // Parse the 'definition' JSONB column into the GraphDefinition DTO
-        GraphDefinition graphDef = parseDefinition(entity.definition());
+        GraphDefinition graphDef = parseDefinition(entity.getDefinition());
 
         // Parse the 'coordinates' JSONB column into a Map
-        Map<String, Map<String, Double>> coords = parseCoordinates(entity.coordinates().asString());
+        Map<String, Map<String, Double>> coords = parseCoordinates(entity.getCoordinates());
 
         // Map to the final GraphViewData (Logic preserved exactly from your original class)
         List<Map<String, Object>> nodes = graphDef.nodes().stream()
@@ -59,18 +58,18 @@ public class PostgresGraphViewService {
                 .toList();
 
         return new GraphViewData(
-                entity.graphId(),
+                entity.getGraphId(),
                 graphDef.name(),
-                entity.status(), // Use the status directly from the Postgres entity
+                entity.getStatus(), // Use the status directly from the Postgres entity
                 nodes,
                 edges
         );
     }
 
-    private GraphDefinition parseDefinition(Json json) {
+    private GraphDefinition parseDefinition(String json) {
         try {
             // Extract the raw string from the R2DBC Json wrapper and parse it
-            return objectMapper.readValue(json.asString(), GraphDefinition.class);
+            return objectMapper.readValue(json, GraphDefinition.class);
         } catch (JsonProcessingException e) {
             log.error("Failed to parse graph definition JSON", e);
             throw new IllegalArgumentException("Failed to parse graph definition JSON", e);

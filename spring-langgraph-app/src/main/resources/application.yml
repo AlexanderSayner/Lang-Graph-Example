@@ -1,12 +1,30 @@
 server:
   port: 9191
   shutdown: graceful
+  servlet:
+    session:
+      cookie:
+        name: JSESSIONID
+        http-only: true
+        secure: ${IS_SECURE_SERVER:false} # Set to true in production (requires HTTPS)
+        same-site: lax
 
 spring:
   application:
     name: spring-langgraph-app
   lifecycle:
     timeout-per-shutdown-phase: 30s
+  threads:
+    virtual:
+      enabled: true
+  session:
+    store-type: redis
+    redis:
+      namespace: langgraph:sessions
+      flush-mode: on_save
+  security:
+    user:
+      name: dummy # Prevents default auto-generated password log
 
   graphql:
     http:
@@ -21,21 +39,30 @@ spring:
   jackson:
     default-property-inclusion: non_null
 
-  r2dbc:
-    url: ${SPRING_R2DBC_URL:r2dbc:postgresql://localhost:7432/langgraph_db}
-    username: ${SPRING_R2DBC_USERNAME:langgraph}
-    password: ${SPRING_R2DBC_PASSWORD:langgraph_password}
-    pool:
-      initial-size: 5
-      max-size: 20
-      max-idle-time: 30m
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: ${JPA_SHOW_SQL:true}
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+  datasource:
+    url: ${SPRING_JDBC_URL:jdbc:postgresql://localhost:5432/your_database_name}
+    username: ${SPRING_JDBC_USERNAME:langgraph}
+    password: ${SPRING_JDBC_PASSWORD:langgraph_password}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      max-lifetime: 1800000
+      idle-timeout: 600000
   flyway:
     enabled: true
-    schemas: public,core
+    schemas: public,core,app
     default-schema: public
     url: ${POSTGRES_FLYWAY_URL:}
-    user: ${SPRING_R2DBC_USERNAME:}
-    password: ${SPRING_R2DBC_PASSWORD:}
+    user: ${SPRING_JDBC_USERNAME:}
+    password: ${SPRING_JDBC_PASSWORD:}
 
   data:
     redis:

@@ -1,85 +1,70 @@
 package org.sandbox.langgraph.core.service;
 
-import io.r2dbc.postgresql.codec.Json;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.sandbox.langgraph.core.model.GraphEntity;
+import org.sandbox.langgraph.core.model.GraphStatus;
 import org.sandbox.langgraph.core.repository.GraphRepository;
 import org.sandbox.langgraph.dto.graphql.input.BuildGraphInput;
 import org.sandbox.langgraph.dto.pagination.PageData;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
-import reactor.core.publisher.Mono;
-import tools.jackson.databind.ObjectMapper;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
 public class GraphPostgresService {
+
     private final GraphRepository repository;
     private final ObjectMapper objectMapper;
 
-    public Mono<GraphEntity> saveGraph(BuildGraphInput input) {
-        // 1. Check if the graph already exists
-        return repository.findById(input.graphId())
-                .flatMap(existingEntity -> {
-                    // --- UPDATE SCENARIO ---
-                    try {
-                        String defJson = objectMapper.writeValueAsString(input);
-                        GraphEntity updatedEntity = new GraphEntity(
-                                existingEntity.graphId(),
-                                input.graphName(),
-                                existingEntity.status(),
-                                Json.of(defJson),
-                                existingEntity.coordinates(),
-                                existingEntity.createdAt(),
-                                null,
-                                existingEntity.version()
-                        );
-                        return repository.save(updatedEntity);
-                    } catch (Exception e) {
-                        return Mono.error(new RuntimeException("Failed to serialize graph definition", e));
-                    }
-                })
-                .switchIfEmpty(Mono.defer(() -> {
-                    try {
-                        String defJson = objectMapper.writeValueAsString(input);
-                        GraphEntity newEntity = new GraphEntity(
-                                input.graphId(),
-                                input.graphName(),
-                                "ACTIVE",
-                                Json.of(defJson),
-                                Json.of("{}"),
-                                null,
-                                null,
-                                null
-                        );
-                        return repository.save(newEntity);
-                    } catch (Exception e) {
-                        return Mono.error(new RuntimeException("Failed to serialize graph definition", e));
-                    }
-                }));
+    public Optional<GraphEntity> findById(String graphId) {
+        return repository.findById(graphId);
     }
 
-    public Mono<PageData> listGraphs(int limit, int offset) {
-        Mono<List<GraphEntity>> dataMono = repository.findAll()
-                .skip(offset)
-                .take(limit)
-                .collectList();
+    @Transactional
+    public void saveGraph(BuildGraphInput input) {
+        try {
+            String definitionJson = objectMapper.writeValueAsString(input);
+            String coordinatesJson = "{}";
 
-        Mono<Long> countMono = repository.count();
+            GraphEntity entity = new GraphEntity(
+                    input.graphId(),
+                    input.graphName(),
+                    GraphStatus.ACTIVE, // Use the enum directly
+                    definitionJson,
+                    coordinatesJson,
+                    LocalDateTime.now(),
+                    LocalDateTime.now(),
+                    0L
+            );
 
-        return Mono.zip(dataMono, countMono)
-                .map(tuple -> new PageData(tuple.getT1(), tuple.getT2().intValue()));
+            repository.save(entity);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to serialize graph definition", e);
+        }
     }
 
-    public Mono<Boolean> deleteGraph(String graphId) {
-        return repository.existsById(graphId)
-                .flatMap(exists -> {
-                    if (!exists) {
-                        return Mono.just(false);
-                    }
-                    return repository.deleteById(graphId).then(Mono.just(true));
-                });
+    public PageData listGraphs(int limit, int offset) {
+        // Since offset increments by pageSize, it will always be a clean multiple of limit
+        int page = offset / limit;
+        List<GraphEntity> entities = repository.findAll(PageRequest.of(page, limit)).getContent();
+        long totalCount = repository.count();
+
+        return new PageData(entities, (int) totalCount);
     }
 
+    @Transactional
+    public boolean deleteGraph(String graphId) {
+        if (!repository.existsById(graphId)) {
+            return false;
+        }
+        repository.deleteById(graphId);
+        return true;
+    }
 }
+
