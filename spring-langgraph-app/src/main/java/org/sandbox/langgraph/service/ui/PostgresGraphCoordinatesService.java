@@ -27,7 +27,6 @@ public class PostgresGraphCoordinatesService {
             String json = objectMapper.writeValueAsString(coordinates);
             log.info("Saving coordinates for graph: {}", graphId);
 
-            // Executes the custom query, updating JSONB and bumping the @Version
             int rowsAffected = repository.updateCoordinates(graphId, json);
             return rowsAffected > 0;
         } catch (JsonProcessingException e) {

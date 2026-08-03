@@ -28,7 +28,6 @@ public class ToolGrpcService extends ToolServiceGrpc.ToolServiceImplBase {
         Map<String, String> headersMap = new HashMap<>(request.getHeadersMap());
 
         log.info("Executing http tool: {}", request);
-        // Call Service
         HttpRequestOutput result = toolExecutor.executeHttpRequest(
                 request.getMethod(),
                 request.getUrl(),
@@ -37,7 +36,6 @@ public class ToolGrpcService extends ToolServiceGrpc.ToolServiceImplBase {
                 request.getStateJson()
         );
 
-        // Map DTO to Proto
         org.sandbox.langgraph.grpc.HttpRequestOutput.Builder responseBuilder = org.sandbox.langgraph.grpc.HttpRequestOutput.newBuilder()
                 .setSuccess(result.isSuccess())
                 .setStatusCode(result.getStatusCode())
