@@ -35,7 +35,7 @@ public class GraphPostgresService {
             GraphEntity entity = new GraphEntity(
                     input.graphId(),
                     input.graphName(),
-                    GraphStatus.ACTIVE, // Use the enum directly
+                    GraphStatus.ACTIVE,
                     definitionJson,
                     coordinatesJson,
                     LocalDateTime.now(),
@@ -50,7 +50,6 @@ public class GraphPostgresService {
     }
 
     public PageData listGraphs(int limit, int offset) {
-        // Since offset increments by pageSize, it will always be a clean multiple of limit
         int page = offset / limit;
         List<GraphEntity> entities = repository.findAll(PageRequest.of(page, limit)).getContent();
         long totalCount = repository.count();

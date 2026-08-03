@@ -17,7 +17,6 @@ public class YandexBillingService {
     private final YandexCloudProperties properties;
     private final YandexIamTokenProvider iamTokenProvider;
 
-    // Inject RestClient.Builder instead of WebClient.Builder
     public YandexBillingService(RestClient.Builder restClientBuilder,
                                 YandexCloudProperties properties,
                                 YandexIamTokenProvider iamTokenProvider) {
