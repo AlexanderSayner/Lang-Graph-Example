@@ -346,4 +346,4 @@ The Python service can be configured via environment variables or command-line a
 
 ## License
 
-MIT License
+GNU General Public License v3.0
