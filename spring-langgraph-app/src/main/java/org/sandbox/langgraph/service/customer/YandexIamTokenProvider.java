@@ -48,7 +48,12 @@ public class YandexIamTokenProvider {
 
         String keyJson = properties.serviceAccountKeyJson();
         if (keyJson == null || keyJson.isBlank()) {
-            throw new IllegalStateException("yandex.cloud.service-account-key-json is not configured!");
+            log.warn("yandex.cloud.service-account-key-json is not configured! "
+                    + "Application will start, but Yandex billing queries will fail until it is set.");
+            this.serviceAccountId = null;
+            this.keyId = null;
+            this.privateKeyPem = null;
+            return;
         }
 
         JsonNode node = objectMapper.readTree(keyJson);
@@ -61,6 +66,9 @@ public class YandexIamTokenProvider {
 
     // Now returns a plain String. The 'synchronized' keyword safely protects the cache check.
     public synchronized String getIamToken() {
+        if (privateKeyPem == null) {
+            throw new IllegalStateException("yandex.cloud.service-account-key-json is not configured!");
+        }
         String token = redisTemplate.opsForValue().get(REDIS_TOKEN_KEY);
         if (token == null) {
             token = generateAndCacheToken();

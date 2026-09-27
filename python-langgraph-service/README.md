@@ -140,6 +140,11 @@ async for event in stub.ExecuteGraph(exec_request):
 | `MAX_MESSAGE_LENGTH`   | 52428800        |                                 |
 | `YC_API_KEY`           |                 | Yandex clout api key            |
 | `YC_FOLDER_ID`         |                 | Yandex cloud folder ID          |
+| `YC_COMPLETION_MODE`   | `sync`          | `sync` = synchronous `/completion` (predictable latency, used for interactive chat) · `async` = deferred `/completionAsync` (~50% cheaper, but queued/batch) |
+| `YC_TIMEOUT_SECONDS`   | 60              | HTTP timeout for a synchronous completion |
+| `YC_ASYNC_MAX_WAIT_SECONDS`     | 90     | Maximum time to wait for a deferred operation before giving up |
+| `YC_ASYNC_POLL_INTERVAL_SECONDS`| 1      | Poll interval while waiting for a deferred operation |
+| `YC_ASYNC_FALLBACK_TO_SYNC`     | true   | Fall back to the synchronous endpoint when the deferred operation times out |
 
 ---
 

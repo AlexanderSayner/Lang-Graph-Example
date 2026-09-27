@@ -64,7 +64,6 @@ public class ToolExecutorServiceImpl implements ToolExecutorService {
 
         } catch (RestClientException e) {
             log.error("HTTP Request failed: {}", e.getMessage());
-            // Try to extract status code if available (e.g., 404, 500)
             if (e instanceof org.springframework.web.client.HttpClientErrorException httpEx) {
                 return HttpRequestOutput.failure("HTTP Error " + httpEx.getStatusCode() + ": " + httpEx.getResponseBodyAsString());
             }

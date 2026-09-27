@@ -29,9 +29,7 @@ public class PostgresGraphViewService {
     private final ObjectMapper objectMapper;
 
     /**
-     * Get complete graph data including nodes and edges with conditional information.
-     * 🔥 OPTIMIZATION: Because the blueprint and coordinates are in the SAME ROW in Postgres,
-     * we no longer need Mono.zip to fetch them from two different places!
+     * Get complete graph data including nodes and edges with conditional information
      */
     public @NonNull GraphViewData getGraphViewData(String graphId) {
         return repository.findById(graphId)
