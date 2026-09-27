@@ -62,8 +62,8 @@ dependencies {
     compileOnly("org.jetbrains:annotations:26.1.0")
 
     // Persistance drivers
-    runtimeOnly 'org.postgresql:postgresql'
-    runtimeOnly 'org.flywaydb:flyway-database-postgresql'
+    implementation 'org.postgresql:postgresql'
+    implementation 'org.flywaydb:flyway-database-postgresql'
 
     // Testing
     testImplementation 'org.springframework.boot:spring-boot-starter-test'

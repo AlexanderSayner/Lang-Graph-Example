@@ -1,55 +1,82 @@
 # Spring Boot + LangGraph Integration
 
-A best-practices example of integrating Spring Boot with LangGraph using gRPC for inter-service communication.
+A best-practices example of integrating Spring Boot with LangGraph using gRPC for inter-service communication, featuring a visual graph editor web UI, a copilot assistant, and persistent graph state.
 
 ## Architecture
 
 This project demonstrates a microservices architecture where:
 
-1. **Spring Boot Application** (Java 25, Gradle)
-   - Provides a GraphQL API for clients
-   - Handles graph building and execution requests
-   - Communicates with the Python service via gRPC
+1. **Spring Boot Application** (`spring-langgraph-app/`, Java 21, Spring Boot 4, Gradle)
+   - Provides a GraphQL API (queries, mutations, subscriptions) for clients
+   - Handles graph building, execution and state management requests
+   - Persists graph definitions and users in PostgreSQL (Flyway migrations), sessions and caches in Redis
+   - Acts as a gRPC **client** of the Python service (graph operations) and as a gRPC **server** on port `9090`, so the Python service can call Java-side tools back
+   - Implements user accounts (register/login, thread claiming) and an optional Yandex Cloud billing integration
 
-2. **Python LangGraph Service**
-   - Implements LangGraph workflows
-   - Exposes gRPC endpoints for graph operations
-   - Manages graph state and execution
+2. **Python LangGraph Service** (`python-langgraph-service/`, Python 3.10+)
+   - Implements LangGraph workflows with node handlers and a copilot agent
+   - Exposes gRPC endpoints for graph operations on port `50051`
+   - Uses PostgreSQL checkpoints for execution state and Redis for cache/invalidation
+
+3. **Graph Viewer Web App** (`graph-viewer-app/`, React 19 + ReactFlow + Vite)
+   - Visual editor for building and running graphs
+   - Chat panel with the copilot assistant and execution state inspection
+   - Proxies `/graphql` to the Spring Boot application
+
+4. **Infrastructure**
+   - **PostgreSQL 15** – graph definitions, checkpoints, users
+   - **Redis** – sessions, caches, IAM token cache
 
 ## Project Structure
 
 ```
-/workspace
-├── spring-langgraph-app/          # Spring Boot application
-│   ├── build.gradle               # Gradle build configuration
-│   ├── settings.gradle
+.
+├── spring-langgraph-app/               # Spring Boot application
+│   ├── build.gradle                    # Gradle build configuration
+│   ├── gradlew                         # Gradle wrapper
 │   └── src/main/
-│       ├── java/com/example/langgraph/
+│       ├── java/org/sandbox/langgraph/
 │       │   ├── LangGraphApplication.java
-│       │   ├── config/            # Configuration classes
-│       │   ├── controller/        # GraphQL controllers
-│       │   ├── service/           # Business logic
-│       │   ├── grpc/              # gRPC client stubs (generated)
-│       │   ├── dto/               # Data transfer objects
-│       │   └── exception/         # Exception handlers
-│       ├── proto/                 # Protocol Buffer definitions
+│       │   ├── config/                 # Configuration (gRPC, security, GraphQL, props)
+│       │   ├── controller/             # GraphQL controllers
+│       │   ├── service/                # Business logic (grpc/, user/, customer/, ui/)
+│       │   ├── core/                   # JPA entities, repositories, graph service
+│       │   ├── dto/                    # Data transfer objects
+│       │   └── exception/              # Exception handlers
+│       ├── proto/langgraph.proto       # Protocol Buffer definitions
 │       └── resources/
-│           ├── application.yml    # Application configuration
-│           └── graphql/           # GraphQL schema
-└── python-langgraph-service/      # Python LangGraph service
-    ├── app/
-    │   └── server.py              # gRPC server implementation
-    ├── proto/                     # Protocol Buffer definitions
-    ├── requirements.txt           # Python dependencies
-    └── generate_proto.sh          # Proto code generation script
+│           ├── application.yml         # Application configuration
+│           ├── graphql/schema.graphqls # GraphQL schema
+│           └── db/migration/           # Flyway migrations
+├── python-langgraph-service/           # Python LangGraph service
+│   ├── app/
+│   │   ├── main.py                     # gRPC server entry point
+│   │   ├── services/                   # gRPC servicer implementation
+│   │   ├── graph_engine/               # Node handlers & graph utilities
+│   │   ├── copilot/                    # Copilot agent
+│   │   ├── proto/langgraph.proto       # Protocol Buffer definitions
+│   │   └── generated/                  # Generated protobuf/gRPC code
+│   ├── scripts/
+│   │   ├── generate_proto.sh           # Proto code generation script
+│   │   └── start_local.sh              # Local startup (venv, deps, proto, run)
+│   ├── requirements.txt                # Python dependencies
+│   └── Dockerfile
+├── graph-viewer-app/                   # React + ReactFlow visual editor
+│   ├── src/                            # app.jsx, builder.jsx, copilot.jsx, components/
+│   ├── vite.config.js                  # Dev server (proxies /graphql to :9191)
+│   └── Dockerfile
+├── scripts/init-db.sql                 # Database initialization
+└── docker-compose.yml                  # Full stack orchestration
 ```
 
 ## Prerequisites
 
-- Java 25
-- Gradle 8.x
+- Java 21
+- Gradle (wrapper is included: `./gradlew`)
 - Python 3.10+
-- protoc (Protocol Buffers compiler)
+- Node.js 18+ (only for the graph viewer)
+- Docker & Docker Compose (recommended for infrastructure services)
+- protoc (Protocol Buffers compiler) – only needed to regenerate gRPC code
 
 ## Deployment
 
@@ -83,10 +110,12 @@ cat ~/.ssh/github_deploy
 ### Saving env secrets
 ```text
 Go to your GitHub Repo -> Settings -> Secrets and variables -> Actions.
-Add these 3 secrets:
+Required secrets:
     VPS_HOST: Your VPS IP address.
     VPS_USER: deployer
-    VPS_SSH_KEY:
+    VPS_SSH_KEY: Private key created above.
+Optional secrets (Yandex Cloud billing / LLM integration):
+    YC_API_KEY, YC_FOLDER_ID, YC_BILLING_ACCOUNT_ID, YC_SA_KEY_JSON
 ```
 
 ### Uploading files into VPS
@@ -95,46 +124,64 @@ Add these 3 secrets:
 scp docker-compose.yml root@YOUR_VPS_IP:/opt/myapp/ 
 ```
 ```bash
-scp -r ./scripts/ root@80.66.78.40:/opt/myapp
+scp -r ./scripts/ root@YOUR_VPS_IP:/opt/myapp
 ```
 
 ## Getting Started
 
-### Run Redis server
-```shell
+### Option A: Run the full stack with Docker Compose
+
+```bash
+docker compose up -d --build
+```
+
+This starts all services:
+
+| Service | URL / Port |
+|---|---|
+| Graph Viewer UI | http://localhost:8080 |
+| Spring Boot GraphQL | http://localhost:9191/graphql |
+| Spring Boot GraphiQL | http://localhost:9191/graphiql |
+| Spring Boot gRPC server (tool execution) | localhost:9090 |
+| Python LangGraph gRPC | localhost:50051 |
+| PostgreSQL | localhost:7432 |
+| Redis | localhost:6879 |
+
+Optional environment variables consumed by `docker-compose.yml`: `OPENAI_API_KEY`, `YC_API_KEY`, `YC_FOLDER_ID`, `YC_BILLING_ACCOUNT_ID`, `YC_SA_KEY_JSON_B64`.
+
+### Option B: Run services locally for development
+
+#### 1. Start the infrastructure (PostgreSQL + Redis)
+
+```bash
+# PostgreSQL on 7432 (matches the Python service default)
+docker compose up -d postgres
+
+# Redis on 6380 (matches the default ports of both services)
 docker run -d --name redis-stack -p 6380:6379 redis/redis-stack-server:latest
 ```
 
-### 1. Start the Python LangGraph Service
+#### 2. Start the Python LangGraph Service
 
 ```bash
-cd /workspace/python-langgraph-service
+cd python-langgraph-service
 
-# Install dependencies
-pip install -r requirements.txt
-
-# Generate gRPC code from proto files
-chmod +x generate_proto.sh
-./generate_proto.sh
-
-# Start the gRPC server
-python -m app.server
+# Creates a venv, installs dependencies, generates gRPC code and starts the server
+./scripts/start_local.sh
 ```
 
-The Python service will start on `localhost:50051`.
+The Python service starts on `localhost:50051`. Its defaults point PostgreSQL to `localhost:7432` and Redis to `localhost:6380` (see `app/config.py`, overridable via a `.env` file or environment variables).
 
-#### Build python service docker image
-```shell
-docker build -t langgraph-gateway:snapshot .
-```
-```shell
-docker run -d --name langgraph-container-snapshot -p 50051:50051 langgraph-gateway:snapshot
-```
-
-### 2. Build and Run the Spring Boot Application
+#### 3. Build and Run the Spring Boot Application
 
 ```bash
-cd /workspace/spring-langgraph-app
+cd spring-langgraph-app
+
+# Point the application to the local infrastructure
+export SPRING_JDBC_URL=jdbc:postgresql://localhost:7432/langgraph_db
+export POSTGRES_FLYWAY_URL=jdbc:postgresql://localhost:7432/langgraph_db
+export SPRING_JDBC_USERNAME=langgraph
+export SPRING_JDBC_PASSWORD=langgraph_password
 
 # Build the application
 ./gradlew build
@@ -143,11 +190,31 @@ cd /workspace/spring-langgraph-app
 ./gradlew bootRun
 ```
 
-The Spring Boot application will start on `http://localhost:8080`.
+The Spring Boot application starts on `http://localhost:9191` (GraphiQL: `http://localhost:9191/graphiql`). Flyway applies the database migrations automatically on startup.
+
+> Note: the Yandex Cloud integration is optional. If `YC_SA_KEY_JSON` is not set, the application still starts and logs a warning; only Yandex billing queries will fail.
+
+#### 4. Start the Graph Viewer (optional)
+
+```bash
+cd graph-viewer-app
+npm install
+npm run dev
+```
+
+The UI is available at `http://localhost:5173` and proxies `/graphql` to the Spring Boot application.
+
+#### Docker images for the Python service
+
+```bash
+cd python-langgraph-service
+docker build -t langgraph-gateway:snapshot .
+docker run -d --name langgraph-container-snapshot -p 50051:50051 --env-file .env langgraph-gateway:snapshot
+```
 
 ## GraphQL API
 
-The application exposes a GraphQL endpoint at `http://localhost:8080/graphql`.
+The application exposes a GraphQL endpoint at `http://localhost:9191/graphql` (GraphiQL IDE at `http://localhost:9191/graphiql`, subscriptions over WebSocket at `ws://localhost:9191/graphql/ws`).
 
 ### Example Queries
 
@@ -187,7 +254,7 @@ query {
 
 ```graphql
 mutation {
-  buildGraph(
+  buildGraph(input: {
     graphId: "my-graph"
     graphName: "My First Graph"
     nodes: [
@@ -206,7 +273,7 @@ mutation {
     edges: [
       { source: "start", target: "end" }
     ]
-  ) {
+  }) {
     success
     graphId
     message
@@ -218,11 +285,11 @@ mutation {
 
 ```graphql
 mutation {
-  executeGraph(
+  executeGraph(input: {
     graphId: "my-graph"
     input: "Hello, how can you help me?"
     context: { user_id: "123" }
-  ) {
+  }) {
     success
     output
     state
@@ -235,11 +302,11 @@ mutation {
 
 ```graphql
 mutation {
-  updateGraphState(
+  updateGraphState(input: {
     graphId: "my-graph"
     threadId: "thread-1"
     stateUpdates: { last_message: "User said hello" }
-  ) {
+  }) {
     success
     updatedState
     message
@@ -253,11 +320,11 @@ mutation {
 
 ```graphql
 subscription {
-  executeGraphStream(
+  executeGraphStream(input: {
     graphId: "my-graph"
     input: "Process this request"
     context: { priority: "high" }
-  ) {
+  }) {
     eventType
     nodeId
     output
@@ -268,29 +335,65 @@ subscription {
 }
 ```
 
+### Example Auth & Copilot
+
+#### Register / Login
+
+```graphql
+mutation {
+  login(username: "alice", password: "secret") {
+    success
+    message
+    username
+  }
+}
+```
+
+#### Ask the Copilot
+
+```graphql
+mutation {
+  askCopilot(
+    graphId: "my-graph"
+    threadId: "thread-1"
+    message: "Add a node that summarizes the conversation"
+  ) {
+    success
+    aiResponse
+    totalTokens
+    errorMessage
+  }
+}
+```
+
 ## Key Features
 
-### 1. gRPC Communication
-- Efficient binary protocol for service-to-service communication
-- Strong typing with Protocol Buffers
-- Streaming support for real-time graph execution events
+### 1. Bidirectional gRPC Communication
+- Java → Python: build/execute graphs, read and update state
+- Python → Java: tool execution callbacks (`ToolGrpcService` on port `9090`)
+- Efficient binary protocol with strong typing via Protocol Buffers
+- Server-side streaming for real-time graph execution events
 
 ### 2. GraphQL API
-- Flexible query language for clients
-- Real-time updates via subscriptions
-- Type-safe schema
+- Queries, mutations and WebSocket subscriptions
+- GraphiQL IDE out of the box
+- Session-based authentication (register/login/logout, thread claiming)
 
 ### 3. LangGraph Integration
-- Dynamic graph building
-- State management
-- Streaming execution results
+- Dynamic graph building from node/edge definitions
+- Node handlers, conditional edges and copilot agent (OpenAI / YandexGPT)
+- Checkpointed execution state persisted in PostgreSQL
+- Execution history with state diffs and rewind
 
-### 4. Best Practices
+### 4. Visual Graph Editor
+- React + ReactFlow UI for building, running and inspecting graphs
+- Copilot chat panel and execution state modal
+
+### 5. Best Practices
 - Clean architecture with separation of concerns
-- Reactive programming with Project Reactor
-- Proper error handling
-- Configuration externalization
-- Logging and observability
+- JPA + Flyway for database migrations, Redis for sessions and caches
+- Proper error handling and configuration externalization
+- Logging and observability (Actuator health/metrics endpoints)
 
 ## Development
 
@@ -300,26 +403,26 @@ If you modify the `.proto` files:
 
 **For Java:**
 ```bash
-cd /workspace/spring-langgraph-app
+cd spring-langgraph-app
 ./gradlew generateProto
 ```
 
 **For Python:**
 ```bash
-cd /workspace/python-langgraph-service
-./generate_proto.sh
+cd python-langgraph-service
+./scripts/generate_proto.sh
 ```
 
 ### Running Tests
 
 ```bash
 # Spring Boot tests
-cd /workspace/spring-langgraph-app
+cd spring-langgraph-app
 ./gradlew test
 
-# Python tests (if added)
-cd /workspace/python-langgraph-service
-pytest
+# Graph viewer build check
+cd graph-viewer-app
+npm run build
 ```
 
 ## Configuration
@@ -328,22 +431,30 @@ pytest
 
 ```yaml
 server:
-  port: 8080
+  port: 9191
 
 spring:
   graphql:
     path: /graphql
-
-langgraph:
-  service:
-    host: localhost
-    port: 50051
+  datasource:
+    url: ${SPRING_JDBC_URL:jdbc:postgresql://localhost:5432/your_database_name}
+    username: ${SPRING_JDBC_USERNAME:langgraph}
+    password: ${SPRING_JDBC_PASSWORD:langgraph_password}
+  grpc:
+    server:
+      port: 9090
+    client:
+      channels:
+        langgraph-service:
+          address: ${LANGGRAPH_SERVICE_ADDRESS:localhost:50051}
 ```
+
+Key environment variables: `SPRING_JDBC_URL`, `POSTGRES_FLYWAY_URL`, `SPRING_JDBC_USERNAME`, `SPRING_JDBC_PASSWORD`, `SPRING_REDIS_HOST`, `SPRING_REDIS_PORT`, `LANGGRAPH_SERVICE_ADDRESS`, `YC_BILLING_ACCOUNT_ID`, `YC_SA_KEY_JSON`.
 
 ### Python Service
 
-The Python service can be configured via environment variables or command-line arguments.
+Configured via environment variables or a `.env` file in `python-langgraph-service/` (see `python-langgraph-service/README.md` for the full list): `SERVER_PORT`, `LOG_LEVEL`, `DATABASE_URL`, `REDIS_URL`, `OPENAI_API_KEY`, `YC_API_KEY`, `YC_FOLDER_ID`, `YC_COMPLETION_MODE`, `TOOL_SERVICE_HOST`, `TOOL_SERVICE_PORT`.
 
 ## License
 
-MIT License
+GNU General Public License v3.0 – see [LICENSE](LICENSE).

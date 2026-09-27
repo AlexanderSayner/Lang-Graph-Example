@@ -36,13 +36,13 @@ def handle_grpc_errors(func: Callable):
             return await func(self, request, context)
         except ValueError as e:
             logger.warning(f"Validation error: {e}")
-            context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
         except KeyError as e:
             logger.warning(f"Resource not found: {e}")
-            context.abort(grpc.StatusCode.NOT_FOUND, str(e))
+            await context.abort(grpc.StatusCode.NOT_FOUND, str(e))
         except Exception as e:
             logger.error(f"Internal error in {func.__name__}: {e}", exc_info=True)
-            context.abort(grpc.StatusCode.INTERNAL, f"Internal server error: {e}")
+            await context.abort(grpc.StatusCode.INTERNAL, f"Internal server error: {e}")
 
     return wrapper
 
@@ -77,7 +77,7 @@ def _normalize_graph_definition(raw_graph_dict: Dict[str, Any]) -> Dict[str, Any
                 "node_id": n.get("nodeId") or n.get("node_id", ""),
                 "node_type": n.get("nodeType") or n.get("node_type", ""),
                 "handler_name": n.get("handlerName") or n.get("handler_name", ""),
-                "metadata": n.get("metadata", {})
+                "metadata": n.get("metadata") or {}
             }
             for n in raw_graph_dict.get("nodes", [])
         ],
@@ -89,7 +89,7 @@ def _normalize_graph_definition(raw_graph_dict: Dict[str, Any]) -> Dict[str, Any
             }
             for e in raw_graph_dict.get("edges", [])
         ],
-        "config": raw_graph_dict.get("config", {})
+        "config": raw_graph_dict.get("config") or {}
     }
 
 
@@ -290,16 +290,18 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         """Streaming RPC: yields ExecuteGraphResponse messages as the graph runs."""
         graph_id = request.graph_id
         if not graph_id:
-            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "graph_id is required")
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "graph_id is required")
             return  # Unreachable, but satisfies type checkers
 
         try:
             compiled_graph = await self._load_and_compile_graph(graph_id)
-        except KeyError:
-            context.abort(grpc.StatusCode.NOT_FOUND, f"Graph {graph_id} not found")
+        except KeyError as e:
+            await context.abort(grpc.StatusCode.NOT_FOUND, str(e))
+            return
         except Exception as e:
             logger.error(f"Failed to load graph {graph_id}: {e}", exc_info=True)
-            context.abort(grpc.StatusCode.INTERNAL, f"Failed to load graph: {e}")
+            await context.abort(grpc.StatusCode.INTERNAL, f"Failed to load graph: {e}")
+            return
 
         config: RunnableConfig = {
             "configurable": {
