@@ -29,6 +29,18 @@ class Settings(BaseSettings):
     YC_FOLDER_ID: str = ""
     YC_MODEL_NAME: str = "yandexgpt"  # or "yandexgpt-lite"
 
+    # Yandex Cloud LLM completion mode:
+    #   "sync"  – synchronous /completion endpoint (default, predictable latency for chat)
+    #   "async" – deferred /completionAsync endpoint (~50% cheaper, but queued/batch: the
+    #             operation can stay pending for an arbitrary amount of time)
+    YC_COMPLETION_MODE: str = "sync"
+    YC_TIMEOUT_SECONDS: float = 60.0
+
+    # Bounded polling for the deferred (async) mode so a stuck operation never hangs the graph
+    YC_ASYNC_POLL_INTERVAL_SECONDS: float = 1.0
+    YC_ASYNC_MAX_WAIT_SECONDS: float = 90.0
+    YC_ASYNC_FALLBACK_TO_SYNC: bool = True
+
     # Environment
     model_config = SettingsConfigDict(
         # Explicitly point to the .env file location
