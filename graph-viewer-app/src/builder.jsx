@@ -8,6 +8,7 @@ import ReactFlow, {
 // CSS imports (Order matters! ReactFlow first, custom second)
 import 'reactflow/dist/style.css';
 import './styles-builder.css';
+import { Toast, useToast } from './components/Toast';
 
 // Shared constants from your central file
 import { fetchGraphQL, LIST_QUERY, VIEW_QUERY, SAVE_MUTATION } from './constants';
@@ -46,9 +47,23 @@ const DesignNode = ({ data, selected }) => {
 };
 const nodeTypes = { designNode: DesignNode };
 
+// Number of rows for the auto-growing system-prompt textarea: it is derived from the text itself
+// (roughly PROMPT_CHARS_PER_LINE characters per visual line, plus the explicit line breaks),
+// so the whole prompt is readable at once and the field does not need to be scrolled.
+const PROMPT_CHARS_PER_LINE = 110;
+const PROMPT_MIN_ROWS = 4;
+const PROMPT_MAX_ROWS = 40;
+const promptRows = (text) => {
+    const visualLines = String(text || '')
+        .split('\n')
+        .reduce((total, line) => total + Math.max(1, Math.ceil(line.length / PROMPT_CHARS_PER_LINE)), 0);
+    return Math.min(PROMPT_MAX_ROWS, Math.max(PROMPT_MIN_ROWS, visualLines));
+};
+
 // --- Builder ---
 function Builder() {
     const [nodes, setNodes, onNodesChange] = useNodesState([]);
+    const { toast, showToast, dismissToast } = useToast();
     const [edges, setEdges, onEdgesChange] = useEdgesState([]);
     const [loading, setLoading] = useState(false);
     const [testResult, setTestResult] = useState(null);
@@ -163,7 +178,7 @@ function Builder() {
     };
 
     const handleSave = async () => {
-        if (!graphName.trim()) { alert("Please enter a graph name."); return; }
+        if (!graphName.trim()) { showToast("Please enter a graph name.", "error"); return; }
         setLoading(true);
         try {
             if (!nodes.find(n => n.data?.type === 'START')) throw new Error("Graph needs a START node");
@@ -181,9 +196,9 @@ function Builder() {
             await fetchGraphQL(BUILD_MUTATION, { input: { graphId: graphId, graphName: graphName, nodes: payloadNodes, edges: payloadEdges } });
             await fetchGraphQL(SAVE_MUTATION, { graphId: graphId, positions: nodes.map(n => ({ nodeId: n.id, x: n.position.x, y: n.position.y })) });
 
-            alert("Saved Successfully!");
+            showToast("Saved successfully!", "success");
             window.location.href = 'index.html';
-        } catch (err) { alert("Error: " + err.message); } finally { setLoading(false); }
+        } catch (err) { showToast("Error: " + err.message, "error", 6000); } finally { setLoading(false); }
     };
 
     // --- Panel Updates ---
@@ -197,7 +212,7 @@ function Builder() {
             const oldId = selectedId;
             const newId = value;
 
-            if (nodes.find(n => n.id === newId)) { alert("ID already exists"); return; }
+            if (nodes.find(n => n.id === newId)) { showToast("ID already exists", "error"); return; }
 
             // Update Nodes
             setNodes(nds => nds.map(n => n.id === oldId ? {...n, id: newId, data: {...n.data, label: newId}} : n));
@@ -234,7 +249,7 @@ function Builder() {
         try {
             JSON.parse(selectedNode.data.headers || "{}");
         } catch (e) {
-            alert("Headers must be valid JSON!");
+            showToast("Headers must be valid JSON!", "error");
             return;
         }
 
@@ -390,7 +405,8 @@ function Builder() {
                                                 <button className="btn-sm" onClick={() => { const v = prompt("Variable name:"); if(v) insertVariable(v); }}>+ Custom</button>
                                             </div>
                                             <textarea
-                                                className="form-input form-textarea"
+                                                className="form-input form-textarea form-textarea-auto"
+                                                rows={promptRows(selectedElement.data.prompt)}
                                                 value={selectedElement.data.prompt || ""}
                                                 onChange={(e) => updateNode('prompt', e.target.value)}
                                                 placeholder="Enter system prompt..."
@@ -407,6 +423,7 @@ function Builder() {
                     </div>
                 )}
             </div>
+            <Toast toast={toast} onDismiss={dismissToast} />
         </div>
     );
 }

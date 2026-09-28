@@ -1,0 +1,30 @@
+/* Lightweight notification, replaces the blocking alert() popups. Click to dismiss. */
+.toast {
+    position: fixed;
+    top: 18px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1000;
+    max-width: 70vw;
+    padding: 9px 16px;
+    border-radius: 6px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+    font-size: 13px;
+    line-height: 1.35;
+    color: #fff;
+    background: #37474f;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+    animation: toast-in 0.18s ease-out;
+}
+
+.toast-success { background: #2e7d32; }
+.toast-error { background: #c62828; }
+.toast-info { background: #1565c0; }
+
+.toast:hover { filter: brightness(1.08); }
+
+@keyframes toast-in {
+    from { opacity: 0; transform: translate(-50%, -10px); }
+    to { opacity: 1; transform: translate(-50%, 0); }
+}

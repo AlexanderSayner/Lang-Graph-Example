@@ -17,13 +17,28 @@ import CopilotTab from './copilot';
 import Sidebar from './components/Sidebar';
 import ChatPanel from './components/ChatPanel';
 import StateModal from './components/StateModal';
+import { Toast, useToast } from './components/Toast';
 
 
 // --- Main App ---
 function App() {
     const [graphs, setGraphs] = useState([]);
     const [selected, setSelected] = useState(null);
+
+    // --- Graph rendering state ---
+    // status: 'idle' | 'loading' | 'ready' | 'error'.
+    // `seq` is bumped on every load and becomes part of the ReactFlow key, so every graph open
+    // mounts a fresh canvas whose fitView is calculated against the nodes it really shows.
+    // fitMode: 'all' shows the whole graph when it is opened, 'readable' keeps at least ~45% zoom
+    // after an auto layout, because a long process graph can be thousands of pixels wide and a
+    // full overview would be unreadable.
+    const [renderState, setRenderState] = useState({ graphId: null, seq: 0, status: 'idle', error: null, fitMode: 'all' });
+    const loadSeqRef = useRef(0);            // guards against out-of-order GraphQL answers
+    const viewportsRef = useRef(new Map());  // graphId -> { x, y, zoom } of the last view the user left
     const [collapsed, setCollapsed] = useState(false);
+    const [aligning, setAligning] = useState(false); // "Auto Layout" request in flight
+    const [layoutDir, setLayoutDir] = useState('TB'); // 'TB' top->bottom, 'LR' left->right
+    const { toast, showToast, dismissToast } = useToast();
 
     const [nodes, setNodes] = useState([]);
     const onNodesChange = useCallback(
@@ -159,12 +174,6 @@ function App() {
         if (activeTab === 'history' && selected && threadId) loadHistory();
     }, [activeTab, selected, threadId, loadHistory]);
 
-    useEffect(() => {
-        if (selected) {
-            loadGraph(selected);
-        }
-    }, [selected]);
-
     const handleUserLoggedIn = async () => {
         const unsynced = getUnsyncedThreads();
         if (unsynced.length === 0) {
@@ -192,7 +201,12 @@ function App() {
         }
     };
 
-    const loadGraph = (id) => {
+    // Loads a graph into the canvas. The sequence number makes sure an older GraphQL answer can
+    // never overwrite a newer one, and the canvas is cleared up front - otherwise the remounting
+    // ReactFlow would still hold the previous graph and fit the viewport to the wrong nodes.
+    const loadGraph = useCallback((id) => {
+        if (!id) return;
+        const seq = ++loadSeqRef.current;
 
         setGraphStatus('idle');
 
@@ -200,11 +214,16 @@ function App() {
         setRewindOriginNodeId(null);
         setSelectedNodeId(null);
         setSelectedEdge(null);
+        setNodes([]);
+        setEdges([]);
+        setRenderState({ graphId: id, seq, status: 'loading', error: null, fitMode: 'all' });
 
         fetchGraphQL(VIEW_QUERY, { graphId: id })
             .then(d => {
+                if (seq !== loadSeqRef.current) return; // a newer graph was opened in the meantime
                 if (!d || !d.getGraphView) {
                     console.error("❌ Failed to load graph view. Backend returned:", d);
+                    setRenderState({ graphId: id, seq, status: 'error', error: 'Backend returned no graph view', fitMode: 'all' });
                     return;
                 }
 
@@ -223,6 +242,13 @@ function App() {
                     const label = n.metadata?.label;
                     const toolUrl = n.metadata?.url || "";
                     const subgraphName = graphs.find(g => g.graphId === subgraphId)?.graphName || "Unknown Graph";
+
+                    // Raw text of the node body - used by estimateNodeSize() for the automatic layout.
+                    const bodyText = n.nodeType === 'GRAPH'
+                        ? `Subgraph: ${subgraphName}`
+                        : n.nodeType === 'TOOL'
+                            ? `Tool: ${n.metadata?.method || 'GET'} ${toolUrl}`
+                            : prompt;
 
                     return {
                         id: n.nodeId,
@@ -243,7 +269,7 @@ function App() {
                                         ) : n.nodeType === 'TOOL' ? (
                                             <div>
                                                 <strong>Tool:</strong> {n.metadata?.method || 'GET'}<br/>
-                                                <span style={{fontSize: '9px', color: '#666'}}>{toolUrl}</span>
+                                                <span className="node-tool-url">{toolUrl}</span>
                                             </div>
                                         ) : (
                                             <div className="node-prompt">{prompt}</div>
@@ -251,7 +277,10 @@ function App() {
                                     </div>
                                 </div>
                             ),
-                            nodeType: n.nodeType
+                            nodeType: n.nodeType,
+                            titleText: label || n.nodeId,
+                            bodyText,
+                            promptText: prompt
                         },
                         position: hasPos ? n.position : { x: 0, y: 0 }
                     };
@@ -269,11 +298,30 @@ function App() {
                 console.log(`✅ Loaded ${rN.length} nodes, ${rE.length} edges. Needs layout:`, needsLayout);
                 setNodes(needsLayout ? layoutGraph(rN, rE) : rN);
                 setEdges(rE);
+                setRenderState({ graphId: id, seq, status: 'ready', error: null, fitMode: 'all' });
             })
             .catch(err => {
+                if (seq !== loadSeqRef.current) return;
                 console.error("❌ Network or GraphQL error loading graph:", err);
+                setRenderState({ graphId: id, seq, status: 'error', error: err.message, fitMode: 'all' });
             });
+    }, [graphs]);
+
+    // The sidebar selection and the canvas are always in sync: clicking a graph always (re)loads
+    // it, which is what makes returning from a subgraph to its parent work.
+    const handleSelectGraph = (id) => {
+        setSelected(id);
+        loadGraph(id);
     };
+
+    // The canvas is mounted only once its nodes are ready, so fitView measures the graph that is
+    // really displayed. A remembered viewport is restored instead of fitting again.
+    const canvasGraphId = renderState.status === 'ready' ? renderState.graphId : null;
+    const canvasKey = canvasGraphId ? `${canvasGraphId}#${renderState.seq}` : null;
+    const storedViewport = canvasGraphId ? viewportsRef.current.get(canvasGraphId) : null;
+    const fitViewOptions = renderState.fitMode === 'readable'
+        ? { padding: 0.2, duration: 250, maxZoom: 1, minZoom: 0.45 }
+        : { padding: 0.2, duration: 250, maxZoom: 1 };
 
     // Re-apply node and edge styles when selection or execution state changes
     useEffect(() => {
@@ -428,10 +476,40 @@ function App() {
     };
 
     const handleSaveLayout = async () => {
-        if(!selected) return;
+        if (!renderState.graphId) return;
         const positions = nodes.map(n => ({ nodeId: n.id, x: n.position.x, y: n.position.y }));
-        await fetchGraphQL(SAVE_MUTATION, { graphId: selected, positions });
-        alert("Layout Saved!");
+        await fetchGraphQL(SAVE_MUTATION, { graphId: renderState.graphId, positions });
+        // The layout changed, so the remembered viewport is outdated - refit on the next open.
+        viewportsRef.current.delete(renderState.graphId);
+        showToast("Layout saved", "success");
+    };
+
+    // Re-arranges the nodes of the graph on the canvas with the size-aware dagre layout and stores
+    // the result. The node sizes are estimated from their text, so tall nodes no longer overlap -
+    // see estimateNodeSize() in constants.js. The viewport is refitted afterwards because the
+    // whole arrangement changes.
+    const handleAutoLayout = async () => {
+        if (!renderState.graphId || !nodes.length || aligning) return;
+        setAligning(true);
+        try {
+            const aligned = layoutGraph(nodes, edges, layoutDir);
+            setNodes(aligned);
+            viewportsRef.current.delete(renderState.graphId);
+            // Bumping seq remounts the canvas, which then animates a fit of the new arrangement.
+            setRenderState(prev => ({ ...prev, seq: prev.seq + 1, fitMode: 'readable' }));
+
+            const positions = aligned.map(n => ({ nodeId: n.id, x: n.position.x, y: n.position.y }));
+            await fetchGraphQL(SAVE_MUTATION, { graphId: renderState.graphId, positions });
+            showToast(
+                layoutDir === 'LR' ? "Aligned left → right and saved" : "Aligned top → bottom and saved",
+                "success"
+            );
+        } catch (err) {
+            console.error("❌ Auto layout failed:", err);
+            showToast("Auto layout failed: " + err.message, "error", 6000);
+        } finally {
+            setAligning(false);
+        }
     };
 
     const handleDelete = async (e, id) => {
@@ -499,10 +577,10 @@ function App() {
                 await loadHistory();
 
             } else {
-                alert("Rewind failed: " + data.rewindGraph.message);
+                showToast("Rewind failed: " + data.rewindGraph.message, "error", 6000);
             }
         } catch (e) {
-            alert("Error: " + e.message);
+            showToast("Error: " + e.message, "error", 6000);
         }
     };
 
@@ -543,6 +621,9 @@ function App() {
 
     return (
         <React.Fragment>
+            {/* Notifications (replaces the blocking alert() popups) */}
+            <Toast toast={toast} onDismiss={dismissToast} />
+
             {/* Modal */}
             <StateModal
                 modalData={modalData} modalViewMode={modalViewMode}
@@ -554,7 +635,7 @@ function App() {
             {/* Sidebar */}
             <Sidebar
                 graphs={graphs} selected={selected} collapsed={collapsed}
-                setCollapsed={setCollapsed} onSelectGraph={setSelected}
+                setCollapsed={setCollapsed} onSelectGraph={handleSelectGraph}
                 copyGraphId={copyGraphId} copiedGraph={copiedGraph} handleDelete={handleDelete}
                 realBalance={realBalance}
                 onUserLoggedIn={handleUserLoggedIn}
@@ -563,34 +644,72 @@ function App() {
             {/* Main Content */}
             <div className="main-area">
                 <div className="canvas-container">
-                    <button className="save-layout-btn" onClick={handleSaveLayout}>Save Layout</button>
-                    <ReactFlow
-                        key={selected}
-                        nodes={nodes}
-                        edges={edges}
-                        onNodesChange={onNodesChange}
-                        onEdgesChange={onEdgesChange}
-                        fitView
-                        onNodeClick={(event, node) => {
-                            setSelectedNodeId(node.id);
-                            setSelectedEdge(null);
-                        }}
-                        onEdgeClick={(event, edge) => {
-                            setSelectedEdge({
-                                source: edge.source,
-                                target: edge.target,
-                                condition: edge.label || "None (unconditional)"
-                            });
-                            setSelectedNodeId(null);
-                        }}
-                        onPaneClick={() => {
-                            setSelectedNodeId(null);
-                            setSelectedEdge(null);
-                        }}
-                    >
-                        <Background />
-                        <Controls />
-                    </ReactFlow>
+                    <div className="canvas-actions">
+                        <button className="save-layout-btn" onClick={handleSaveLayout} disabled={!canvasKey}>Save Layout</button>
+                        <div className="layout-dir" role="group" aria-label="Auto layout direction">
+                            <button
+                                className={layoutDir === 'TB' ? 'active' : ''}
+                                onClick={() => setLayoutDir('TB')}
+                                title="Auto layout: top to bottom"
+                            >↓</button>
+                            <button
+                                className={layoutDir === 'LR' ? 'active' : ''}
+                                onClick={() => setLayoutDir('LR')}
+                                title="Auto layout: left to right (horizontal)"
+                            >→</button>
+                        </div>
+                        <button className="auto-layout-btn" onClick={handleAutoLayout} disabled={!canvasKey || aligning}>
+                            {aligning ? 'Aligning…' : 'Auto Layout'}
+                        </button>
+                    </div>
+                    {canvasKey ? (
+                        <ReactFlow
+                            key={canvasKey}
+                            nodes={nodes}
+                            edges={edges}
+                            onNodesChange={onNodesChange}
+                            onEdgesChange={onEdgesChange}
+                            defaultViewport={storedViewport || undefined}
+                            fitView={!storedViewport}
+                            fitViewOptions={fitViewOptions}
+                            minZoom={0.05}
+                            maxZoom={2}
+                            onMoveEnd={(event, viewport) => {
+                                if (renderState.graphId) viewportsRef.current.set(renderState.graphId, viewport);
+                            }}
+                            onNodeClick={(event, node) => {
+                                setSelectedNodeId(node.id);
+                                setSelectedEdge(null);
+                            }}
+                            onEdgeClick={(event, edge) => {
+                                setSelectedEdge({
+                                    source: edge.source,
+                                    target: edge.target,
+                                    condition: edge.label || "None (unconditional)"
+                                });
+                                setSelectedNodeId(null);
+                            }}
+                            onPaneClick={() => {
+                                setSelectedNodeId(null);
+                                setSelectedEdge(null);
+                            }}
+                        >
+                            <Background />
+                            <Controls />
+                        </ReactFlow>
+                    ) : (
+                        <div className={`canvas-message${renderState.status === 'error' ? ' error' : ''}`}>
+                            {renderState.status === 'error' ? (
+                                <>
+                                    <strong>Failed to load the graph.</strong>
+                                    <span className="canvas-message-detail">{renderState.error}</span>
+                                    <button onClick={() => loadGraph(renderState.graphId)}>Retry</button>
+                                </>
+                            ) : (
+                                <span>Loading graph…</span>
+                            )}
+                        </div>
+                    )}
                 </div>
 
                 {/* Chat Area */}

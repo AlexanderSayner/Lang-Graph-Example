@@ -145,6 +145,7 @@ async for event in stub.ExecuteGraph(exec_request):
 | `YC_ASYNC_MAX_WAIT_SECONDS`     | 90     | Maximum time to wait for a deferred operation before giving up |
 | `YC_ASYNC_POLL_INTERVAL_SECONDS`| 1      | Poll interval while waiting for a deferred operation |
 | `YC_ASYNC_FALLBACK_TO_SYNC`     | true   | Fall back to the synchronous endpoint when the deferred operation times out |
+| `LLM_MAX_ATTEMPTS`              | 2      | Attempts per graph node when the LLM answer is unusable (refusal / empty text) |
 
 ---
 
