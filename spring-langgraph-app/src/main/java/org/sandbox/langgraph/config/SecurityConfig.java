@@ -12,6 +12,8 @@ import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
+import static org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher.pathPattern;
+
 @Configuration
 @EnableWebSecurity
 public class SecurityConfig {
@@ -40,8 +42,17 @@ public class SecurityConfig {
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .csrf(AbstractHttpConfigurer::disable)
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/graphql").permitAll()
-                        .requestMatchers("/actuator/**").permitAll()
+                        // GraphQL WebSocket handshake is 403 unless matched by pathPattern:
+                        // requestMatchers(String) builds MvcRequestMatchers that only match paths
+                        // Spring MVC can resolve to a handler. The endpoint at
+                        // spring.graphql.websocket.path (/graphql/ws) is served by a
+                        // WebSocketHandlerMapping (HttpRequestHandler, not an MVC controller), so no
+                        // string matcher ever matches it and it falls through to
+                        // anyRequest().authenticated() -> 403 before the upgrade happens.
+                        // PathPatternRequestMatcher matches the raw path and is MVC-independent.
+                        .requestMatchers(pathPattern("/graphql"), pathPattern("/graphql/ws")).permitAll()
+                        .requestMatchers(pathPattern("/ws")).permitAll()
+                        .requestMatchers(pathPattern("/actuator/**")).permitAll()
                         .anyRequest().authenticated()
                 )
                 .build();
