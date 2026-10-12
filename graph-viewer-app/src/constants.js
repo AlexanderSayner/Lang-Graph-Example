@@ -11,7 +11,12 @@ import dagre from 'dagre';
 // when the UI itself is served over HTTPS (the browser would block it as mixed content; there the
 // /graphql proxy of the web server is the way to go).
 const SAME_ORIGIN_GRAPHQL_URL = `${window.location.origin}/graphql`;
-const BACKEND_GRAPHQL_URL = `http://${window.location.hostname}:9191/graphql`;
+
+// Prevent Mixed Content: only use the direct port fallback if we are NOT on HTTPS
+const BACKEND_GRAPHQL_URL = window.location.protocol === 'https:'
+    ? `https://${window.location.hostname}:9191/graphql`
+    : `http://${window.location.hostname}:9191/graphql`;
+
 const API_URL_CANDIDATES = [SAME_ORIGIN_GRAPHQL_URL, BACKEND_GRAPHQL_URL];
 
 let resolvedApiUrl = null; // endpoint that answered JSON during this session
