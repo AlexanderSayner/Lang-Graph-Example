@@ -33,10 +33,14 @@ html, body, #root { height: 100%; width: 100%; margin: 0; overflow: hidden; font
 .form-label { font-size: 11px; color: #666; text-transform: uppercase; margin-bottom: 4px; display: block; }
 .form-input { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; box-sizing: border-box; }
 .form-textarea { height: 60px; resize: none; }
+/* Auto-growing prompt textarea: its height follows the number of rows passed from
+   builder.jsx, so a long system prompt is fully visible instead of sitting behind a scroll. */
+.form-textarea-auto { height: auto; min-height: 60px; resize: vertical; overflow-y: auto; }
 .form-select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; background: white; }
 
 /* Nodes */
-.react-flow__node { padding: 0; border-radius: 6px; width: 160px; font-size: 12px; text-align: center; border: 2px solid #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+/* Auto-sized design nodes: the width follows the node label instead of a fixed 160px. */
+.react-flow__node { padding: 0; border-radius: 6px; width: max-content; min-width: 160px; max-width: 320px; font-size: 12px; text-align: center; border: 2px solid #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
 .node-start { background: #e8f5e9; border-color: #4caf50; }
 .node-end { background: #ffebee; border-color: #f44336; }
 .node-action { background: #e3f2fd; border-color: #2196f3; }
@@ -44,7 +48,7 @@ html, body, #root { height: 100%; width: 100%; margin: 0; overflow: hidden; font
 .node-graph { background: #f3e5f5; border-color: #9c27b0; border-style: dashed; }
 .node-tool { background: #e0f2f1; border-color: #009688; }
 
-.node-label { padding: 10px; font-weight: bold; }
+.node-label { padding: 10px; font-weight: bold; overflow-wrap: anywhere; }
 .node-type { font-size: 10px; opacity: 0.8; font-weight: normal; display: block; margin-top: 2px; }
 
 /* Tool Test Button */

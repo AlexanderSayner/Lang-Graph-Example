@@ -249,7 +249,10 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
 .canvas-container { flex-grow: 1; position: relative; background: #fff; border-bottom: 1px solid #ddd; }
 
 /* --- Nodes --- */
-.react-flow__node { font-size: 12px; border-radius: 8px; padding: 0; width: 220px; text-align: left; border: 1px solid rgba(0,0,0,0.1); box-shadow: 0 2px 6px rgba(0,0,0,0.1); background: #fff; transition: box-shadow 0.2s, border-color 0.2s; }
+/* Auto-sized nodes: width and height follow the content, so the whole node text is printed
+   at once without an inner scrollbar. `max-content` keeps short nodes narrow, while the
+   max-width caps overly wide ones and lets long prompts wrap inside. */
+.react-flow__node { font-size: 12px; border-radius: 8px; padding: 0; width: max-content; min-width: 200px; max-width: 460px; text-align: left; border: 1px solid rgba(0,0,0,0.1); box-shadow: 0 2px 6px rgba(0,0,0,0.1); background: #fff; transition: box-shadow 0.2s, border-color 0.2s; }
 
 .react-flow__node.node-start { background: #e8f5e9; border-color: #c8e6c9; }
 .react-flow__node.node-end { background: #ffebee; border-color: #ffcdd2; }
@@ -290,7 +293,8 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
 .react-flow__edge.edge-selected .react-flow__edge-textbg { fill: #2196f3 !important; }
 .react-flow__edge.edge-selected .react-flow__edge-text { fill: white !important; font-weight: bold; }
 
-.node-header { padding: 8px 12px; border-bottom: 1px solid rgba(0,0,0,0.05); font-weight: bold; font-size: 12px; display: flex; justify-content: space-between; align-items: center; }
+.node-header { padding: 8px 12px; border-bottom: 1px solid rgba(0,0,0,0.05); font-weight: bold; font-size: 12px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.node-header > span:first-child { overflow-wrap: anywhere; }
 .node-start .node-header { color: #2e7d32; }
 .node-end .node-header { color: #c62828; }
 .node-action .node-header { color: #1565c0; }
@@ -300,9 +304,13 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
 
 .node-type-badge { font-size: 9px; background: rgba(255,255,255,0.6); padding: 2px 6px; border-radius: 4px; text-transform: uppercase; font-weight: normal; }
 
-.node-body { padding: 8px 12px; max-height: 80px; overflow-y: auto; background: rgba(255,255,255,0.3); }
+/* The body grows to fit the whole prompt: no max-height and no overflow, nothing is hidden. */
+.node-body { padding: 8px 12px; background: rgba(255,255,255,0.3); overflow-wrap: anywhere; }
 .node-body:empty { display: none; }
-.node-prompt { font-size: 10px; color: #444; line-height: 1.4; }
+/* pre-wrap keeps the prompt's real line breaks and indentation readable. */
+.node-prompt { font-size: 10px; color: #444; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.node-prompt:empty { display: none; }
+.node-tool-url { font-size: 9px; color: #666; overflow-wrap: anywhere; }
 
 .subgraph-link { display: block; margin-top: 8px; font-size: 10px; color: #7b1fa2; background: rgba(255,255,255,0.5); padding: 4px 8px; border-radius: 4px; text-decoration: none; text-align: center; border: 1px solid #ce93d8; cursor: pointer; }
 .subgraph-link:hover { background: #e1bee7; color: #4a148c; }
@@ -340,7 +348,23 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
 .send-btn { background: #2196f3; color: white; border: none; padding: 0 20px; border-radius: 4px; cursor: pointer; font-weight: bold; }
 .send-btn:disabled { background: #ccc; }
 
-.save-layout-btn { position: absolute; top: 10px; right: 10px; z-index: 5; background: white; border: 1px solid #ccc; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+.canvas-actions { position: absolute; top: 10px; right: 10px; z-index: 5; display: flex; gap: 8px; }
+.save-layout-btn { background: white; border: 1px solid #ccc; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+.auto-layout-btn { background: #2196f3; color: #fff; border: 1px solid #1976d2; padding: 5px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+.auto-layout-btn:hover { background: #1976d2; }
+.canvas-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+.layout-dir { display: flex; border: 1px solid #1976d2; border-radius: 4px; overflow: hidden; }
+.layout-dir button { width: 26px; border: none; background: white; color: #1976d2; font-size: 13px; line-height: 1; cursor: pointer; }
+.layout-dir button + button { border-left: 1px solid #e3f2fd; }
+.layout-dir button:hover { background: #e3f2fd; }
+.layout-dir button.active { background: #2196f3; color: white; }
+
+/* Shown instead of the canvas while a graph is loading, or when loading it failed */
+.canvas-message { position: absolute; inset: 0; z-index: 4; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; background: rgba(255,255,255,0.92); color: #666; font-size: 13px; }
+.canvas-message.error { color: #c62828; }
+.canvas-message-detail { max-width: 60%; text-align: center; color: #888; font-size: 11px; overflow-wrap: anywhere; }
+.canvas-message button { background: #2196f3; color: #fff; border: none; padding: 6px 14px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+.canvas-message button:hover { background: #1976d2; }
 
 .copy-btn-icon { margin-left: 5px; cursor: pointer; opacity: 0.7; font-size: 12px; }
 .copy-btn-icon:hover { opacity: 1; }

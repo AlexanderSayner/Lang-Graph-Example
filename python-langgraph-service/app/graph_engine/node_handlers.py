@@ -16,8 +16,55 @@ logger = logging.getLogger(__name__)
 
 GraphLoader = Callable[[str], Awaitable[Pregel]]
 
+# YandexGPT occasionally refuses a perfectly benign prompt ("не могу обсуждать эту тему") or
+# answers with prose instead of the requested JSON. Such an answer is unusable for a node, so we
+# re-ask once with a stricter, blunter instruction instead of failing the whole run.
+REFUSAL_MARKERS = (
+    "не могу", "не могу обсуждать", "не буду", "не имею возможности", "извините",
+    "к сожалению, я", "i can't", "i cannot", "i'm sorry", "i am unable", "as an ai",
+)
+
+RETRY_HINT = (
+    "\n\nПредыдущий ответ не подошёл. Нужен только результат по задаче, без отказов, без "
+    "пояснений и без markdown. Ответь строго в том формате, который описан выше, и не отказывайся."
+)
+
+
+def is_unusable_answer(text: str) -> bool:
+    """True when the LLM answer cannot be used by a node (refusal or empty output)."""
+    if not text or not text.strip():
+        return True
+    lowered = text.lower()
+    return any(marker in lowered for marker in REFUSAL_MARKERS)
+
+
+HISTORY_MARKER = "=== CONVERSATION HISTORY ==="
+VARIABLES_MARKER = "=== CURRENT STATE VARIABLES ==="
+
+
+def drop_history_block(user_message: str) -> str:
+    """Remove the conversation-history block from an already formatted state context."""
+    if HISTORY_MARKER not in user_message or VARIABLES_MARKER not in user_message:
+        return user_message
+    head, _, rest = user_message.partition(HISTORY_MARKER)
+    _, _, tail = rest.partition(VARIABLES_MARKER)
+    return head + VARIABLES_MARKER + tail
+
 
 class NodeHandler:
+    # Per-node context size control (metadata "context_mode"). A node usually needs only part of
+    # the state, and a smaller prompt is both cheaper and noticeably less likely to be refused:
+    #   "minimal" -> variables only (no conversation history, no raw tool_result)
+    #   "slim"   -> variables incl. tool_result, no conversation history
+    #   "trim"   -> conversation history + variables, no raw tool_result
+    #   absent   -> everything (back-compat default)
+    CONTEXT_MODES = {
+        "minimal": (False, False),
+        "slim": (False, True),
+        "trim": (True, False),
+        "full": (True, True),
+    }
+
     def __init__(self, llm_client, graph_loader: GraphLoader):
         self.llm = llm_client
         self.graph_loader = graph_loader
@@ -32,6 +79,37 @@ class NodeHandler:
             logger.error(f"Failed to connect to Tool Service: {e}")
             self.tool_stub = None
 
+    def _context_flags(self, n_meta: Dict) -> tuple[bool, bool]:
+        mode = str((n_meta or {}).get("context_mode", "full")).strip().lower()
+        return self.CONTEXT_MODES.get(mode, self.CONTEXT_MODES["full"])
+
+    async def _generate(self, user_message: str, system_message: str):
+        """Call the LLM, retrying once when the answer is a refusal or empty text.
+
+        On the retry we also shrink the prompt: the conversation history is dropped and a
+        stricter instruction is appended, because a long context is what most often triggers
+        the refusal in the first place.
+
+        Returns the LLM response object unchanged (so `.usage` stays available).
+        """
+        attempts = max(1, settings.LLM_MAX_ATTEMPTS)
+        prompt = system_message
+        message = user_message
+        response = None
+        for attempt in range(1, attempts + 1):
+            response = await self.llm.generate(user_message=message, system_message=prompt)
+            text = str(response)
+            if not is_unusable_answer(text):
+                return response
+            if attempt == attempts:
+                logger.warning("LLM returned an unusable answer after %d attempt(s): %s",
+                               attempt, text[:120].replace("\n", " "))
+                return response
+            logger.warning("LLM refused or returned an empty answer (attempt %d), retrying", attempt)
+            prompt = system_message + RETRY_HINT
+            message = drop_history_block(user_message)
+        return response
+
     async def process(self, n_id: str, n_meta: Dict, node_type: str, is_router_node: bool,
                       router_keys: Set, state: GraphState, config: RunnableConfig) -> Dict:
         if is_router_node:
@@ -45,7 +123,7 @@ class NodeHandler:
 
     async def _process_router(self, n_id: str, n_meta: Dict[str, Any], router_keys: Set, state: GraphState) -> Dict[
         str, Any]:
-        data_block = format_state_context(state)
+        data_block = format_state_context(state, *self._context_flags(n_meta))
         system_prompt = n_meta.get("system_prompt", "You are a helpful assistant.")
         keys_list = ", ".join(router_keys) if router_keys else "intent"
 
@@ -58,7 +136,7 @@ class NodeHandler:
         )
 
         try:
-            llm_response = await self.llm.generate(user_message=data_block, system_message=system_prompt)
+            llm_response = await self._generate(user_message=data_block, system_message=system_prompt)
 
             # Safely extract content and tokens regardless of whether llm_response is a string or an object
             output_content = getattr(llm_response, 'content', str(llm_response))
@@ -94,7 +172,7 @@ class NodeHandler:
             logger.info(f"Node {n_id} is pass-through (no prompt).")
             return {"last_node": n_id}
 
-        data_block = format_state_context(state)
+        data_block = format_state_context(state, *self._context_flags(n_meta))
         final_user_input = data_block
 
         context_data = state.get("context")
@@ -106,7 +184,7 @@ class NodeHandler:
                 logger.warning(f"Failed to serialize context for node {n_id}: {e}")
 
         try:
-            llm_response = await self.llm.generate(user_message=final_user_input, system_message=system_prompt)
+            llm_response = await self._generate(user_message=final_user_input, system_message=system_prompt)
 
             output_content = getattr(llm_response, 'content', str(llm_response))
             usage = getattr(llm_response, 'usage', {})

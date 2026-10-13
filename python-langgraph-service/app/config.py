@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     YC_ASYNC_MAX_WAIT_SECONDS: float = 90.0
     YC_ASYNC_FALLBACK_TO_SYNC: bool = True
 
+    # How many attempts a graph node makes when the LLM answer is unusable (refusal,
+    # empty text or unparsable JSON). YandexGPT occasionally refuses a benign prompt,
+    # so one quiet retry with a stricter instruction usually saves the run.
+    LLM_MAX_ATTEMPTS: int = 2
+
     # Environment
     model_config = SettingsConfigDict(
         # Explicitly point to the .env file location
