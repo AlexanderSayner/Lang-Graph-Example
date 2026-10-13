@@ -129,6 +129,50 @@ export const DELETE_MUTATION = `mutation Del($graphId: String!) { deleteGraph(gr
 export const REWIND_MUTATION = `mutation Rewind($graphId: String!, $threadId: String!, $stateJson: String!, $targetNodeId: String) { rewindGraph(graphId: $graphId, threadId: $threadId, stateJson: $stateJson, targetNodeId: $targetNodeId) { success message } }`;
 export const COPILOT_MUTATION = `mutation AskCopilot($graphId: String!, $threadId: String!, $message: String!, $chatHistory: String!, $selectedNodeId: String, $selectedEdgeJson: String) { askCopilot(graphId: $graphId, threadId: $threadId, message: $message, copilotChatHistoryJson: $chatHistory, selectedNodeId: $selectedNodeId, selectedEdgeJson: $selectedEdgeJson) { success aiResponse totalTokens errorMessage } }`;
 
+// --- Strict enum contract (mirrors the GraphQL enums in spring-langgraph-app schema.graphqls) ---
+// The GraphQL gateway now types nodeType / eventType / method / status as enums, so these values are
+// validated server-side. Keep this object in sync with the Java enums in
+// org.sandbox.langgraph.core.model (NodeType, ExecutionEventType, HttpMethod, GraphStatus).
+// GraphQL serializes enums by their NAME, so the values here are exactly the enum constant names.
+export const NODE_TYPES = Object.freeze({
+    START: 'START',
+    END: 'END',
+    ACTION: 'ACTION',
+    HUMAN: 'HUMAN',
+    GRAPH: 'GRAPH',
+    TOOL: 'TOOL',
+});
+
+export const EXECUTION_EVENT_TYPES = Object.freeze({
+    START: 'START',
+    NODE_START: 'NODE_START',
+    NODE_END: 'NODE_END',
+    END: 'END',
+    WAITING_FOR_INPUT: 'WAITING_FOR_INPUT',
+    ERROR: 'ERROR',
+});
+
+export const HTTP_METHODS = Object.freeze({
+    GET: 'GET',
+    POST: 'POST',
+    PUT: 'PUT',
+    PATCH: 'PATCH',
+    DELETE: 'DELETE',
+    HEAD: 'HEAD',
+    OPTIONS: 'OPTIONS',
+});
+
+export const GRAPH_STATUS = Object.freeze({
+    ACTIVE: 'ACTIVE',
+    INACTIVE: 'INACTIVE',
+    ERROR: 'ERROR',
+    BUILDING: 'BUILDING',
+});
+
+// Methods offered in the TOOL node editor dropdown (a practical subset of HTTP_METHODS).
+export const TOOL_METHOD_OPTIONS = [HTTP_METHODS.GET, HTTP_METHODS.POST, HTTP_METHODS.PUT, HTTP_METHODS.DELETE];
+
+
 // --- Node size estimation ---
 // Nodes are auto-sized by CSS (`width: max-content; min-width: 200px; max-width: 460px`) and print
 // their whole text, so a node may become tall. Dagre still needs explicit dimensions, otherwise the

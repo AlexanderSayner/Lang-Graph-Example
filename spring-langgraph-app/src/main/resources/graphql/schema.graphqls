@@ -61,7 +61,7 @@ input UpdateGraphStateInput {
 
 input NodeInput {
     nodeId: String!
-    nodeType: String!
+    nodeType: NodeType!
     handlerName: String!
     metadata: JSON
 }
@@ -89,7 +89,7 @@ input ClaimThreadInput {
 # ============== Tool Debug Types ==============
 
 input ToolDebugInput {
-    method: String!         # GET, POST, etc.
+    method: HttpMethod!       # GET, POST, etc.
     url: String!            # The URL to hit
     headers: JSON           # Key-Value pairs
     body: String            # Raw body string
@@ -127,7 +127,7 @@ type BuildGraphPayload {
 type ExecuteGraphPayload {
     success: Boolean!
     output: String
-    eventType: String
+    eventType: ExecutionEventType
     state: JSON
     totalTokens: Int
     errorMessage: String
@@ -145,7 +145,7 @@ type DeleteGraphPayload {
 }
 
 type GraphExecutionEventPayload {
-    eventType: String!
+    eventType: ExecutionEventType!
     nodeId: String
     output: String
     state: JSON
@@ -193,7 +193,7 @@ type GraphViewPayload {
     success: Boolean!
     graphId: String
     graphName: String
-    status: String
+    status: GraphStatus
     nodes: [GraphNode!]!
     edges: [GraphEdge!]!
     message: String
@@ -201,7 +201,7 @@ type GraphViewPayload {
 
 type GraphNode {
     nodeId: String!
-    nodeType: String!
+    nodeType: NodeType!
     handlerName: String
     metadata: JSON
     position: Position
@@ -276,6 +276,35 @@ enum GraphStatus {
     ERROR
     BUILDING
 }
+
+enum NodeType {
+    START
+    END
+    ACTION
+    HUMAN
+    GRAPH
+    TOOL
+}
+
+enum ExecutionEventType {
+    START
+    NODE_START
+    NODE_END
+    END
+    WAITING_FOR_INPUT
+    ERROR
+}
+
+enum HttpMethod {
+    GET
+    POST
+    PUT
+    PATCH
+    DELETE
+    HEAD
+    OPTIONS
+}
+
 
 # ============== Scalar Types ==============
 

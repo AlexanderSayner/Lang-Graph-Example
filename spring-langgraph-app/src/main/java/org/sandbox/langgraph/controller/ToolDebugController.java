@@ -44,7 +44,7 @@ public class ToolDebugController {
             String variablesJson = objectMapper.writeValueAsString(variables);
 
             HttpRequestOutput result = toolExecutor.executeHttpRequest(
-                    input.method(),
+                    input.method().name(),
                     input.url(),
                     headers,
                     input.body(),

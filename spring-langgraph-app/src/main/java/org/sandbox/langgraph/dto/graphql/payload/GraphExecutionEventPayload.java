@@ -1,6 +1,7 @@
 package org.sandbox.langgraph.dto.graphql.payload;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import org.sandbox.langgraph.core.model.ExecutionEventType;
 
 import java.util.Map;
 
@@ -10,7 +11,7 @@ import java.util.Map;
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record GraphExecutionEventPayload(
-        String eventType,
+        ExecutionEventType eventType,
         String nodeId,
         String output,
         Map<String, Object> state,

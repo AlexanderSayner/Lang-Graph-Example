@@ -1,5 +1,7 @@
 package org.sandbox.langgraph.dto.graphql.payload.redis;
 
+import org.sandbox.langgraph.core.model.NodeType;
+
 import java.util.Map;
 
 /**
@@ -7,7 +9,7 @@ import java.util.Map;
  */
 public record GraphNode(
         String nodeId,
-        String nodeType,
+        NodeType nodeType,
         String handlerName,
         Map<String, Object> metadata,
         Position position

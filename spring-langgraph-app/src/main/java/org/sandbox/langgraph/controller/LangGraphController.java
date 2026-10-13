@@ -4,6 +4,7 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.jspecify.annotations.NonNull;
 import org.reactivestreams.Publisher;
+import org.sandbox.langgraph.core.model.ExecutionEventType;
 import org.sandbox.langgraph.dto.graphql.input.BuildGraphInput;
 import org.sandbox.langgraph.dto.graphql.input.ExecuteGraphInput;
 import org.sandbox.langgraph.dto.graphql.input.NodePositionInput;
@@ -79,13 +80,13 @@ public class LangGraphController {
         return langGraphService.executeGraphStream(input, false)
                 .reduce(new ExecuteGraphPayloadAccumulator(), ExecuteGraphPayloadAccumulator::accumulate)
                 .map(ExecuteGraphPayloadAccumulator::toPayload)
-                .defaultIfEmpty(new ExecuteGraphPayload(true, "", "idle", null, null, null))
+                .defaultIfEmpty(new ExecuteGraphPayload(true, "", null, null, null, null))
                 .onErrorResume(e -> {
                     log.error("Graph execution failed for {}: {}", input.graphId(), e.getMessage(), e);
                     return Mono.just(new ExecuteGraphPayload(
                             false,
                             null,
-                            "ERROR",
+                            ExecutionEventType.ERROR,
                             null,
                             0,
                             "Execution failed: " + e.getMessage()
@@ -163,7 +164,7 @@ public class LangGraphController {
     // Internal helper class for accumulating stream results
     private static final class ExecuteGraphPayloadAccumulator {
         private String output;
-        private String eventType;
+        private ExecutionEventType eventType;
         private final Map<String, Object> state = new HashMap<>();
         private String errorMessage;
         private boolean hasError;
@@ -177,7 +178,7 @@ public class LangGraphController {
             if (event.state() != null) {
                 this.state.putAll(event.state());
             }
-            if ("ERROR".equals(event.eventType())) {
+            if (event.eventType() == ExecutionEventType.ERROR) {
                 this.hasError = true;
                 this.errorMessage = event.errorMessage();
             }

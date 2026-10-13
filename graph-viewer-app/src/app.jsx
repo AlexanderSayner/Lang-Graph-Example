@@ -11,7 +11,7 @@ import {
     BALANCE_QUERY, EXECUTE_MUTATION, SAVE_MUTATION,
     DELETE_MUTATION, REWIND_MUTATION, COPILOT_MUTATION,
     CLAIM_THREADS_MUTATION,
-    layoutGraph
+    layoutGraph, NODE_TYPES, EXECUTION_EVENT_TYPES
 } from './constants';
 import CopilotTab from './copilot';
 import Sidebar from './components/Sidebar';
@@ -244,9 +244,9 @@ function App() {
                     const subgraphName = graphs.find(g => g.graphId === subgraphId)?.graphName || "Unknown Graph";
 
                     // Raw text of the node body - used by estimateNodeSize() for the automatic layout.
-                    const bodyText = n.nodeType === 'GRAPH'
+                    const bodyText = n.nodeType === NODE_TYPES.GRAPH
                         ? `Subgraph: ${subgraphName}`
-                        : n.nodeType === 'TOOL'
+                        : n.nodeType === NODE_TYPES.TOOL
                             ? `Tool: ${n.metadata?.method || 'GET'} ${toolUrl}`
                             : prompt;
 
@@ -261,12 +261,12 @@ function App() {
                                         <span className="node-type-badge">{n.nodeType}</span>
                                     </div>
                                     <div className="node-body">
-                                        {n.nodeType === 'GRAPH' ? (
+                                        {n.nodeType === NODE_TYPES.GRAPH ? (
                                             <div>
                                                 <div style={{marginBottom: '5px'}}><strong>Subgraph:</strong><br/>{subgraphName}</div>
                                                 <div className="subgraph-link" onClick={(e) => { e.stopPropagation(); if(subgraphId) loadGraph(subgraphId); }}>View Subgraph &rarr;</div>
                                             </div>
-                                        ) : n.nodeType === 'TOOL' ? (
+                                        ) : n.nodeType === NODE_TYPES.TOOL ? (
                                             <div>
                                                 <strong>Tool:</strong> {n.metadata?.method || 'GET'}<br/>
                                                 <span className="node-tool-url">{toolUrl}</span>
@@ -453,14 +453,14 @@ function App() {
             if (errorText) setMessages(prev => [...prev, { type: 'error', text: errorText }]);
             else setMessages(prev => [...prev, { type: 'bot', text: outputText, tokens: result.totalTokens || -1  }]);
 
-            if (eventType === 'END') {
+            if (eventType === EXECUTION_EVENT_TYPES.END) {
                 setGraphStatus('finished');
                 if (rewindOriginNodeId) {
                     setRewindOriginNodeId(null);
                 }
-            } else if (eventType === 'WAITING_FOR_INPUT') {
+            } else if (eventType === EXECUTION_EVENT_TYPES.WAITING_FOR_INPUT) {
                 setGraphStatus('waiting');
-            } else if (eventType === 'START' || eventType === 'NODE_END') {
+            } else if (eventType === EXECUTION_EVENT_TYPES.START || eventType === EXECUTION_EVENT_TYPES.NODE_END) {
                 setGraphStatus('running');
             }
 

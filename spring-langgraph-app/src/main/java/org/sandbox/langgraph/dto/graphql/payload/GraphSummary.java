@@ -1,6 +1,7 @@
 package org.sandbox.langgraph.dto.graphql.payload;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import org.sandbox.langgraph.core.model.GraphStatus;
 
 /**
  * DTO for graph summary (matches existing GraphQL type)
@@ -11,5 +12,5 @@ public record GraphSummary(
         String graphName,
         int nodeCount,
         String createdAt,
-        String status
+        GraphStatus status
 ) {}
