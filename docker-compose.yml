@@ -18,6 +18,17 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - YC_API_KEY=${YC_API_KEY:-}
       - YC_FOLDER_ID=${YC_FOLDER_ID:-}
+      # Multi-provider LLM selection (defaults preserve the old Yandex behaviour)
+      - LLM_PROVIDER=${LLM_PROVIDER:-yandex}
+      - LLM_MODEL=${LLM_MODEL:-}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.6}
+      - LLM_MAX_OUTPUT_TOKENS=${LLM_MAX_OUTPUT_TOKENS:-2000}
+      - COPILOT_PROVIDER=${COPILOT_PROVIDER:-}
+      - COPILOT_MODEL=${COPILOT_MODEL:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - TOOL_SERVICE_HOST=spring-service
     depends_on:
       spring-service:

@@ -46,6 +46,45 @@ class Settings(BaseSettings):
     # so one quiet retry with a stricter instruction usually saves the run.
     LLM_MAX_ATTEMPTS: int = 2
 
+    # -------------------------------------------------
+    # Multi-provider LLM selection (see app/clients/llm.py)
+    # -------------------------------------------------
+    # Service-wide default provider / model. A graph may override these per graph
+    # (graph config) or per AI node (node metadata); this is the last fallback.
+    #   yandex | openai | groq | deepseek | openrouter | anthropic
+    LLM_PROVIDER: str = "yandex"
+    LLM_MODEL: str = ""                 # empty -> the provider's default model
+    # 0.6 keeps the pre-multi-provider YandexGPT default, so existing graphs behave exactly
+    # as before; every provider inherits it unless a node/graph overrides it explicitly.
+    LLM_TEMPERATURE: float = 0.6
+    LLM_MAX_OUTPUT_TOKENS: int = 2000
+
+    # Copilot (the in-UI assistant) may run on its own provider/model; empty falls
+    # back to LLM_PROVIDER / LLM_MODEL above.
+    COPILOT_PROVIDER: str = ""
+    COPILOT_MODEL: str = ""
+
+    # Per-provider credentials (only the selected provider's key is required).
+    OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = "gpt-4o-mini"
+    OPENAI_BASE_URL: str = "https://api.openai.com/v1"
+
+    GROQ_API_KEY: str = ""
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
+
+    DEEPSEEK_API_KEY: str = ""
+    DEEPSEEK_MODEL: str = "deepseek-chat"
+    DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
+
+    OPENROUTER_API_KEY: str = ""
+    OPENROUTER_MODEL: str = "openai/gpt-4o-mini"
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+
+    ANTHROPIC_API_KEY: str = ""
+    ANTHROPIC_MODEL: str = "claude-3-5-sonnet-latest"
+    ANTHROPIC_BASE_URL: str = "https://api.anthropic.com"
+
     # Environment
     model_config = SettingsConfigDict(
         # Explicitly point to the .env file location
@@ -66,7 +105,13 @@ class Settings(BaseSettings):
     # Prompt handling
     @property
     def system_prompt(self) -> str:
-        """Expose the cached prompt."""
+        """Legacy accessor for app/ya_prompt.md.
+
+        No longer used as a system-message fallback: the multi-provider client sends
+        exactly the system_message its caller provides, and a blank one means "no system
+        message" (an empty system text would be rejected by the Yandex REST API).
+        Kept because ya_prompt.md is still a documented operational artifact.
+        """
         return _read_prompt_file()
 
 

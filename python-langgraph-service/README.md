@@ -146,6 +146,67 @@ async for event in stub.ExecuteGraph(exec_request):
 | `YC_ASYNC_POLL_INTERVAL_SECONDS`| 1      | Poll interval while waiting for a deferred operation |
 | `YC_ASYNC_FALLBACK_TO_SYNC`     | true   | Fall back to the synchronous endpoint when the deferred operation times out |
 | `LLM_MAX_ATTEMPTS`              | 2      | Attempts per graph node when the LLM answer is unusable (refusal / empty text) |
+| `LLM_PROVIDER`                  | yandex | Default provider: yandex / openai / groq / deepseek / openrouter / anthropic |
+| `LLM_MODEL`                     | (provider default) | Default model; empty = provider default model |
+| `LLM_TEMPERATURE`               | 0.6    | Default sampling temperature (0.6 keeps the pre-multi-provider YandexGPT behaviour) |
+| `LLM_MAX_OUTPUT_TOKENS`         | 2000   | Default max output tokens                |
+| `COPILOT_PROVIDER` / `COPILOT_MODEL` | (from LLM_*) | Optional dedicated provider/model for the in-UI copilot |
+| `GROQ_API_KEY` / `DEEPSEEK_API_KEY` / `OPENROUTER_API_KEY` / `ANTHROPIC_API_KEY` | - | Key for that provider (only the selected provider key is needed) |
+| `<PROVIDER>_MODEL` / `<PROVIDER>_BASE_URL` | (preset) | Per-provider model/endpoint override, e.g. `GROQ_MODEL`, `OPENROUTER_BASE_URL` |
+
+---
+
+## Multi-Provider LLM Configuration
+
+Graph nodes can use **YandexGPT, OpenAI, Groq, DeepSeek, OpenRouter or Anthropic**.
+The client layer lives in `app/clients/llm.py` and is backed by LangChain: `ChatOpenAI`
+for the OpenAI-compatible providers, `ChatAnthropic` for Anthropic, plus the existing
+YandexGPT HTTP client.
+
+**Selection precedence** (first match wins):
+
+1. **Node metadata** - per AI node: `llm_provider`, `llm_model`, `llm_temperature`, `llm_max_tokens`
+2. **Graph config** - `config.llm_provider` / `config.llm_model` stored with the graph
+3. **Service default** - `LLM_PROVIDER` / `LLM_MODEL` / `LLM_TEMPERATURE` / `LLM_MAX_OUTPUT_TOKENS`
+
+Per-node override (builder UI or the `buildGraph` API):
+
+```json
+{ "system_prompt": "...", "llm_provider": "groq", "llm_model": "llama-3.3-70b-versatile" }
+```
+
+Graph-wide default (same keys in the graph `config`):
+
+```json
+{ "llm_provider": "anthropic", "llm_model": "claude-3-5-sonnet-latest" }
+```
+
+| `llm_provider` | Backend | Default model | Base URL |
+|---|---|---|---|
+| `yandex` (default) | YandexGPT HTTP client | `yandexgpt` | Yandex Cloud |
+| `openai` | ChatOpenAI | `gpt-4o-mini` | `https://api.openai.com/v1` |
+| `groq` | ChatOpenAI | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1` |
+| `deepseek` | ChatOpenAI | `deepseek-chat` | `https://api.deepseek.com/v1` |
+| `openrouter` | ChatOpenAI | `openai/gpt-4o-mini` | `https://openrouter.ai/api/v1` |
+| `anthropic` | ChatAnthropic | `claude-3-5-sonnet-latest` | `https://api.anthropic.com` |
+
+Groq / DeepSeek / OpenRouter / OpenAI share one OpenAI-compatible client (they differ
+only by base URL); Anthropic needs the extra `langchain-anthropic` dependency. Only the
+selected provider key must be set. An unknown `llm_provider` fails fast when the graph is
+compiled, naming the supported values.
+
+A *missing* API key deliberately does **not** fail the build: the provider client is
+resolved lazily on the node's first model call (`LazyLLMClient`), so a graph can be built
+and saved on a service that does not have that provider's key yet. The error then surfaces
+as a node error at run time, exactly like it did before the multi-provider layer.
+
+A blank `system_message` sends no system prompt at all: the Yandex path omits the system
+message instead of sending empty text (the REST API rejects `{"text": ""}`), and the old
+implicit `settings.system_prompt` (`app/ya_prompt.md`) fallback is no longer injected.
+
+Note: `langchain-openai` sends `max_completion_tokens` (the modern OpenAI name) rather
+than `max_tokens`. Groq, DeepSeek and OpenRouter accept it; if a strict gateway rejects
+it, drop the `llm_max_tokens` override for that node/graph.
 
 ---
 
