@@ -82,6 +82,14 @@ class NodeHandler:
         "full": (True, True),
     }
 
+    # Node types this handler knows how to dispatch. Anything else is a corrupt or legacy
+    # definition (for example a node type that was renamed in the API) and must fail loudly,
+    # because the former fall-through turned such a node into a silent LLM ACTION node: the HTTP
+    # call simply never happened and nothing reported it.
+    # START / END / HUMAN are pass-through ACTION nodes here - they carry no prompt of their own.
+    ACTION_NODE_TYPES = frozenset({"START", "END", "ACTION", "HUMAN"})
+    KNOWN_NODE_TYPES = ACTION_NODE_TYPES | {"GRAPH", "HTTP_REQUEST"}
+
     def __init__(self, graph_loader: GraphLoader, default_llm=None, default_llm_factory=None):
         # Each node may carry its own provider/model: the servicer resolves a client per
         # node (node metadata -> graph config -> service default) and passes it into
@@ -150,8 +158,13 @@ class NodeHandler:
             return await self._process_subgraph(n_id, n_meta, state, config)
         if node_type == "HTTP_REQUEST":
             return await self._process_http_request(n_id, n_meta, state)
+        if node_type in self.ACTION_NODE_TYPES:
+            return await self._process_action(n_id, n_meta, state, llm)
 
-        return await self._process_action(n_id, n_meta, state, llm)
+        raise ValueError(
+            f"Node {n_id}: unknown node type '{node_type}'. "
+            f"Known types: {', '.join(sorted(self.KNOWN_NODE_TYPES))}"
+        )
 
     async def _process_router(self, n_id: str, n_meta: Dict[str, Any], router_keys: Set,
                               state: GraphState, llm=None) -> Dict[str, Any]:
@@ -287,10 +300,13 @@ class NodeHandler:
             url = n_meta.get("url", "")
 
             raw_headers = n_meta.get("headers", "{}")
-            headers_dict = json.loads(raw_headers) if isinstance(raw_headers, str) else raw_headers
             try:
                 headers_dict = json.loads(raw_headers) if isinstance(raw_headers, str) else raw_headers
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(f"Node {n_id}: metadata 'headers' is not valid JSON, sending none")
+                headers_dict = {}
+            if not isinstance(headers_dict, dict):
+                logger.warning(f"Node {n_id}: metadata 'headers' is not a JSON object, sending none")
                 headers_dict = {}
 
             body = n_meta.get("body", "")
