@@ -4,7 +4,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import org.sandbox.langgraph.core.model.HttpMethod;
 
-public record ToolDebugInput(
+public record HttpRequestDebugInput(
         @NotNull(message = "HTTP method is required")
         HttpMethod method,
         @NotBlank(message = "URL is required")

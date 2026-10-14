@@ -199,11 +199,11 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             # eagerly, so an unknown/typo'd provider still fails the build fast and loud.
             # The client itself is LAZY (LazyLLMClient): only nodes that really call the model
             # get one - router nodes always do, the rest only when they carry a system_prompt
-            # (pass-through, TOOL and GRAPH nodes never touch the LLM) - and a missing API key
+            # (pass-through, HTTP_REQUEST and GRAPH nodes never touch the LLM) - and a missing API key
             # surfaces on the node's first model call instead of failing the whole build.
             node_type_val = node.node_type
             uses_llm = is_router or (
-                node_type_val not in ("TOOL", "GRAPH") and bool(metadata.get("system_prompt"))
+                node_type_val not in ("HTTP_REQUEST", "GRAPH") and bool(metadata.get("system_prompt"))
             )
             llm_client = (
                 self._llm_registry.lazy(resolve_llm_config(metadata, graph_data.config))

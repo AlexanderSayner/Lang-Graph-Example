@@ -45,7 +45,7 @@ services:
       - OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL:-}
       - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-}
       - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}
-      - TOOL_SERVICE_HOST=spring-service
+      - HTTP_REQUEST_SERVICE_HOST=spring-service
     depends_on:
       spring-service:
         condition: service_started

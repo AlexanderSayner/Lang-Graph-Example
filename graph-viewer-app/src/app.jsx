@@ -255,19 +255,19 @@ function App() {
                     const prompt = n.metadata?.system_prompt || "";
                     const subgraphId = n.metadata?.subgraph_id;
                     const label = n.metadata?.label;
-                    const toolUrl = n.metadata?.url || "";
+                    const httpUrl = n.metadata?.url || "";
                     const subgraphName = graphs.find(g => g.graphId === subgraphId)?.graphName || "Unknown Graph";
 
                     // Raw text of the node body - used by estimateNodeSize() for the automatic layout.
                     const bodyText = n.nodeType === NODE_TYPES.GRAPH
                         ? `Subgraph: ${subgraphName}`
-                        : n.nodeType === NODE_TYPES.TOOL
-                            ? `Tool: ${n.metadata?.method || 'GET'} ${toolUrl}`
+                        : n.nodeType === NODE_TYPES.HTTP_REQUEST
+                            ? `HTTP: ${n.metadata?.method || 'GET'} ${httpUrl}`
                             : prompt;
 
                     return {
                         id: n.nodeId,
-                        className: `node-${n.nodeType.toLowerCase()}`,
+                        className: `node-${n.nodeType.toLowerCase().replace(/_/g, '-')}`,
                         data: {
                             label: (
                                 <div>
@@ -281,10 +281,10 @@ function App() {
                                                 <div style={{marginBottom: '5px'}}><strong>Subgraph:</strong><br/>{subgraphName}</div>
                                                 <div className="subgraph-link" onClick={(e) => { e.stopPropagation(); if(subgraphId) loadGraph(subgraphId); }}>View Subgraph &rarr;</div>
                                             </div>
-                                        ) : n.nodeType === NODE_TYPES.TOOL ? (
+                                        ) : n.nodeType === NODE_TYPES.HTTP_REQUEST ? (
                                             <div>
-                                                <strong>Tool:</strong> {n.metadata?.method || 'GET'}<br/>
-                                                <span className="node-tool-url">{toolUrl}</span>
+                                                <strong>HTTP:</strong> {n.metadata?.method || 'GET'}<br/>
+                                                <span className="node-http-request-url">{httpUrl}</span>
                                             </div>
                                         ) : (
                                             <div className="node-prompt">{prompt}</div>

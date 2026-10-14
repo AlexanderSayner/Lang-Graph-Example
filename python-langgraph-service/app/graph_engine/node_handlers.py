@@ -71,9 +71,9 @@ def drop_history_block(user_message: str) -> str:
 class NodeHandler:
     # Per-node context size control (metadata "context_mode"). A node usually needs only part of
     # the state, and a smaller prompt is both cheaper and noticeably less likely to be refused:
-    #   "minimal" -> variables only (no conversation history, no raw tool_result)
-    #   "slim"   -> variables incl. tool_result, no conversation history
-    #   "trim"   -> conversation history + variables, no raw tool_result
+    #   "minimal" -> variables only (no conversation history, no raw http_result)
+    #   "slim"   -> variables incl. http_result, no conversation history
+    #   "trim"   -> conversation history + variables, no raw http_result
     #   absent   -> everything (back-compat default)
     CONTEXT_MODES = {
         "minimal": (False, False),
@@ -92,14 +92,14 @@ class NodeHandler:
         self.graph_loader = graph_loader
 
         try:
-            self.tool_channel = grpc.aio.insecure_channel(
-                f'{settings.TOOL_SERVICE_HOST}:{settings.TOOL_SERVICE_PORT}'
+            self.http_channel = grpc.aio.insecure_channel(
+                f'{settings.HTTP_REQUEST_SERVICE_HOST}:{settings.HTTP_REQUEST_SERVICE_PORT}'
             )
-            self.tool_stub = langgraph_pb2_grpc.ToolServiceStub(self.tool_channel)
-            logger.info(f"Connected to Tool Service at {settings.TOOL_SERVICE_HOST}:{settings.TOOL_SERVICE_PORT}")
+            self.http_stub = langgraph_pb2_grpc.HttpRequestServiceStub(self.http_channel)
+            logger.info(f"Connected to HTTP Request Service at {settings.HTTP_REQUEST_SERVICE_HOST}:{settings.HTTP_REQUEST_SERVICE_PORT}")
         except Exception as e:
-            logger.error(f"Failed to connect to Tool Service: {e}")
-            self.tool_stub = None
+            logger.error(f"Failed to connect to HTTP Request Service: {e}")
+            self.http_stub = None
 
     def _context_flags(self, n_meta: Dict) -> tuple[bool, bool]:
         mode = str((n_meta or {}).get("context_mode", "full")).strip().lower()
@@ -148,8 +148,8 @@ class NodeHandler:
             return await self._process_router(n_id, n_meta, router_keys, state, llm)
         if node_type == "GRAPH":
             return await self._process_subgraph(n_id, n_meta, state, config)
-        if node_type == "TOOL":
-            return await self._process_tool(n_id, n_meta, state)
+        if node_type == "HTTP_REQUEST":
+            return await self._process_http_request(n_id, n_meta, state)
 
         return await self._process_action(n_id, n_meta, state, llm)
 
@@ -272,16 +272,16 @@ class NodeHandler:
             logger.error(f"Subgraph execution failed in {n_id}: {e}", exc_info=True)
             return {"last_node": n_id, "output": f"Subgraph Error: {str(e)}", "error": str(e)}
 
-    async def _process_tool(self, n_id: str, n_meta: Dict, state: GraphState) -> Dict:
-        if not self.tool_stub:
+    async def _process_http_request(self, n_id: str, n_meta: Dict, state: GraphState) -> Dict:
+        if not self.http_stub:
             return {
                 "last_node": n_id,
-                "output": "Error: Tool Service is not connected.",
-                "error": "Tool Service Unavailable",
-                "variables": {**state.get("variables", {}), "tool_success": False, "tool_error": "Service Unavailable"}
+                "output": "Error: HTTP Request Service is not connected.",
+                "error": "HTTP Request Service Unavailable",
+                "variables": {**state.get("variables", {}), "http_success": False, "http_error": "Service Unavailable"}
             }
 
-        logger.info(f"Node {n_id}: Executing Tool...")
+        logger.info(f"Node {n_id}: Executing HTTP request...")
         try:
             method = n_meta.get("method", "GET").upper()
             url = n_meta.get("url", "")
@@ -304,7 +304,7 @@ class NodeHandler:
                 state_json=json.dumps(variables, default=str)
             )
 
-            response = await self.tool_stub.ExecuteHttpRequest(request)
+            response = await self.http_stub.ExecuteHttpRequest(request)
 
             if response.success:
                 result_data = {}
@@ -316,42 +316,42 @@ class NodeHandler:
 
                 new_vars = {
                     **variables,
-                    "tool_result": result_data,
-                    "tool_success": True,
-                    "tool_status_code": response.status_code
+                    "http_result": result_data,
+                    "http_success": True,
+                    "http_status_code": response.status_code
                 }
                 return {
                     "last_node": n_id,
-                    "output": f"Tool executed successfully. Status: {response.status_code}",
+                    "output": f"HTTP request executed successfully. Status: {response.status_code}",
                     "variables": new_vars,
                     "total_tokens": 0,
-                    "history": [{"node": n_id, "output": "Tool executed", "tokens_used": 0}]
+                    "history": [{"node": n_id, "output": "HTTP request executed", "tokens_used": 0}]
                 }
             else:
                 new_vars = {
                     **variables,
-                    "tool_success": False,
-                    "tool_error": response.error_message,
-                    "tool_status_code": response.status_code
+                    "http_success": False,
+                    "http_error": response.error_message,
+                    "http_status_code": response.status_code
                 }
                 return {
                     "last_node": n_id,
-                    "output": f"Tool Error: {response.error_message}",
+                    "output": f"HTTP request error: {response.error_message}",
                     "variables": new_vars,
                     "error": response.error_message,
                     "total_tokens": 0,
-                    "history": [{"node": n_id, "output": "Tool Error", "tokens_used": 0}]
+                    "history": [{"node": n_id, "output": "HTTP request error", "tokens_used": 0}]
                 }
 
         except grpc.RpcError as e:
             logger.error(f"Node {n_id}: gRPC Communication Error - {e.code()}: {e.details()}")
-            new_vars = {**state.get("variables", {}), "tool_success": False, "tool_error": f"gRPC Error: {e.code()}"}
+            new_vars = {**state.get("variables", {}), "http_success": False, "http_error": f"gRPC Error: {e.code()}"}
             return {
                 "last_node": n_id,
-                "output": f"System Error: Could not reach Tool Service ({e.code()}).",
+                "output": f"System Error: Could not reach HTTP Request Service ({e.code()}).",
                 "variables": new_vars,
                 "error": str(e.details())
             }
         except Exception as e:
-            logger.error(f"Node {n_id}: Unexpected Tool Error - {e}", exc_info=True)
-            return {"last_node": n_id, "output": "Unexpected error during tool execution.", "error": str(e)}
+            logger.error(f"Node {n_id}: Unexpected HTTP request error - {e}", exc_info=True)
+            return {"last_node": n_id, "output": "Unexpected error during HTTP request execution.", "error": str(e)}

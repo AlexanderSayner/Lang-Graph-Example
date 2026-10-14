@@ -18,7 +18,7 @@ public enum NodeType {
     ACTION,
     HUMAN,
     GRAPH,
-    TOOL;
+    HTTP_REQUEST;
 
     /**
      * Lenient parser used on the <b>read</b> path (persisted graph definitions coming
@@ -41,7 +41,7 @@ public enum NodeType {
             case "ACTION", "AGENT", "LLM", "CHAT" -> ACTION;
             case "HUMAN", "HUMAN_INPUT", "INTERRUPT" -> HUMAN;
             case "GRAPH", "SUBGRAPH" -> GRAPH;
-            case "TOOL", "HTTP" -> TOOL;
+            case "HTTP_REQUEST", "HTTP" -> HTTP_REQUEST;
             default -> throw new IllegalArgumentException("Unknown node type: " + value);
         };
     }

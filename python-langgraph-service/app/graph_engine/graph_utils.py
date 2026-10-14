@@ -85,17 +85,17 @@ def parse_condition(condition_str: str) -> tuple:
 
 
 def format_state_context(state: GraphState, include_history: bool = True,
-                          include_tool_result: bool = True) -> str:
+                          include_http_result: bool = True) -> str:
     """Prepares the conversation history and variables for the LLM.
 
-    `include_history` / `include_tool_result` let a node ask for a smaller context: a very long
+    `include_history` / `include_http_result` let a node ask for a smaller context: a very long
     prompt (full API payload + full history) makes the model noticeably more likely to refuse,
     and a node usually needs only part of it. Values that are switched off are simply not shown.
     """
     # We MUST show the LLM the current variables so it knows what is already filled.
     current_vars = state.get("variables", {}) or {}
-    if not include_tool_result:
-        current_vars = {k: v for k, v in current_vars.items() if k != "tool_result"}
+    if not include_http_result:
+        current_vars = {k: v for k, v in current_vars.items() if k != "http_result"}
     vars_json_str = json.dumps(current_vars, indent=2)
 
     # Dynamic History (Conversation memory)

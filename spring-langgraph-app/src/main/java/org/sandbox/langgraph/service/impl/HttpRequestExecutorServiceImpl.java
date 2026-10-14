@@ -5,7 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.jspecify.annotations.NonNull;
 import org.sandbox.langgraph.dto.web.HttpRequestOutput;
-import org.sandbox.langgraph.service.ToolExecutorService;
+import org.sandbox.langgraph.service.HttpRequestExecutorService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpMethod;
@@ -21,9 +21,9 @@ import java.util.regex.Pattern;
 
 @Service
 @RequiredArgsConstructor
-public class ToolExecutorServiceImpl implements ToolExecutorService {
+public class HttpRequestExecutorServiceImpl implements HttpRequestExecutorService {
 
-    private static final Logger log = LoggerFactory.getLogger(ToolExecutorServiceImpl.class);
+    private static final Logger log = LoggerFactory.getLogger(HttpRequestExecutorServiceImpl.class);
     private final ObjectMapper objectMapper;
     private final RestClient restClient;
 
@@ -40,7 +40,7 @@ public class ToolExecutorServiceImpl implements ToolExecutorService {
             String finalUrl = injectVariables(url, variables);
             String finalBody = (body != null) ? injectVariables(body, variables) : null;
 
-            log.info("Executing Tool: {} {}", method, finalUrl);
+            log.info("Executing HTTP request: {} {}", method, finalUrl);
 
             ResponseEntity<@NonNull String> response = restClient.method(HttpMethod.valueOf(method))
                     .uri(finalUrl)
@@ -69,7 +69,7 @@ public class ToolExecutorServiceImpl implements ToolExecutorService {
             }
             return HttpRequestOutput.failure("Network or Client Error: " + e.getMessage());
         } catch (Exception e) {
-            log.error("Tool execution setup failed", e);
+            log.error("HTTP request execution setup failed", e);
             return HttpRequestOutput.failure("Internal Setup Error: " + e.getMessage());
         }
     }

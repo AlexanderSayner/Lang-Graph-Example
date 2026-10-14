@@ -259,7 +259,7 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
 .react-flow__node.node-action { background: #e3f2fd; border-color: #bbdefb; }
 .react-flow__node.node-human { background: #fff3e0; border-color: #ffe0b2; }
 .react-flow__node.node-graph { background: #f3e5f5; border-color: #e1bee7; border-style: dashed; }
-.react-flow__node.node-tool { background: #e0f2f1; border-color: #80cbc4; }
+.react-flow__node.node-http-request { background: #e0f2f1; border-color: #80cbc4; }
 
 .react-flow__node.node-active-path {
     border-color: #4caf50 !important;
@@ -300,7 +300,7 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
 .node-action .node-header { color: #1565c0; }
 .node-human .node-header { color: #ef6c00; }
 .node-graph .node-header { color: #7b1fa2; }
-.node-tool .node-header { color: #00695c; }
+.node-http-request .node-header { color: #00695c; }
 
 .node-type-badge { font-size: 9px; background: rgba(255,255,255,0.6); padding: 2px 6px; border-radius: 4px; text-transform: uppercase; font-weight: normal; }
 
@@ -310,7 +310,7 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
 /* pre-wrap keeps the prompt's real line breaks and indentation readable. */
 .node-prompt { font-size: 10px; color: #444; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
 .node-prompt:empty { display: none; }
-.node-tool-url { font-size: 9px; color: #666; overflow-wrap: anywhere; }
+.node-http-request-url { font-size: 9px; color: #666; overflow-wrap: anywhere; }
 
 .subgraph-link { display: block; margin-top: 8px; font-size: 10px; color: #7b1fa2; background: rgba(255,255,255,0.5); padding: 4px 8px; border-radius: 4px; text-decoration: none; text-align: center; border: 1px solid #ce93d8; cursor: pointer; }
 .subgraph-link:hover { background: #e1bee7; color: #4a148c; }

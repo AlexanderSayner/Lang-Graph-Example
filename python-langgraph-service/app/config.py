@@ -105,8 +105,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql://langgraph:langgraph_password@localhost:7432/langgraph_db"
 
     # Java back end service
-    TOOL_SERVICE_HOST: str = "localhost"
-    TOOL_SERVICE_PORT: int = 9090  # The port your Java gRPC server is running on
+    HTTP_REQUEST_SERVICE_HOST: str = "localhost"
+    HTTP_REQUEST_SERVICE_PORT: int = 9090  # The port your Java gRPC server is running on
 
     # Prompt handling
     @property

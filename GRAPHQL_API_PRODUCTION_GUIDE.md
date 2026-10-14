@@ -427,7 +427,7 @@ input BuildGraphInput {
 
 input NodeInput {
     nodeId: String!
-    nodeType: NodeType!      # START | END | ACTION | HUMAN | GRAPH | TOOL
+    nodeType: NodeType!      # START | END | ACTION | HUMAN | GRAPH | HTTP_REQUEST
     handlerName: String!
     metadata: JSON
     # Optional UI coordinates per node: written into the `coordinates` column together with the
@@ -463,7 +463,7 @@ enum NodeType {
     ACTION
     HUMAN
     GRAPH
-    TOOL
+    HTTP_REQUEST
 }
 
 enum ExecutionEventType {

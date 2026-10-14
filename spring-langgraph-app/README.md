@@ -106,7 +106,7 @@ mutation BuildNewGraph {
     nodes: [
       {
         nodeId: "search",
-        nodeType: "TOOL",
+        nodeType: "HTTP_REQUEST",
         handlerName: "tavily_search",
         metadata: { maxResults: "5" }
       },

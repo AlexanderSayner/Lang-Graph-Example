@@ -50,7 +50,7 @@ dependencies {
     implementation "io.grpc:grpc-services:${grpcVersion}"
     // Client is needed for Java -> Python (ExecuteGraph)
     implementation 'org.springframework.grpc:spring-grpc-client-spring-boot-starter'
-    // Server is needed for Python -> Java (ExecuteTool)
+    // Server is needed for Python -> Java (ExecuteHttpRequest)
     implementation 'org.springframework.grpc:spring-grpc-server-spring-boot-starter'
 
     // GraphQL extended scalars

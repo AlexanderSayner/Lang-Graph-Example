@@ -5,9 +5,9 @@ import org.sandbox.langgraph.dto.web.HttpRequestOutput;
 import java.util.Map;
 
 /**
- * Tool for requesting any third-party api
+ * Executes outbound HTTP requests to any third-party API
  */
-public interface ToolExecutorService {
+public interface HttpRequestExecutorService {
     HttpRequestOutput executeHttpRequest(
             String method,
             String url,
