@@ -10,25 +10,22 @@ POST http://localhost:9191/graphql
             "graphId": "graph-001",
             "graphName": "Test Graph",
             "nodes": [
-                { "nodeId": "node-1", "nodeType": "START", "handlerName": "startHandler" },
-                { "nodeId": "node-2", "nodeType": "END", "handlerName": "endHandler" }
+                { "nodeId": "node-1", "nodeType": "START", "handlerName": "startHandler", "position": { "x": 0.0, "y": 0.0 } },
+                { "nodeId": "node-2", "nodeType": "END", "handlerName": "endHandler", "position": { "x": 0.0, "y": 160.0 } }
             ],
             "edges": [
                 { "source": "node-1", "target": "node-2" }
-            ],
-            "positions": [
-                { "nodeId": "node-1", "x": 0.0, "y": 0.0 },
-                { "nodeId": "node-2", "x": 0.0, "y": 160.0 }
             ]
         }
     }
 }
 ```
 
-> `positions` is **optional**. When present, `buildGraph` persists it into the `coordinates` column in
-> the same row write as the definition, so saving from the graph builder needs no second call. Omit it
-> and the graph simply opens with an empty layout, exactly as before. Layout-only changes (drag /
-> auto layout without rebuilding) use the dedicated `saveGraphCoordinates` mutation instead.
+> `NodeInput.position` (`{ x, y }`) is **optional**. When present, `buildGraph` persists it into the
+> `coordinates` column in the same row write as the definition, so saving from the graph builder needs
+> no second call. Omit it and the graph simply opens with an empty layout, exactly as before.
+> Layout-only changes (drag / auto layout without rebuilding) use the dedicated `saveGraphCoordinates`
+> mutation instead, which still takes the flat `positions: [{ nodeId, x, y }]` pair.
 
 #### Simple user case
 ```http request

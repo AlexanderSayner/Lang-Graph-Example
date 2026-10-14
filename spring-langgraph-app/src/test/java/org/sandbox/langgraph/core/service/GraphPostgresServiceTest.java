@@ -13,7 +13,7 @@ import org.sandbox.langgraph.core.repository.GraphRepository;
 import org.sandbox.langgraph.dto.graphql.input.BuildGraphInput;
 import org.sandbox.langgraph.dto.graphql.input.EdgeInput;
 import org.sandbox.langgraph.dto.graphql.input.NodeInput;
-import org.sandbox.langgraph.dto.graphql.input.NodePositionInput;
+import org.sandbox.langgraph.dto.graphql.input.PositionInput;
 import org.sandbox.langgraph.dto.graphql.payload.redis.GraphViewData;
 import org.sandbox.langgraph.service.PostgresGraphViewService;
 
@@ -29,8 +29,9 @@ import static org.mockito.Mockito.when;
  * <p>
  * Historically {@link GraphPostgresService#saveGraph(BuildGraphInput)} hardcoded the
  * {@code coordinates} column to {@code "{}"} because {@code BuildGraphInput} had no positions - the
- * builder had to follow up with a second {@code saveGraphCoordinates} mutation. Now positions travel
- * inside the build input, so definition and layout are written in one row update.
+ * builder had to follow up with a second {@code saveGraphCoordinates} mutation. Now every
+ * {@code NodeInput} can carry its own {@code position}, so definition and layout are written in one
+ * row update and there is no parallel position list to keep in sync with the nodes.
  * <p>
  * The expected coordinate shape is exactly what {@code PostgresGraphCoordinatesService} writes and
  * what {@code PostgresGraphViewService} reads back into {@code nodes[].position}.
@@ -48,17 +49,17 @@ class GraphPostgresServiceTest {
         service = new GraphPostgresService(repository, objectMapper);
     }
 
-    private static BuildGraphInput input(List<NodePositionInput> positions) {
+    /** Builds a two-node graph whose nodes carry the given UI positions ({@code null} = none). */
+    private static BuildGraphInput input(PositionInput start, PositionInput end) {
         return new BuildGraphInput(
                 "graph-1",
                 "Support Triage",
                 List.of(
-                        new NodeInput("start", NodeType.START, "startHandler", Map.of()),
-                        new NodeInput("end", NodeType.END, "endHandler", Map.of())
+                        new NodeInput("start", NodeType.START, "startHandler", Map.of(), start),
+                        new NodeInput("end", NodeType.END, "endHandler", Map.of(), end)
                 ),
                 List.of(new EdgeInput("start", "end", null)),
-                Map.of(),
-                positions
+                Map.of()
         );
     }
 
@@ -72,10 +73,10 @@ class GraphPostgresServiceTest {
     @Test
     @DisplayName("Build positions are written into the coordinates column instead of \"{}\"")
     void saveGraphPersistsBuildPositions() throws Exception {
-        service.saveGraph(input(List.of(
-                new NodePositionInput("start", 100.0, 200.0),
-                new NodePositionInput("end", 300.0, -40.5)
-        )));
+        service.saveGraph(input(
+                new PositionInput(100.0, 200.0),
+                new PositionInput(300.0, -40.5)
+        ));
 
         GraphEntity entity = savedEntity();
 
@@ -94,23 +95,32 @@ class GraphPostgresServiceTest {
     }
 
     @Test
-    @DisplayName("A build without positions keeps the historical empty-layout behaviour")
+    @DisplayName("A build without node positions keeps the historical empty-layout behaviour")
     void saveGraphWithoutPositionsWritesEmptyCoordinates() {
-        service.saveGraph(input(null));
+        service.saveGraph(input(null, null));
         assertThat(savedEntity().getCoordinates()).isEqualTo("{}");
+    }
 
-        Mockito.reset(repository);
-        service.saveGraph(input(List.of()));
-        assertThat(savedEntity().getCoordinates()).isEqualTo("{}");
+    @Test
+    @DisplayName("Nodes without a position are skipped while the others keep theirs")
+    void onlyNodesCarryingAPositionAreWritten() throws Exception {
+        service.saveGraph(input(new PositionInput(7.0, 8.0), null));
+
+        Map<String, Map<String, Double>> coordinates = objectMapper.readValue(
+                savedEntity().getCoordinates(), new TypeReference<>() {
+                });
+
+        assertThat(coordinates).containsOnlyKeys("start");
+        assertThat(coordinates.get("start")).containsEntry("x", 7.0).containsEntry("y", 8.0);
     }
 
     @Test
     @DisplayName("Positions saved by a build read back as nodes[].position on getGraphView")
     void savedPositionsRoundTripIntoTheGraphView() {
-        service.saveGraph(input(List.of(
-                new NodePositionInput("start", 10.0, 20.0),
-                new NodePositionInput("end", 30.0, 40.0)
-        )));
+        service.saveGraph(input(
+                new PositionInput(10.0, 20.0),
+                new PositionInput(30.0, 40.0)
+        ));
         GraphEntity entity = savedEntity();
 
         when(repository.findById("graph-1")).thenReturn(Optional.of(entity));
@@ -135,10 +145,16 @@ class GraphPostgresServiceTest {
     @Test
     @DisplayName("Blank node ids never corrupt the coordinates payload")
     void positionsWithBlankNodeIdsAreSkipped() throws Exception {
-        service.saveGraph(input(List.of(
-                new NodePositionInput("", 1.0, 2.0),
-                new NodePositionInput("start", 5.0, 6.0)
-        )));
+        service.saveGraph(new BuildGraphInput(
+                "graph-1",
+                "Support Triage",
+                List.of(
+                        new NodeInput("", NodeType.START, "startHandler", Map.of(), new PositionInput(1.0, 2.0)),
+                        new NodeInput("start", NodeType.END, "startHandler", Map.of(), new PositionInput(5.0, 6.0))
+                ),
+                List.of(),
+                Map.of()
+        ));
 
         Map<String, Map<String, Double>> coordinates = objectMapper.readValue(
                 savedEntity().getCoordinates(), new TypeReference<>() {

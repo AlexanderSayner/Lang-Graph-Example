@@ -423,9 +423,6 @@ input BuildGraphInput {
     nodes: [NodeInput!]!
     edges: [EdgeInput!]!
     config: JSON
-    # Optional UI coordinates: written into the `coordinates` column together with the definition,
-    # so a build persists the layout without a follow-up saveGraphCoordinates call.
-    positions: [NodePositionInput!]
 }
 
 input NodeInput {
@@ -433,6 +430,14 @@ input NodeInput {
     nodeType: NodeType!      # START | END | ACTION | HUMAN | GRAPH | TOOL
     handlerName: String!
     metadata: JSON
+    # Optional UI coordinates per node: written into the `coordinates` column together with the
+    # definition, so a build persists the layout without a follow-up saveGraphCoordinates call.
+    position: PositionInput
+}
+
+input PositionInput {
+    x: Float!
+    y: Float!
 }
 
 input EdgeInput {
@@ -738,27 +743,32 @@ mutation BuildSupportTriageGraph {
         nodeId: "triage",
         nodeType: "START",
         handlerName: "triageHandler",
-        metadata: { priority: "high" }
+        metadata: { priority: "high" },
+        position: { x: 400.0, y: 0.0 }
       },
       {
         nodeId: "technical",
         nodeType: "ACTION",
-        handlerName: "technicalHandler"
+        handlerName: "technicalHandler",
+        position: { x: 120.0, y: 160.0 }
       },
       {
         nodeId: "billing",
         nodeType: "ACTION",
-        handlerName: "billingHandler"
+        handlerName: "billingHandler",
+        position: { x: 400.0, y: 160.0 }
       },
       {
         nodeId: "general",
         nodeType: "ACTION",
-        handlerName: "generalHandler"
+        handlerName: "generalHandler",
+        position: { x: 680.0, y: 160.0 }
       },
       {
         nodeId: "resolve",
         nodeType: "END",
-        handlerName: "resolveHandler"
+        handlerName: "resolveHandler",
+        position: { x: 400.0, y: 320.0 }
       }
     ],
     edges: [
@@ -784,14 +794,7 @@ mutation BuildSupportTriageGraph {
     config: {
       timeout: "30s",
       retryCount: "3"
-    },
-    positions: [
-      { nodeId: "triage", x: 400.0, y: 0.0 },
-      { nodeId: "technical", x: 120.0, y: 160.0 },
-      { nodeId: "billing", x: 400.0, y: 160.0 },
-      { nodeId: "general", x: 680.0, y: 160.0 },
-      { nodeId: "resolve", x: 400.0, y: 320.0 }
-    ]
+    }
   }) {
     success
     graphId

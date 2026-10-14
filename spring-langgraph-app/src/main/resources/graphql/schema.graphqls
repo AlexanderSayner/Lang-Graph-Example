@@ -43,9 +43,6 @@ input BuildGraphInput {
     nodes: [NodeInput!]!
     edges: [EdgeInput!]!
     config: JSON
-    # UI node coordinates persisted atomically with the definition, so a build does not depend on a
-    # follow-up saveGraphCoordinates call. Optional: omitted positions leave the layout untouched.
-    positions: [NodePositionInput!]
 }
 
 input ExecuteGraphInput {
@@ -67,6 +64,10 @@ input NodeInput {
     nodeType: NodeType!
     handlerName: String!
     metadata: JSON
+    # UI coordinates for this node, persisted atomically with the definition, so a build does not
+    # depend on a follow-up saveGraphCoordinates call. Optional: omitted positions leave the layout
+    # untouched for that node.
+    position: PositionInput
 }
 
 input EdgeInput {
@@ -75,6 +76,15 @@ input EdgeInput {
     condition: String
 }
 
+# Canvas coordinates of a single node. Carried inside NodeInput so a build writes the layout
+# together with the definition (no parallel list to keep in sync with nodes).
+input PositionInput {
+    x: Float!
+    y: Float!
+}
+
+# Flat nodeId + coordinates pair used by the standalone saveGraphCoordinates mutation, which has no
+# surrounding node object to attach the position to.
 input NodePositionInput {
     nodeId: String!
     x: Float!

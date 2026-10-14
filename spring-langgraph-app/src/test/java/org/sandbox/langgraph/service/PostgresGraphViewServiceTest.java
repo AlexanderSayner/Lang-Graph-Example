@@ -28,7 +28,8 @@ class PostgresGraphViewServiceTest {
 
     /**
      * Representative JSON shape written by GraphPostgresService.saveGraph(): the BuildGraphInput
-     * record is serialized as-is (also carrying {@code config} and, when supplied, {@code positions}),
+     * record is serialized as-is (also carrying {@code config} and, on each node, an optional
+     * {@code position}),
      * so the name is under the {@code graphName} key, never under {@code name}. Only the keys that
      * matter for this test are shown.
      */

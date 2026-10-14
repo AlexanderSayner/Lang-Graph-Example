@@ -82,23 +82,35 @@ class GraphQlSchemaContractTest {
     }
 
     @Test
-    @DisplayName("BuildGraphInput carries the optional positions field so a build persists the layout")
-    void buildGraphInputAcceptsPositions() throws Exception {
+    @DisplayName("NodeInput carries the optional position field so a build persists the layout")
+    void nodeInputAcceptsPosition() throws Exception {
         GraphQLSchema schema = buildSchema();
 
-        // A build must be able to save node coordinates in the same call as the definition.
-        assertThat(fieldTypeName(schema, "BuildGraphInput", "positions")).isEqualTo("NodePositionInput");
+        // A build must be able to save node coordinates in the same call as the definition, hanging
+        // them off the node they belong to instead of a parallel BuildGraphInput.positions list.
+        assertThat(fieldTypeName(schema, "NodeInput", "position")).isEqualTo("PositionInput");
 
         // The field itself is nullable, so clients that omit it (RequestExamples payloads, curl,
         // older frontends) still produce a valid build.
-        GraphQLType positionsType = ((GraphQLInputObjectType) schema.getType("BuildGraphInput"))
-                .getField("positions").getType();
-        assertThat(positionsType).isNotInstanceOf(GraphQLNonNull.class);
-        // ...while the list elements are required, so a supplied position always carries nodeId/x/y.
-        assertThat(positionsType).isInstanceOf(GraphQLModifiedType.class);
-        assertThat(((GraphQLModifiedType) positionsType).getWrappedType()).isInstanceOf(GraphQLNonNull.class);
+        GraphQLType positionType = ((GraphQLInputObjectType) schema.getType("NodeInput"))
+                .getField("position").getType();
+        assertThat(positionType).isNotInstanceOf(GraphQLNonNull.class);
 
-        // The standalone mutation that the viewer (Save Layout / Auto Layout) uses must stay available.
+        // PositionInput exposes the canvas coordinates as required floats.
+        assertThat(fieldTypeName(schema, "PositionInput", "x")).isEqualTo("Float");
+        assertThat(fieldTypeName(schema, "PositionInput", "y")).isEqualTo("Float");
+        assertThat(((GraphQLInputObjectType) schema.getType("PositionInput")).getField("x").getType())
+                .isInstanceOf(GraphQLNonNull.class);
+        assertThat(((GraphQLInputObjectType) schema.getType("PositionInput")).getField("y").getType())
+                .isInstanceOf(GraphQLNonNull.class);
+
+        // The old top-level parallel list is gone - it duplicated nodeId and could drift from nodes.
+        GraphQLInputObjectType buildInput = (GraphQLInputObjectType) schema.getType("BuildGraphInput");
+        assertThat(buildInput.getField("positions")).isNull();
+
+        // NodePositionInput and the standalone mutation the viewer (Save Layout / Auto Layout) uses
+        // must stay available - they still need the flat nodeId + coordinates pair.
+        assertThat(schema.getType("NodePositionInput")).isNotNull();
         assertThat(schema.getMutationType().getField("saveGraphCoordinates")).isNotNull();
     }
 

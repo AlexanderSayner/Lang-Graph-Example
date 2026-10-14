@@ -7,7 +7,8 @@ import org.sandbox.langgraph.core.model.GraphEntity;
 import org.sandbox.langgraph.core.model.GraphStatus;
 import org.sandbox.langgraph.core.repository.GraphRepository;
 import org.sandbox.langgraph.dto.graphql.input.BuildGraphInput;
-import org.sandbox.langgraph.dto.graphql.input.NodePositionInput;
+import org.sandbox.langgraph.dto.graphql.input.NodeInput;
+import org.sandbox.langgraph.dto.graphql.input.PositionInput;
 import org.sandbox.langgraph.dto.pagination.PageData;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
@@ -33,16 +34,16 @@ public class GraphPostgresService {
     /**
      * Persists the graph definition together with its UI layout in a single row write.
      * <p>
-     * The {@code coordinates} JSONB column is derived from {@link BuildGraphInput#positions()} instead
-     * of being reset to {@code "{}"}, so a build saves the layout atomically with the definition and no
-     * longer depends on a follow-up {@code saveGraphCoordinates} call. When the client sends no
-     * positions (non-UI callers) the behaviour is unchanged: the layout stays empty.
+     * The {@code coordinates} JSONB column is derived from the {@link NodeInput#position()} of every
+     * node instead of being reset to {@code "{}"}, so a build saves the layout atomically with the
+     * definition and no longer depends on a follow-up {@code saveGraphCoordinates} call. When the
+     * client sends no node positions (non-UI callers) the behaviour is unchanged: the layout stays empty.
      */
     @Transactional
     public void saveGraph(BuildGraphInput input) {
         try {
             String definitionJson = objectMapper.writeValueAsString(input);
-            String coordinatesJson = coordinatesJson(input.positions());
+            String coordinatesJson = coordinatesJson(input.nodes());
 
             GraphEntity entity = new GraphEntity(
                     input.graphId(),
@@ -64,23 +65,28 @@ public class GraphPostgresService {
     }
 
     /**
-     * Maps the incoming positions to the persisted coordinate shape
+     * Maps the position carried by each node to the persisted coordinate shape
      * {@code {"node_1": {"x": 100.0, "y": 200.0}}} - the exact structure
-     * {@code PostgresGraphCoordinatesService} writes and {@code PostgresGraphViewService} reads.
+     * {@code PostgresGraphCoordinatesService} writes and {@code PostgresGraphViewService} reads back
+     * into {@code nodes[].position}. Nodes without a position (or with a blank id) are skipped.
      *
-     * @return {@code "{}"} when no positions are supplied, otherwise the serialized coordinate map
+     * @return {@code "{}"} when no node carries a position, otherwise the serialized coordinate map
      */
-    private String coordinatesJson(List<NodePositionInput> positions) throws JsonProcessingException {
-        if (positions == null || positions.isEmpty()) {
+    private String coordinatesJson(List<NodeInput> nodes) throws JsonProcessingException {
+        if (nodes == null || nodes.isEmpty()) {
             return "{}";
         }
 
         Map<String, Map<String, Double>> coordinates = new LinkedHashMap<>();
-        for (NodePositionInput position : positions) {
-            if (position.nodeId() == null || position.nodeId().isBlank()) {
+        for (NodeInput node : nodes) {
+            if (node == null || node.nodeId() == null || node.nodeId().isBlank()) {
                 continue;
             }
-            coordinates.put(position.nodeId(), Map.of("x", position.x(), "y", position.y()));
+            PositionInput position = node.position();
+            if (position == null) {
+                continue;
+            }
+            coordinates.put(node.nodeId(), Map.of("x", position.x(), "y", position.y()));
         }
         return objectMapper.writeValueAsString(coordinates);
     }

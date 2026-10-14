@@ -60,9 +60,11 @@ purpose, because those need an explicit answer.
 
 ## Builder save
 
-`builder.jsx` `handleSave()` sends the layout **inside** the `buildGraph` input as
-`positions: [{ nodeId, x, y }]`, so the definition and the node coordinates are persisted in one
-write (`GraphPostgresService.saveGraph()` derives the `coordinates` JSONB column from that list
-instead of hardcoding `{}`). The same `saveGraphCoordinates` mutation is still fired right afterwards
-as a redundant confirmation write - it is idempotent on the server, and it remains the path used by
-the canvas buttons above, which save a layout without rebuilding the graph.
+`builder.jsx` `handleSave()` sends the layout **inside** every node of the `buildGraph` input as
+`position: { x, y }` (`NodeInput.position`, input type `PositionInput`), so the definition and the node
+coordinates are persisted in one write (`GraphPostgresService.saveGraph()` derives the `coordinates`
+JSONB column from those per-node positions instead of hardcoding `{}`). There is no separate positions
+list that could drift away from the nodes. The same `saveGraphCoordinates` mutation is still fired right
+afterwards as a redundant confirmation write - it takes the flat `positions: [{ nodeId, x, y }]` pair, is
+idempotent on the server, and remains the path used by the canvas buttons above, which save a layout
+without rebuilding the graph.
