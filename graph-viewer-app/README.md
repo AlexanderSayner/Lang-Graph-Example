@@ -57,3 +57,12 @@ Action feedback is shown in a toast in the top centre of the window (`components
 dismisses after ~3.5 s, click to dismiss) - the blocking browser `alert()` popups are gone from both
 the viewer and the builder. The `window.confirm` questions (delete graph, rewind) were kept on
 purpose, because those need an explicit answer.
+
+## Builder save
+
+`builder.jsx` `handleSave()` sends the layout **inside** the `buildGraph` input as
+`positions: [{ nodeId, x, y }]`, so the definition and the node coordinates are persisted in one
+write (`GraphPostgresService.saveGraph()` derives the `coordinates` JSONB column from that list
+instead of hardcoding `{}`). The same `saveGraphCoordinates` mutation is still fired right afterwards
+as a redundant confirmation write - it is idempotent on the server, and it remains the path used by
+the canvas buttons above, which save a layout without rebuilding the graph.

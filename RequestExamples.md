@@ -15,11 +15,20 @@ POST http://localhost:9191/graphql
             ],
             "edges": [
                 { "source": "node-1", "target": "node-2" }
+            ],
+            "positions": [
+                { "nodeId": "node-1", "x": 0.0, "y": 0.0 },
+                { "nodeId": "node-2", "x": 0.0, "y": 160.0 }
             ]
         }
     }
 }
 ```
+
+> `positions` is **optional**. When present, `buildGraph` persists it into the `coordinates` column in
+> the same row write as the definition, so saving from the graph builder needs no second call. Omit it
+> and the graph simply opens with an empty layout, exactly as before. Layout-only changes (drag /
+> auto layout without rebuilding) use the dedicated `saveGraphCoordinates` mutation instead.
 
 #### Simple user case
 ```http request

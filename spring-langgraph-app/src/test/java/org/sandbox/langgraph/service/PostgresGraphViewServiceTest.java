@@ -27,8 +27,10 @@ import static org.mockito.Mockito.when;
 class PostgresGraphViewServiceTest {
 
     /**
-     * Exact JSON shape written by GraphPostgresService.saveGraph(): the BuildGraphInput record is
-     * serialized as-is, so the name is under the {@code graphName} key, never under {@code name}.
+     * Representative JSON shape written by GraphPostgresService.saveGraph(): the BuildGraphInput
+     * record is serialized as-is (also carrying {@code config} and, when supplied, {@code positions}),
+     * so the name is under the {@code graphName} key, never under {@code name}. Only the keys that
+     * matter for this test are shown.
      */
     private static final String DEFINITION_WITH_GRAPH_NAME_KEY = """
             {

@@ -423,6 +423,9 @@ input BuildGraphInput {
     nodes: [NodeInput!]!
     edges: [EdgeInput!]!
     config: JSON
+    # Optional UI coordinates: written into the `coordinates` column together with the definition,
+    # so a build persists the layout without a follow-up saveGraphCoordinates call.
+    positions: [NodePositionInput!]
 }
 
 input NodeInput {
@@ -781,7 +784,14 @@ mutation BuildSupportTriageGraph {
     config: {
       timeout: "30s",
       retryCount: "3"
-    }
+    },
+    positions: [
+      { nodeId: "triage", x: 400.0, y: 0.0 },
+      { nodeId: "technical", x: 120.0, y: 160.0 },
+      { nodeId: "billing", x: 400.0, y: 160.0 },
+      { nodeId: "general", x: 680.0, y: 160.0 },
+      { nodeId: "resolve", x: 400.0, y: 320.0 }
+    ]
   }) {
     success
     graphId

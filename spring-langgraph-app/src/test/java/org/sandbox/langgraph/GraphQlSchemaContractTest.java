@@ -5,6 +5,7 @@ import graphql.schema.GraphQLEnumType;
 import graphql.schema.GraphQLInputObjectType;
 import graphql.schema.GraphQLModifiedType;
 import graphql.schema.GraphQLNamedType;
+import graphql.schema.GraphQLNonNull;
 import graphql.schema.GraphQLObjectType;
 import graphql.schema.GraphQLSchema;
 import graphql.schema.GraphQLType;
@@ -78,6 +79,27 @@ class GraphQlSchemaContractTest {
         assertThat(fieldTypeName(schema, "ExecuteGraphPayload", "eventType")).isEqualTo("ExecutionEventType");
         assertThat(fieldTypeName(schema, "GraphViewPayload", "status")).isEqualTo("GraphStatus");
         assertThat(fieldTypeName(schema, "GraphInfo", "status")).isEqualTo("GraphStatus");
+    }
+
+    @Test
+    @DisplayName("BuildGraphInput carries the optional positions field so a build persists the layout")
+    void buildGraphInputAcceptsPositions() throws Exception {
+        GraphQLSchema schema = buildSchema();
+
+        // A build must be able to save node coordinates in the same call as the definition.
+        assertThat(fieldTypeName(schema, "BuildGraphInput", "positions")).isEqualTo("NodePositionInput");
+
+        // The field itself is nullable, so clients that omit it (RequestExamples payloads, curl,
+        // older frontends) still produce a valid build.
+        GraphQLType positionsType = ((GraphQLInputObjectType) schema.getType("BuildGraphInput"))
+                .getField("positions").getType();
+        assertThat(positionsType).isNotInstanceOf(GraphQLNonNull.class);
+        // ...while the list elements are required, so a supplied position always carries nodeId/x/y.
+        assertThat(positionsType).isInstanceOf(GraphQLModifiedType.class);
+        assertThat(((GraphQLModifiedType) positionsType).getWrappedType()).isInstanceOf(GraphQLNonNull.class);
+
+        // The standalone mutation that the viewer (Save Layout / Auto Layout) uses must stay available.
+        assertThat(schema.getMutationType().getField("saveGraphCoordinates")).isNotNull();
     }
 
     private static List<String> enumValues(GraphQLSchema schema, String typeName) {
