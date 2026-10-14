@@ -204,6 +204,22 @@ export const fetchLlmModels = async (provider) => {
 // Keep in sync with `uses_llm` in python-langgraph-service/app/services/langgraph_servicer.py.
 export const AI_NODE_TYPES = Object.freeze([NODE_TYPES.START, NODE_TYPES.END, NODE_TYPES.ACTION, NODE_TYPES.HUMAN]);
 
+// CSS class suffix per node type. An explicit whitelist rather than a
+// `nodeType.toLowerCase().replace(/_/g, '-')` transform, so a type this build does not know about
+// renders with a visibly distinct "unknown" style instead of silently falling back to React
+// Flow's unstyled white default. `.node-unknown` is defined in styles.css and styles-builder.css.
+const NODE_CLASS_SUFFIXES = Object.freeze({
+    [NODE_TYPES.START]: 'start',
+    [NODE_TYPES.END]: 'end',
+    [NODE_TYPES.ACTION]: 'action',
+    [NODE_TYPES.HUMAN]: 'human',
+    [NODE_TYPES.GRAPH]: 'graph',
+    [NODE_TYPES.HTTP_REQUEST]: 'http-request',
+});
+
+/** React Flow node class for a node type, e.g. HTTP_REQUEST -> "node-http-request". */
+export const nodeClassName = (nodeType) => `node-${NODE_CLASS_SUFFIXES[nodeType] || 'unknown'}`;
+
 export const EXECUTION_EVENT_TYPES = Object.freeze({
     START: 'START',
     NODE_START: 'NODE_START',

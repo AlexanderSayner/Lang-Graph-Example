@@ -11,7 +11,7 @@ import {
     BALANCE_QUERY, EXECUTE_MUTATION, SAVE_MUTATION,
     DELETE_MUTATION, REWIND_MUTATION, COPILOT_MUTATION,
     CLAIM_THREADS_MUTATION,
-    layoutGraph, NODE_TYPES, EXECUTION_EVENT_TYPES
+    layoutGraph, NODE_TYPES, EXECUTION_EVENT_TYPES, nodeClassName
 } from './constants';
 import CopilotTab from './copilot';
 import Sidebar from './components/Sidebar';
@@ -267,7 +267,7 @@ function App() {
 
                     return {
                         id: n.nodeId,
-                        className: `node-${n.nodeType.toLowerCase().replace(/_/g, '-')}`,
+                        className: nodeClassName(n.nodeType),
                         data: {
                             label: (
                                 <div>

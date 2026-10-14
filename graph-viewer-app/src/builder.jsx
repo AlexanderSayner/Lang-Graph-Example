@@ -11,7 +11,7 @@ import './styles-builder.css';
 import { Toast, useToast } from './components/Toast';
 
 // Shared constants from your central file
-import { fetchGraphQL, LIST_QUERY, VIEW_QUERY, SAVE_MUTATION, NODE_TYPES, HTTP_REQUEST_METHOD_OPTIONS, LLM_PROVIDER_OPTIONS, AI_NODE_TYPES } from './constants';
+import { fetchGraphQL, LIST_QUERY, VIEW_QUERY, SAVE_MUTATION, NODE_TYPES, HTTP_REQUEST_METHOD_OPTIONS, LLM_PROVIDER_OPTIONS, AI_NODE_TYPES, nodeClassName } from './constants';
 import ModelDatalist from './components/ModelDatalist';
 
 // --- Params ---
@@ -26,12 +26,9 @@ const HTTP_REQUEST_DEBUG_MUTATION = `mutation Debug($input: HttpRequestDebugInpu
 
 // --- Custom Node ---
 const DesignNode = ({ data, selected }) => {
-    let bgClass = 'node-action';
-    if (data.type === NODE_TYPES.START) bgClass = 'node-start';
-    if (data.type === NODE_TYPES.END) bgClass = 'node-end';
-    if (data.type === NODE_TYPES.HUMAN) bgClass = 'node-human';
-    if (data.type === NODE_TYPES.GRAPH) bgClass = 'node-graph';
-    if (data.type === NODE_TYPES.HTTP_REQUEST) bgClass = 'node-http-request';
+    // Shared whitelist from constants.js: an unknown node type gets the visible "unknown" style
+    // instead of being silently painted as ACTION.
+    const bgClass = nodeClassName(data.type);
 
     const displayText = data.friendlyName || data.label;
 

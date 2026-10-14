@@ -47,6 +47,7 @@ html, body, #root { height: 100%; width: 100%; margin: 0; overflow: hidden; font
 .node-human { background: #fff3e0; border-color: #ff9800; }
 .node-graph { background: #f3e5f5; border-color: #9c27b0; border-style: dashed; }
 .node-http-request { background: #e0f2f1; border-color: #009688; }
+.node-unknown { background: #fafafa; border-color: #9e9e9e; border-style: dashed; }
 
 .node-label { padding: 10px; font-weight: bold; overflow-wrap: anywhere; }
 .node-type { font-size: 10px; opacity: 0.8; font-weight: normal; display: block; margin-top: 2px; }
