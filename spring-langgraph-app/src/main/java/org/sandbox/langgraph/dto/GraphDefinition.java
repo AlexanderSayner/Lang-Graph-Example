@@ -23,6 +23,7 @@ import java.util.Objects;
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record GraphDefinition(
+        @JsonAlias("graphName")
         String name,
         String status,
         List<NodeDefinition> nodes,
