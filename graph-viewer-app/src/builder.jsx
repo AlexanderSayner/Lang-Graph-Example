@@ -11,7 +11,7 @@ import './styles-builder.css';
 import { Toast, useToast } from './components/Toast';
 
 // Shared constants from your central file
-import { fetchGraphQL, LIST_QUERY, VIEW_QUERY, SAVE_MUTATION, NODE_TYPES, TOOL_METHOD_OPTIONS } from './constants';
+import { fetchGraphQL, LIST_QUERY, VIEW_QUERY, SAVE_MUTATION, NODE_TYPES, TOOL_METHOD_OPTIONS, LLM_PROVIDER_OPTIONS, AI_NODE_TYPES } from './constants';
 
 // --- Params ---
 const params = new URLSearchParams(window.location.search);
@@ -73,6 +73,9 @@ function Builder() {
 
     const [graphId, setGraphId] = useState(IS_NEW ? `graph-${Date.now()}` : URL_ID);
     const [graphName, setGraphName] = useState(URL_NAME || "Untitled Graph");
+    // Graph-wide AI default (config.llm_provider / config.llm_model). Individual nodes
+    // may override it; an empty value means "inherit from the server default".
+    const [graphLLM, setGraphLLM] = useState({ provider: '', model: '' });
 
     const reactFlowWrapper = useRef(null);
     const { screenToFlowPosition } = useReactFlow();
@@ -113,6 +116,8 @@ function Builder() {
         } else if (URL_ID) {
             fetchGraphQL(VIEW_QUERY, { graphId: URL_ID }).then(data => {
                 if (!data.getGraphView) return;
+                const cfg = data.getGraphView.config || {};
+                setGraphLLM({ provider: cfg.llm_provider || '', model: cfg.llm_model || '' });
                 setNodes(data.getGraphView.nodes.map(n => ({
                     id: n.nodeId, type: 'designNode', position: n.position || { x: 0, y: 0 },
                     data: {
@@ -123,7 +128,10 @@ function Builder() {
                         method: n.metadata?.method || "GET",
                         url: n.metadata?.url || "",
                         headers: n.metadata?.headers || "{}",
-                        body: n.metadata?.body || ""
+                        body: n.metadata?.body || "",
+                        llmProvider: n.metadata?.llm_provider || "",
+                        llmModel: n.metadata?.llm_model || "",
+                        contextMode: n.metadata?.context_mode || ""
                     }
                 })));
                 setEdges(data.getGraphView.edges.map((e, i) => ({
@@ -158,7 +166,7 @@ function Builder() {
         const id = `node_${Date.now()}`;
         setNodes(nds => nds.concat({
             id, type: 'designNode', position,
-            data: { label: id, type: type, prompt: "", subgraphId: null, friendlyName: null, method: "GET", url: "", headers: "{}", body: "" }
+            data: { label: id, type: type, prompt: "", subgraphId: null, friendlyName: null, method: "GET", url: "", headers: "{}", body: "", llmProvider: "", llmModel: "", contextMode: "" }
         }));
     }, [hasStartNode, screenToFlowPosition, setNodes]);
 
@@ -188,18 +196,27 @@ function Builder() {
                 const meta = { system_prompt: n.data?.prompt || "", label: n.data?.friendlyName || "" };
                 if (n.data?.type === NODE_TYPES.GRAPH && n.data.subgraphId) meta.subgraph_id = n.data.subgraphId;
                 if (n.data?.type === NODE_TYPES.TOOL) { meta.method = n.data.method || "GET"; meta.url = n.data.url || ""; meta.headers = n.data.headers || "{}"; meta.body = n.data.body || ""; }
+                // Per-node AI overrides (empty = inherit the graph/server default).
+                // context_mode is written back too - it used to be silently dropped here.
+                if (n.data?.llmProvider) meta.llm_provider = n.data.llmProvider;
+                if (n.data?.llmModel) meta.llm_model = n.data.llmModel;
+                if (n.data?.contextMode) meta.context_mode = n.data.contextMode;
                 return { nodeId: n.id, nodeType: n.data?.type, handlerName: `${n.id}Handler`, metadata: meta, position: { x: n.position.x, y: n.position.y } };
             });
 
             const payloadEdges = edges.map(e => ({ source: e.source, target: e.target, condition: e.label || null }));
 
+            // Graph-wide AI default - read by the Python service before each node's own override.
+            const config = {};
+            if (graphLLM.provider) config.llm_provider = graphLLM.provider;
+            if (graphLLM.model) config.llm_model = graphLLM.model;
             // UI coordinates ride inside every node of the build input (NodeInput.position), so the
             // definition and the layout are persisted in one write - no parallel positions list that
             // could drift away from nodes. The saveGraphCoordinates call below stays as a redundant
             // confirmation write (identical payload, idempotent on the server).
             const positions = nodes.map(n => ({ nodeId: n.id, x: n.position.x, y: n.position.y }));
 
-            await fetchGraphQL(BUILD_MUTATION, { input: { graphId: graphId, graphName: graphName, nodes: payloadNodes, edges: payloadEdges } });
+            await fetchGraphQL(BUILD_MUTATION, { input: { graphId: graphId, graphName: graphName, nodes: payloadNodes, edges: payloadEdges, config } });
             await fetchGraphQL(SAVE_MUTATION, { graphId: graphId, positions: positions });
 
             showToast("Saved successfully!", "success");
@@ -285,6 +302,13 @@ function Builder() {
                     <h2>Editing:</h2>
                     <input className="name-input" value={graphName} onChange={(e) => setGraphName(e.target.value)} />
                 </div>
+                <div style={{display: 'flex', alignItems: 'center', gap: 8}}>
+                    <span className="form-label" style={{margin: 0, whiteSpace: 'nowrap'}}>Graph AI:</span>
+                    <select className="form-select" style={{width: 200}} value={graphLLM.provider} onChange={(e) => setGraphLLM(prev => ({ ...prev, provider: e.target.value }))}>
+                        {LLM_PROVIDER_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                    </select>
+                    <input className="form-input" style={{width: 240}} value={graphLLM.model} onChange={(e) => setGraphLLM(prev => ({ ...prev, model: e.target.value }))} placeholder="graph model (optional)" />
+                </div>
                 <button onClick={handleSave} className="btn-save" disabled={loading}>{loading ? "Saving..." : "Save Graph"}</button>
             </div>
 
@@ -357,6 +381,20 @@ function Builder() {
                         {/* Conditional Render for Node Types */}
                         {selectedElement.type === 'designNode' && (
                             <>
+                                {AI_NODE_TYPES.includes(selectedElement.data.type) && (
+                                    <div className="form-row">
+                                        <div className="form-group">
+                                            <label className="form-label">LLM Provider</label>
+                                            <select className="form-select" value={selectedElement.data.llmProvider || ""} onChange={(e) => updateNode('llmProvider', e.target.value)}>
+                                                {LLM_PROVIDER_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                                            </select>
+                                        </div>
+                                        <div className="form-group" style={{flex: 2}}>
+                                            <label className="form-label">Model (optional)</label>
+                                            <input className="form-input" value={selectedElement.data.llmModel || ""} onChange={(e) => updateNode('llmModel', e.target.value)} placeholder="empty = provider default" />
+                                        </div>
+                                    </div>
+                                )}
                                 {selectedElement.data.type === NODE_TYPES.GRAPH ? (
                                     <div className="form-row">
                                         <div className="form-group" style={{flex: 2}}>

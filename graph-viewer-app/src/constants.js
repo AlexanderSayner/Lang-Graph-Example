@@ -114,7 +114,7 @@ export const LOGOUT_MUTATION = `mutation { logout }`;
 
 // --- Existing Queries/Mutations ---
 export const LIST_QUERY = `query { listGraphs(pageSize: 100) { graphs { graphId graphName nodeCount } } }`;
-export const VIEW_QUERY = `query Get($graphId: String!) { getGraphView(graphId: $graphId) { nodes { nodeId nodeType metadata position { x y } } edges { source target condition } } }`;
+export const VIEW_QUERY = `query Get($graphId: String!) { getGraphView(graphId: $graphId) { config nodes { nodeId nodeType metadata position { x y } } edges { source target condition } } }`;
 export const HISTORY_QUERY = `query History($graphId: String!, $threadId: String!) {
     getExecutionHistory(graphId: $graphId, threadId: $threadId) {
         success
@@ -142,6 +142,23 @@ export const NODE_TYPES = Object.freeze({
     GRAPH: 'GRAPH',
     TOOL: 'TOOL',
 });
+
+// Multi-provider LLM selection. Keep the values in sync with
+// python-langgraph-service/app/clients/llm.py PROVIDER_PRESETS.
+// An empty value means "inherit": fall back to graph config, then to the server default.
+export const LLM_PROVIDER_OPTIONS = Object.freeze([
+    { value: '',         label: 'Inherit (graph / server default)' },
+    { value: 'yandex',   label: 'YandexGPT' },
+    { value: 'openai',   label: 'OpenAI' },
+    { value: 'groq',     label: 'Groq' },
+    { value: 'deepseek', label: 'DeepSeek' },
+    { value: 'openrouter', label: 'OpenRouter' },
+    { value: 'anthropic', label: 'Anthropic (Claude)' },
+]);
+
+// Node types whose system prompt is actually sent to a model (NodeHandler.process):
+// ACTION and END nodes run a model; TOOL, GRAPH, HUMAN and prompt-less START nodes do not.
+export const AI_NODE_TYPES = Object.freeze([NODE_TYPES.ACTION, NODE_TYPES.END]);
 
 export const EXECUTION_EVENT_TYPES = Object.freeze({
     START: 'START',
