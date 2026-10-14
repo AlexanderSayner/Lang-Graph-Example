@@ -188,17 +188,18 @@ function Builder() {
                 const meta = { system_prompt: n.data?.prompt || "", label: n.data?.friendlyName || "" };
                 if (n.data?.type === NODE_TYPES.GRAPH && n.data.subgraphId) meta.subgraph_id = n.data.subgraphId;
                 if (n.data?.type === NODE_TYPES.TOOL) { meta.method = n.data.method || "GET"; meta.url = n.data.url || ""; meta.headers = n.data.headers || "{}"; meta.body = n.data.body || ""; }
-                return { nodeId: n.id, nodeType: n.data?.type, handlerName: `${n.id}Handler`, metadata: meta };
+                return { nodeId: n.id, nodeType: n.data?.type, handlerName: `${n.id}Handler`, metadata: meta, position: { x: n.position.x, y: n.position.y } };
             });
 
             const payloadEdges = edges.map(e => ({ source: e.source, target: e.target, condition: e.label || null }));
 
-            // UI coordinates ride inside the build input so the definition and the layout are persisted
-            // in one write; the saveGraphCoordinates call below stays as a redundant confirmation write
-            // (identical payload, idempotent on the server).
+            // UI coordinates ride inside every node of the build input (NodeInput.position), so the
+            // definition and the layout are persisted in one write - no parallel positions list that
+            // could drift away from nodes. The saveGraphCoordinates call below stays as a redundant
+            // confirmation write (identical payload, idempotent on the server).
             const positions = nodes.map(n => ({ nodeId: n.id, x: n.position.x, y: n.position.y }));
 
-            await fetchGraphQL(BUILD_MUTATION, { input: { graphId: graphId, graphName: graphName, nodes: payloadNodes, edges: payloadEdges, positions: positions } });
+            await fetchGraphQL(BUILD_MUTATION, { input: { graphId: graphId, graphName: graphName, nodes: payloadNodes, edges: payloadEdges } });
             await fetchGraphQL(SAVE_MUTATION, { graphId: graphId, positions: positions });
 
             showToast("Saved successfully!", "success");

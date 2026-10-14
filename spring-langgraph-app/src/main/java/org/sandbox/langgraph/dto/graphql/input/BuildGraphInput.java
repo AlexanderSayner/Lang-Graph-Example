@@ -23,15 +23,6 @@ public record BuildGraphInput(
         @Valid
         List<EdgeInput> edges,
 
-        Map<String, Object> config,
-
-        /**
-         * UI node coordinates for this build. Persisted into the {@code coordinates} JSONB column,
-         * so saving a graph from the builder writes layout and definition in one call.
-         * Optional: {@code null}/empty keeps the current behaviour (empty layout).
-         * Never forwarded to the Python engine over gRPC - the proto contract has no positions.
-         */
-        @Valid
-        List<NodePositionInput> positions
+        Map<String, Object> config
 ) {
 }
