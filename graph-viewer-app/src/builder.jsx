@@ -193,8 +193,13 @@ function Builder() {
 
             const payloadEdges = edges.map(e => ({ source: e.source, target: e.target, condition: e.label || null }));
 
-            await fetchGraphQL(BUILD_MUTATION, { input: { graphId: graphId, graphName: graphName, nodes: payloadNodes, edges: payloadEdges } });
-            await fetchGraphQL(SAVE_MUTATION, { graphId: graphId, positions: nodes.map(n => ({ nodeId: n.id, x: n.position.x, y: n.position.y })) });
+            // UI coordinates ride inside the build input so the definition and the layout are persisted
+            // in one write; the saveGraphCoordinates call below stays as a redundant confirmation write
+            // (identical payload, idempotent on the server).
+            const positions = nodes.map(n => ({ nodeId: n.id, x: n.position.x, y: n.position.y }));
+
+            await fetchGraphQL(BUILD_MUTATION, { input: { graphId: graphId, graphName: graphName, nodes: payloadNodes, edges: payloadEdges, positions: positions } });
+            await fetchGraphQL(SAVE_MUTATION, { graphId: graphId, positions: positions });
 
             showToast("Saved successfully!", "success");
             window.location.href = 'index.html';

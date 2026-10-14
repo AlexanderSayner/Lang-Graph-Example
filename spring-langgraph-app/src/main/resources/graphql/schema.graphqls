@@ -43,6 +43,9 @@ input BuildGraphInput {
     nodes: [NodeInput!]!
     edges: [EdgeInput!]!
     config: JSON
+    # UI node coordinates persisted atomically with the definition, so a build does not depend on a
+    # follow-up saveGraphCoordinates call. Optional: omitted positions leave the layout untouched.
+    positions: [NodePositionInput!]
 }
 
 input ExecuteGraphInput {
