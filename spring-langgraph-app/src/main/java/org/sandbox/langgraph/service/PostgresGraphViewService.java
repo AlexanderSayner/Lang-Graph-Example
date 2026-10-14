@@ -57,7 +57,7 @@ public class PostgresGraphViewService {
 
         return new GraphViewData(
                 entity.getGraphId(),
-                graphDef.name(),
+                entity.getName(), // Source of truth is the name column (same one that feeds listGraphs),
                 entity.getStatus(), // Use the status directly from the Postgres entity
                 nodes,
                 edges
