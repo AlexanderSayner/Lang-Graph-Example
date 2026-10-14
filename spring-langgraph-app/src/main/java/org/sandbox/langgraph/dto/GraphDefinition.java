@@ -27,7 +27,8 @@ public record GraphDefinition(
         String name,
         String status,
         List<NodeDefinition> nodes,
-        List<EdgeDefinition> edges) {
+        List<EdgeDefinition> edges,
+        Map<String, Object> config) {
 
     /**
      * Compact constructor that guarantees non-null lists,
@@ -36,6 +37,8 @@ public record GraphDefinition(
     public GraphDefinition {
         nodes = nodes != null ? nodes : List.of();
         edges = edges != null ? edges : List.of();
+        // Graph-wide settings (e.g. llm_provider / llm_model) persisted with the graph.
+        config = config != null ? config : Map.of();
     }
 
     // ------------------------------------------------------------------

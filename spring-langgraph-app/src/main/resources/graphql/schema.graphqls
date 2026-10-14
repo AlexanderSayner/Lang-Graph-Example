@@ -210,6 +210,8 @@ type GraphViewPayload {
     nodes: [GraphNode!]!
     edges: [GraphEdge!]!
     message: String
+    # Graph-wide settings (e.g. llm_provider / llm_model) - overridden per node in metadata
+    config: JSON
 }
 
 type GraphNode {
