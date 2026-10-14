@@ -427,7 +427,7 @@ input BuildGraphInput {
 
 input NodeInput {
     nodeId: String!
-    nodeType: String!
+    nodeType: NodeType!      # START | END | ACTION | HUMAN | GRAPH | TOOL
     handlerName: String!
     metadata: JSON
 }
@@ -440,12 +440,48 @@ input EdgeInput {
 
 # Output Payloads
 type GraphExecutionEventPayload {
-    eventType: String!
+    eventType: ExecutionEventType!   # START | NODE_START | NODE_END | END | WAITING_FOR_INPUT | ERROR
     nodeId: String
     output: String
     state: JSON
     timestamp: Long!
     errorMessage: String
+}
+
+# Enums (strict contract - replaces the former stringly-typed nodeType/eventType/method/status)
+enum NodeType {
+    START
+    END
+    ACTION
+    HUMAN
+    GRAPH
+    TOOL
+}
+
+enum ExecutionEventType {
+    START
+    NODE_START
+    NODE_END
+    END
+    WAITING_FOR_INPUT
+    ERROR
+}
+
+enum HttpMethod {
+    GET
+    POST
+    PUT
+    PATCH
+    DELETE
+    HEAD
+    OPTIONS
+}
+
+enum GraphStatus {
+    ACTIVE
+    INACTIVE
+    ERROR
+    BUILDING
 }
 
 # Custom Scalars
@@ -459,7 +495,8 @@ scalar Long
 2. **Payload Pattern**: All mutations return structured payloads with success flags
 3. **Pagination Support**: `pageInfo` and `pageToken` for cursor-based pagination
 4. **Nullable vs Non-Null**: Careful use of `!` to indicate required fields
-5. **Custom Scalars**: JSON for flexible metadata, Long for timestamps
+5. **Enums for closed sets**: `NodeType`, `ExecutionEventType`, `HttpMethod` and `GraphStatus` are typed as enums so invalid values are rejected at the GraphQL edge instead of failing opaquely in the Python engine
+6. **Custom Scalars**: JSON for flexible metadata, Long for timestamps
 
 ---
 

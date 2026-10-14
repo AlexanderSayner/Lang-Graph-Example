@@ -1,7 +1,9 @@
 package org.sandbox.langgraph.dto.graphql.input;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
+import org.sandbox.langgraph.core.model.NodeType;
 
 import java.util.Map;
 
@@ -10,8 +12,8 @@ public record NodeInput(
         @Size(max = 100)
         String nodeId,
 
-        @NotBlank(message = "Node type is required")
-        String nodeType,
+        @NotNull(message = "Node type is required")
+        NodeType nodeType,
 
         @NotBlank(message = "Handler name is required")
         String handlerName,

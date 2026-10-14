@@ -106,13 +106,13 @@ mutation BuildNewGraph {
     nodes: [
       {
         nodeId: "search",
-        nodeType: "tool",
+        nodeType: "TOOL",
         handlerName: "tavily_search",
         metadata: { maxResults: "5" }
       },
       {
         nodeId: "synthesize",
-        nodeType: "llm",
+        nodeType: "ACTION",
         handlerName: "openai_gpt4"
       }
     ],

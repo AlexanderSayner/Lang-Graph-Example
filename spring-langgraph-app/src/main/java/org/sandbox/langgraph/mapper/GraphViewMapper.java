@@ -2,6 +2,7 @@ package org.sandbox.langgraph.mapper;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.sandbox.langgraph.core.model.NodeType;
 import org.sandbox.langgraph.dto.graphql.payload.redis.*;
 import org.springframework.stereotype.Component;
 
@@ -51,7 +52,7 @@ public class GraphViewMapper {
 
                             return new GraphNode(
                                     (String) nodeMap.get("nodeId"),
-                                    (String) nodeMap.get("nodeType"),
+                                    NodeType.fromString((String) nodeMap.get("nodeType")),
                                     (String) nodeMap.get("handlerName"),
                                     metadata,
                                     position

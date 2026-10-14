@@ -11,7 +11,7 @@ import './styles-builder.css';
 import { Toast, useToast } from './components/Toast';
 
 // Shared constants from your central file
-import { fetchGraphQL, LIST_QUERY, VIEW_QUERY, SAVE_MUTATION } from './constants';
+import { fetchGraphQL, LIST_QUERY, VIEW_QUERY, SAVE_MUTATION, NODE_TYPES, TOOL_METHOD_OPTIONS } from './constants';
 
 // --- Params ---
 const params = new URLSearchParams(window.location.search);
@@ -26,22 +26,22 @@ const TOOL_DEBUG_MUTATION = `mutation Debug($input: ToolDebugInput!) { debugTool
 // --- Custom Node ---
 const DesignNode = ({ data, selected }) => {
     let bgClass = 'node-action';
-    if (data.type === 'START') bgClass = 'node-start';
-    if (data.type === 'END') bgClass = 'node-end';
-    if (data.type === 'HUMAN') bgClass = 'node-human';
-    if (data.type === 'GRAPH') bgClass = 'node-graph';
-    if (data.type === 'TOOL') bgClass = 'node-tool';
+    if (data.type === NODE_TYPES.START) bgClass = 'node-start';
+    if (data.type === NODE_TYPES.END) bgClass = 'node-end';
+    if (data.type === NODE_TYPES.HUMAN) bgClass = 'node-human';
+    if (data.type === NODE_TYPES.GRAPH) bgClass = 'node-graph';
+    if (data.type === NODE_TYPES.TOOL) bgClass = 'node-tool';
 
     const displayText = data.friendlyName || data.label;
 
     return (
         <div className={`react-flow__node ${bgClass}`} style={{ borderWidth: selected ? 3 : 2 }}>
-            {data.type !== 'START' && <Handle type="target" position={Position.Top} style={{ background: '#555' }} />}
+            {data.type !== NODE_TYPES.START && <Handle type="target" position={Position.Top} style={{ background: '#555' }} />}
             <div className="node-label">
                 {displayText}
                 <span className="node-type">{data.type}</span>
             </div>
-            {data.type !== 'END' && <Handle type="source" position={Position.Bottom} style={{ background: '#555' }} />}
+            {data.type !== NODE_TYPES.END && <Handle type="source" position={Position.Bottom} style={{ background: '#555' }} />}
         </div>
     );
 };
@@ -98,7 +98,7 @@ function Builder() {
         return null;
     }, [nodes, edges]);
 
-    const hasStartNode = nodes.some(n => n.data?.type === 'START');
+    const hasStartNode = nodes.some(n => n.data?.type === NODE_TYPES.START);
 
     useEffect(() => {
         // Load available graphs for the dropdown
@@ -141,7 +141,7 @@ function Builder() {
     }, []);
 
     const onDragStart = (e, type) => {
-        if (type === 'START' && hasStartNode) return;
+        if (type === NODE_TYPES.START && hasStartNode) return;
         e.dataTransfer.setData('application/reactflow', type);
         e.dataTransfer.effectAllowed = 'move';
     };
@@ -151,7 +151,7 @@ function Builder() {
     const onDrop = useCallback((e) => {
         e.preventDefault();
         const type = e.dataTransfer.getData('application/reactflow');
-        if (!type || (type === 'START' && hasStartNode)) return;
+        if (!type || (type === NODE_TYPES.START && hasStartNode)) return;
 
         const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
 
@@ -181,13 +181,13 @@ function Builder() {
         if (!graphName.trim()) { showToast("Please enter a graph name.", "error"); return; }
         setLoading(true);
         try {
-            if (!nodes.find(n => n.data?.type === 'START')) throw new Error("Graph needs a START node");
-            if (!nodes.find(n => n.data?.type === 'END')) throw new Error("Graph needs an END node");
+            if (!nodes.find(n => n.data?.type === NODE_TYPES.START)) throw new Error("Graph needs a START node");
+            if (!nodes.find(n => n.data?.type === NODE_TYPES.END)) throw new Error("Graph needs an END node");
 
             const payloadNodes = nodes.map(n => {
                 const meta = { system_prompt: n.data?.prompt || "", label: n.data?.friendlyName || "" };
-                if (n.data?.type === 'GRAPH' && n.data.subgraphId) meta.subgraph_id = n.data.subgraphId;
-                if (n.data?.type === 'TOOL') { meta.method = n.data.method || "GET"; meta.url = n.data.url || ""; meta.headers = n.data.headers || "{}"; meta.body = n.data.body || ""; }
+                if (n.data?.type === NODE_TYPES.GRAPH && n.data.subgraphId) meta.subgraph_id = n.data.subgraphId;
+                if (n.data?.type === NODE_TYPES.TOOL) { meta.method = n.data.method || "GET"; meta.url = n.data.url || ""; meta.headers = n.data.headers || "{}"; meta.body = n.data.body || ""; }
                 return { nodeId: n.id, nodeType: n.data?.type, handlerName: `${n.id}Handler`, metadata: meta };
             });
 
@@ -284,12 +284,12 @@ function Builder() {
 
             <div className="main-content">
                 <div className="palette">
-                    <div className={`palette-node ${hasStartNode ? 'disabled' : ''}`} title="Start Node" draggable={!hasStartNode} onDragStart={(e) => onDragStart(e, 'START')}>🚀</div>
-                    <div className="palette-node" title="Action Node" draggable onDragStart={(e) => onDragStart(e, 'ACTION')}>🤖</div>
-                    <div className="palette-node" title="Human Node" draggable onDragStart={(e) => onDragStart(e, 'HUMAN')}>👤</div>
-                    <div className="palette-node" title="Subgraph Node" draggable onDragStart={(e) => onDragStart(e, 'GRAPH')}>🧩</div>
-                    <div className="palette-node" title="Tool Node (HTTP)" draggable onDragStart={(e) => onDragStart(e, 'TOOL')}>🔧</div>
-                    <div className="palette-node" title="End Node" draggable onDragStart={(e) => onDragStart(e, 'END')}>🛑</div>
+                    <div className={`palette-node ${hasStartNode ? 'disabled' : ''}`} title="Start Node" draggable={!hasStartNode} onDragStart={(e) => onDragStart(e, NODE_TYPES.START)}>🚀</div>
+                    <div className="palette-node" title="Action Node" draggable onDragStart={(e) => onDragStart(e, NODE_TYPES.ACTION)}>🤖</div>
+                    <div className="palette-node" title="Human Node" draggable onDragStart={(e) => onDragStart(e, NODE_TYPES.HUMAN)}>👤</div>
+                    <div className="palette-node" title="Subgraph Node" draggable onDragStart={(e) => onDragStart(e, NODE_TYPES.GRAPH)}>🧩</div>
+                    <div className="palette-node" title="Tool Node (HTTP)" draggable onDragStart={(e) => onDragStart(e, NODE_TYPES.TOOL)}>🔧</div>
+                    <div className="palette-node" title="End Node" draggable onDragStart={(e) => onDragStart(e, NODE_TYPES.END)}>🛑</div>
                 </div>
 
                 <div className="canvas-wrapper" ref={reactFlowWrapper} onDrop={onDrop} onDragOver={onDragOver}>
@@ -351,7 +351,7 @@ function Builder() {
                         {/* Conditional Render for Node Types */}
                         {selectedElement.type === 'designNode' && (
                             <>
-                                {selectedElement.data.type === 'GRAPH' ? (
+                                {selectedElement.data.type === NODE_TYPES.GRAPH ? (
                                     <div className="form-row">
                                         <div className="form-group" style={{flex: 2}}>
                                             <label className="form-label">Link to Subgraph</label>
@@ -361,13 +361,13 @@ function Builder() {
                                             </select>
                                         </div>
                                     </div>
-                                ) : selectedElement.data.type === 'TOOL' ? (
+                                ) : selectedElement.data.type === NODE_TYPES.TOOL ? (
                                     <>
                                         <div className="form-row">
                                             <div className="form-group" style={{flex: 0.3}}>
                                                 <label className="form-label">Method</label>
                                                 <select className="form-select" value={selectedElement.data.method || "GET"} onChange={(e) => updateNode('method', e.target.value)}>
-                                                    <option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option>
+                                                    {TOOL_METHOD_OPTIONS.map(m => <option key={m} value={m}>{m}</option>)}
                                                 </select>
                                             </div>
                                             <div className="form-group" style={{flex: 1.7}}>

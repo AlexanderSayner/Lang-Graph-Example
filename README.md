@@ -260,13 +260,13 @@ mutation {
     nodes: [
       {
         nodeId: "start"
-        nodeType: "agent"
+        nodeType: "ACTION"
         handlerName: "chat_agent"
         metadata: { model: "gpt-4" }
       }
       {
         nodeId: "end"
-        nodeType: "end"
+        nodeType: "END"
         handlerName: "finalize"
       }
     ]

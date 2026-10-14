@@ -1,6 +1,7 @@
 package org.sandbox.langgraph.dto.graphql.payload;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import org.sandbox.langgraph.core.model.ExecutionEventType;
 
 import java.util.Map; /**
  * Avoids collision with org.sandbox.langgraph.grpc.ExecuteGraphResponse
@@ -9,7 +10,7 @@ import java.util.Map; /**
 public record ExecuteGraphPayload(
         boolean success,
         String output,
-        String eventType,
+        ExecutionEventType eventType,
         Map<String, Object> state,
         Integer totalTokens,
         String errorMessage

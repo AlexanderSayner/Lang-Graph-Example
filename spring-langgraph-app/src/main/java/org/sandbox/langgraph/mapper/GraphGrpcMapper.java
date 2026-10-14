@@ -1,6 +1,8 @@
 package org.sandbox.langgraph.mapper;
 
 import org.mapstruct.Mapper;
+import org.sandbox.langgraph.core.model.ExecutionEventType;
+import org.sandbox.langgraph.core.model.GraphStatus;
 import org.sandbox.langgraph.dto.graphql.input.BuildGraphInput;
 import org.sandbox.langgraph.dto.graphql.input.EdgeInput;
 import org.sandbox.langgraph.dto.graphql.input.ExecuteGraphInput;
@@ -41,7 +43,7 @@ public interface GraphGrpcMapper {
     default NodeDefinition toNodeDefinition(NodeInput node) {
         NodeDefinition.Builder builder = NodeDefinition.newBuilder()
                 .setNodeId(node.nodeId())
-                .setNodeType(node.nodeType())
+                .setNodeType(node.nodeType().name())
                 .setHandlerName(node.handlerName());
         if (node.metadata() != null) {
             builder.putAllMetadata(convertToStringMap(node.metadata()));
@@ -143,7 +145,7 @@ public interface GraphGrpcMapper {
     }
 
     default GraphSummary toGraphSummary(org.sandbox.langgraph.grpc.GraphInfo graph) {
-        return new GraphSummary(graph.getGraphId(), graph.getGraphName(), graph.getNodeCount(), graph.getCreatedAt(), graph.getStatus());
+        return new GraphSummary(graph.getGraphId(), graph.getGraphName(), graph.getNodeCount(), graph.getCreatedAt(), GraphStatus.fromString(graph.getStatus()));
     }
 
     default GraphStatePayload toGraphStatePayload(org.sandbox.langgraph.grpc.GetGraphStateResponse response) {
@@ -161,7 +163,7 @@ public interface GraphGrpcMapper {
 
     default GraphExecutionEventPayload toGraphExecutionEventPayload(org.sandbox.langgraph.grpc.ExecuteGraphResponse response) {
         return new GraphExecutionEventPayload(
-                response.getEventType(),
+                ExecutionEventType.fromString(response.getEventType()),
                 response.getNodeId(),
                 response.getOutput(),
                 new HashMap<>(response.getStateMap()),
