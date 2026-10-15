@@ -381,7 +381,8 @@ mutation {
 
 ### 3. LangGraph Integration
 - Dynamic graph building from node/edge definitions
-- Node handlers, conditional edges and copilot agent (OpenAI / YandexGPT)
+- Node handlers, conditional edges and copilot agent (YandexGPT / OpenAI / Groq / DeepSeek / OpenRouter / Anthropic)
+- Per-node and per-graph LLM provider/model selection layered over the service defaults, so credentials are only needed for the selected provider (see `python-langgraph-service/README.md` → *Multi-Provider LLM Configuration*)
 - Checkpointed execution state persisted in PostgreSQL
 - Execution history with state diffs and rewind
 
@@ -453,7 +454,7 @@ Key environment variables: `SPRING_JDBC_URL`, `POSTGRES_FLYWAY_URL`, `SPRING_JDB
 
 ### Python Service
 
-Configured via environment variables or a `.env` file in `python-langgraph-service/` (see `python-langgraph-service/README.md` for the full list): `SERVER_PORT`, `LOG_LEVEL`, `DATABASE_URL`, `REDIS_URL`, `OPENAI_API_KEY`, `YC_API_KEY`, `YC_FOLDER_ID`, `YC_COMPLETION_MODE`, `TOOL_SERVICE_HOST`, `TOOL_SERVICE_PORT`.
+Configured via environment variables or a `.env` file in `python-langgraph-service/` (see `python-langgraph-service/README.md` for the full list): `SERVER_PORT`, `LOG_LEVEL`, `DATABASE_URL`, `REDIS_URL`, `OPENAI_API_KEY`, `YC_API_KEY`, `YC_FOLDER_ID`, `YC_MODEL_NAME`, `YC_COMPLETION_MODE`, `TOOL_SERVICE_HOST`, `TOOL_SERVICE_PORT`, and the LLM selection settings `LLM_PROVIDER`, `LLM_MODEL`, `LLM_TEMPERATURE`, `LLM_MAX_OUTPUT_TOKENS`, `COPILOT_PROVIDER`, `COPILOT_MODEL` plus the per-provider `<PROVIDER>_API_KEY` / `<PROVIDER>_MODEL` / `<PROVIDER>_BASE_URL`.
 
 ## License
 

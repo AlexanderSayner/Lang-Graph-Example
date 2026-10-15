@@ -46,11 +46,19 @@ public class LangGraphGrpcService {
     private final GraphPostgresService graphPostgresService;
 
     public @NonNull BuildGraphPayload buildGraph(BuildGraphInput input) {
-        graphPostgresService.saveGraph(input);
         log.debug("Building graph: {}", input.graphId());
 
         BuildGraphRequest request = mapper.toBuildGraphRequest(input);
         BuildGraphResponse response = blockingStub.withDeadlineAfter(TIMEOUT, TIMEOUT_UNIT).buildGraph(request);
+
+        // Persist only after the engine accepted the definition. The Python service validates the
+        // config eagerly (e.g. an unknown `config.llm_provider` fails the compile with
+        // LLMConfigError), so saving first used to leave an uncompilable definition behind even
+        // though the mutation failed. Safe to reorder: the engine compiles straight from the
+        // request payload and never reads the saved row back during BuildGraph.
+        if (response.getSuccess()) {
+            graphPostgresService.saveGraph(input);
+        }
         return mapper.toBuildGraphPayload(response);
     }
 

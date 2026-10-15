@@ -29,6 +29,23 @@ RETRY_HINT = (
     "пояснений и без markdown. Ответь строго в том формате, который описан выше, и не отказывайся."
 )
 
+# Same retry instruction for the other providers. The retry hint is appended to the node's
+# system prompt, so a Russian instruction would be an odd (and usually counter-productive)
+# addition to an English prompt sent to OpenAI / Anthropic / Groq / DeepSeek / OpenRouter.
+RETRY_HINT_EN = (
+    "\n\nThe previous answer was not usable. Reply only with the task result: no refusals, "
+    "no apologies and no markdown. Answer strictly in the format described above and do not refuse."
+)
+
+
+def retry_hint_for(llm) -> str:
+    """Provider-appropriate retry instruction.
+
+    Russian for yandex (the historical behaviour) and for any client that does not expose a
+    ``provider`` (the pre-multi-provider Yandex-only path), English for every other provider.
+    """
+    return RETRY_HINT_EN if getattr(llm, "provider", "") not in ("", "yandex") else RETRY_HINT
+
 
 def is_unusable_answer(text: str) -> bool:
     """True when the LLM answer cannot be used by a node (refusal or empty output)."""
@@ -120,7 +137,7 @@ class NodeHandler:
                                attempt, text[:120].replace("\n", " "))
                 return response
             logger.warning("LLM refused or returned an empty answer (attempt %d), retrying", attempt)
-            prompt = system_message + RETRY_HINT
+            prompt = system_message + retry_hint_for(client)
             message = drop_history_block(user_message)
         return response
 

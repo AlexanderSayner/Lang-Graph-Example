@@ -137,6 +137,13 @@ PROVIDER_ALIASES = {
     "ds": "deepseek",
 }
 
+# Env/setting name that carries the *per-provider* model override. Yandex keeps its
+# historical YC_MODEL_NAME; every other provider derives f"{PROVIDER.upper()}_MODEL"
+# (OPENAI_MODEL / GROQ_MODEL / ...), so no entry is needed for them here.
+PROVIDER_MODEL_SETTINGS: Dict[str, str] = {
+    "yandex": "YC_MODEL_NAME",
+}
+
 
 def _pick(*values: Any) -> Optional[str]:
     """First non-empty value as a stripped string (metadata/config values arrive as strings)."""
@@ -147,6 +154,17 @@ def _pick(*values: Any) -> Optional[str]:
         if text:
             return text
     return None
+
+
+def _normalize_provider(value: Any) -> str:
+    """Alias-aware, case-insensitive normalisation of a provider id ("" when unset)."""
+    text = _pick(value) or ""
+    return PROVIDER_ALIASES.get(text.lower(), text.lower())
+
+
+def _provider_model_setting(provider: str) -> str:
+    """Setting name holding the per-provider model override (see PROVIDER_MODEL_SETTINGS)."""
+    return PROVIDER_MODEL_SETTINGS.get(provider, f"{provider.upper()}_MODEL")
 
 
 def _to_float(value: Optional[str], default: float) -> float:
@@ -180,16 +198,21 @@ def resolve_llm_config(node_metadata: Optional[Dict[str, Any]] = None,
     Values arriving over gRPC/JSON are strings, so temperature/max_tokens are parsed
     leniently. An unknown provider raises immediately, so a typo in a graph surfaces
     when the graph is compiled instead of silently falling back to another provider.
+
+    Model precedence is slightly subtler than the provider one: ``LLM_MODEL`` is the model
+    of the *service default* provider, so it is only consulted when the resolved provider
+    IS that default. Otherwise a graph/node that switches provider would inherit a model
+    name belonging to another provider (e.g. ``LLM_MODEL=yandexgpt-lite`` sent to Groq).
+    The per-provider setting (``YC_MODEL_NAME`` / ``<PROVIDER>_MODEL``) comes next.
     """
     node_metadata = node_metadata or {}
     graph_config = graph_config or {}
 
-    provider = _pick(
+    provider = _normalize_provider(_pick(
         node_metadata.get("llm_provider"),
         graph_config.get("llm_provider"),
         settings.LLM_PROVIDER,
-    ) or "yandex"
-    provider = PROVIDER_ALIASES.get(provider.strip().lower(), provider.strip().lower())
+    ) or "yandex")
 
     if provider not in PROVIDER_PRESETS:
         raise LLMConfigError(
@@ -197,11 +220,16 @@ def resolve_llm_config(node_metadata: Optional[Dict[str, Any]] = None,
         )
 
     preset = PROVIDER_PRESETS[provider]
+    # `LLM_MODEL` describes the service default provider; a node/graph that selects a
+    # different provider must not inherit a model name from an unrelated provider.
+    default_provider = _normalize_provider(settings.LLM_PROVIDER) or "yandex"
+    service_model = settings.LLM_MODEL if provider == default_provider else ""
+
     model = _pick(
         node_metadata.get("llm_model"),
         graph_config.get("llm_model"),
-        settings.LLM_MODEL,
-        getattr(settings, f"{provider.upper()}_MODEL", ""),
+        service_model,
+        getattr(settings, _provider_model_setting(provider), ""),
         preset.default_model,
     )
 

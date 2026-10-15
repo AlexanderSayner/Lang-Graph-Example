@@ -156,9 +156,12 @@ export const LLM_PROVIDER_OPTIONS = Object.freeze([
     { value: 'anthropic', label: 'Anthropic (Claude)' },
 ]);
 
-// Node types whose system prompt is actually sent to a model (NodeHandler.process):
-// ACTION and END nodes run a model; TOOL, GRAPH, HUMAN and prompt-less START nodes do not.
-export const AI_NODE_TYPES = Object.freeze([NODE_TYPES.ACTION, NODE_TYPES.END]);
+// Node types whose system prompt is actually sent to a model (NodeHandler.process).
+// Every type except TOOL and GRAPH runs the model when it carries a system_prompt, so
+// START/HUMAN nodes qualify too - only TOOL and GRAPH never do (unless they are routers,
+// which builder.jsx adds back via nodeUsesLlm).
+// Keep in sync with `uses_llm` in python-langgraph-service/app/services/langgraph_servicer.py.
+export const AI_NODE_TYPES = Object.freeze([NODE_TYPES.START, NODE_TYPES.END, NODE_TYPES.ACTION, NODE_TYPES.HUMAN]);
 
 export const EXECUTION_EVENT_TYPES = Object.freeze({
     START: 'START',

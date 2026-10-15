@@ -20,7 +20,7 @@ const URL_ID = params.get('graphId');
 const URL_NAME = params.get('graphName');
 
 // --- GraphQL Mutations specific to Builder ---
-const BUILD_MUTATION = `mutation Build($input: BuildGraphInput!) { buildGraph(input: $input) { success } }`;
+const BUILD_MUTATION = `mutation Build($input: BuildGraphInput!) { buildGraph(input: $input) { success message } }`;
 const TOOL_DEBUG_MUTATION = `mutation Debug($input: ToolDebugInput!) { debugTool(input: $input) { success statusCode body errorMessage } }`;
 
 // --- Custom Node ---
@@ -76,6 +76,10 @@ function Builder() {
     // Graph-wide AI default (config.llm_provider / config.llm_model). Individual nodes
     // may override it; an empty value means "inherit from the server default".
     const [graphLLM, setGraphLLM] = useState({ provider: '', model: '' });
+    // The complete graph-level `config` object, including keys this UI does not manage
+    // (anything a caller set through the buildGraph API). It is spread back into the save
+    // payload so that re-saving from the builder does not silently drop them.
+    const [graphConfig, setGraphConfig] = useState({});
 
     const reactFlowWrapper = useRef(null);
     const { screenToFlowPosition } = useReactFlow();
@@ -103,6 +107,15 @@ function Builder() {
 
     const hasStartNode = nodes.some(n => n.data?.type === NODE_TYPES.START);
 
+    // Whether this node can call the model, mirroring `uses_llm` in
+    // python-langgraph-service/app/services/langgraph_servicer.py: every node type except
+    // TOOL/GRAPH sends its system_prompt to the model, and a router node - any node with an
+    // outgoing conditional (labelled) edge - always does, whatever its type. Without
+    // the router check a TOOL/GRAPH router could not be given a per-node provider here.
+    const nodeUsesLlm = (el) =>
+        AI_NODE_TYPES.includes(el.data?.type) ||
+        edges.some(e => e.source === el.id && String(e.label || '').trim());
+
     useEffect(() => {
         // Load available graphs for the dropdown
         fetchGraphQL(LIST_QUERY).then(data => {
@@ -117,6 +130,7 @@ function Builder() {
             fetchGraphQL(VIEW_QUERY, { graphId: URL_ID }).then(data => {
                 if (!data.getGraphView) return;
                 const cfg = data.getGraphView.config || {};
+                setGraphConfig(cfg);
                 setGraphLLM({ provider: cfg.llm_provider || '', model: cfg.llm_model || '' });
                 setNodes(data.getGraphView.nodes.map(n => ({
                     id: n.nodeId, type: 'designNode', position: n.position || { x: 0, y: 0 },
@@ -207,16 +221,28 @@ function Builder() {
             const payloadEdges = edges.map(e => ({ source: e.source, target: e.target, condition: e.label || null }));
 
             // Graph-wide AI default - read by the Python service before each node's own override.
-            const config = {};
+            // Start from the config that was loaded so unrelated graph-level keys (anything set
+            // through the buildGraph API) survive a re-save, then write - or remove - the two
+            // keys this UI owns. A field reset to "" means "inherit", so its stored key must be
+            // dropped instead of being left stale.
+            const config = { ...graphConfig };
             if (graphLLM.provider) config.llm_provider = graphLLM.provider;
+            else delete config.llm_provider;
             if (graphLLM.model) config.llm_model = graphLLM.model;
+            else delete config.llm_model;
             // UI coordinates ride inside every node of the build input (NodeInput.position), so the
             // definition and the layout are persisted in one write - no parallel positions list that
             // could drift away from nodes. The saveGraphCoordinates call below stays as a redundant
             // confirmation write (identical payload, idempotent on the server).
             const positions = nodes.map(n => ({ nodeId: n.id, x: n.position.x, y: n.position.y }));
 
-            await fetchGraphQL(BUILD_MUTATION, { input: { graphId: graphId, graphName: graphName, nodes: payloadNodes, edges: payloadEdges, config } });
+            // The gateway only persists a definition the engine accepted, so a rejected config
+            // (unknown llm_provider, invalid node, ...) leaves nothing behind - surface the
+            // server's reason instead of continuing to the coordinates write and toasting success.
+            const built = await fetchGraphQL(BUILD_MUTATION, { input: { graphId: graphId, graphName: graphName, nodes: payloadNodes, edges: payloadEdges, config } });
+            if (!built?.buildGraph?.success) {
+                throw new Error(built?.buildGraph?.message || "The graph was rejected by the server");
+            }
             await fetchGraphQL(SAVE_MUTATION, { graphId: graphId, positions: positions });
 
             showToast("Saved successfully!", "success");
@@ -381,7 +407,7 @@ function Builder() {
                         {/* Conditional Render for Node Types */}
                         {selectedElement.type === 'designNode' && (
                             <>
-                                {AI_NODE_TYPES.includes(selectedElement.data.type) && (
+                                {nodeUsesLlm(selectedElement) && (
                                     <div className="form-row">
                                         <div className="form-group">
                                             <label className="form-label">LLM Provider</label>
