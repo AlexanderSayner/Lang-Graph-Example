@@ -516,13 +516,24 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
     @handle_grpc_errors
     async def AskCopilot(self, request, context):
         logger.info("Copilot request received.")
+        # The UI can pick the copilot's model per request. An empty value means "inherit":
+        # fall back to COPILOT_PROVIDER / COPILOT_MODEL, which themselves fall back to the
+        # service-wide LLM_PROVIDER / LLM_MODEL default - the same chain the constructor used
+        # to bake into the startup client. resolve_llm_config is cheap and the registry caches
+        # one client per distinct config, so reusing providers across questions stays warm.
+        client = self._llm_registry.lazy(resolve_llm_config(
+            {},
+            {"llm_provider": request.copilot_provider or settings.COPILOT_PROVIDER,
+             "llm_model": request.copilot_model or settings.COPILOT_MODEL}
+        ))
         ai_response = await self.copilot.ask(
             user_message=request.user_message,
             graph_context_json=request.graph_context_json,
             execution_history_json=request.execution_history_json,
             chat_history_json=request.copilot_chat_history_json,
             selected_node_id=request.selected_node_id,
-            selected_edge_json=request.selected_edge_json
+            selected_edge_json=request.selected_edge_json,
+            llm=client
         )
 
         return langgraph_pb2.CopilotResponse(

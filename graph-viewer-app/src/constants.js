@@ -156,6 +156,13 @@ export const LLM_PROVIDER_OPTIONS = Object.freeze([
     { value: 'anthropic', label: 'Anthropic (Claude)' },
 ]);
 
+// Copilot provider options: the same choices as the graph/node selectors, but the empty value
+// means "inherit the server-side COPILOT_* / LLM_* default". The copilot is a UI assistant, not
+// a graph node, so it has no graph-level config to inherit from - hence the clearer label.
+export const COPILOT_PROVIDER_OPTIONS = Object.freeze(
+    LLM_PROVIDER_OPTIONS.map(o => o.value === '' ? { ...o, label: 'Inherit (server default)' } : o)
+);
+
 // Node types whose system prompt is actually sent to a model (NodeHandler.process).
 // Every type except TOOL and GRAPH runs the model when it carries a system_prompt, so
 // START/HUMAN nodes qualify too - only TOOL and GRAPH never do (unless they are routers,

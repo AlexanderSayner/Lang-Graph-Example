@@ -9,5 +9,7 @@ public interface CopilotService {
                                             String message,
                                             String copilotChatHistoryJson,
                                             String selectedNodeId,
-                                            String selectedEdgeJson);
+                                            String selectedEdgeJson,
+                                            String copilotProvider,
+                                            String copilotModel);
 }

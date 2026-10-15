@@ -43,6 +43,7 @@ export default function ChatPanel({
     messages, graphStatus, loading, input, setInput, handleExecute, chatEndRef,
     historyItems, setModalData, getNodeDisplayName, handleRewind,
     copilotMessages, copilotInput, setCopilotInput, copilotLoading, handleCopilotSend,
+    copilotLLM, setCopilotLLM,
     formatTimestamp
 }) {
     return (
@@ -132,6 +133,8 @@ export default function ChatPanel({
                     setCopilotInput={setCopilotInput}
                     copilotLoading={copilotLoading}
                     handleCopilotSend={handleCopilotSend}
+                    copilotLLM={copilotLLM}
+                    setCopilotLLM={setCopilotLLM}
                     chatEndRef={chatEndRef}
                     onClearChat={() => setCopilotMessages([])}
                 />

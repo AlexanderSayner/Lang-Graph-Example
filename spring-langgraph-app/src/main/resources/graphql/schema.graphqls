@@ -20,7 +20,8 @@ type Mutation {
     debugTool(input: ToolDebugInput!): ToolDebugPayload!
     rewindGraph(graphId: String!, threadId: String!, stateJson: String!, targetNodeId: String): RewindPayload!
     askCopilot(graphId: String!, threadId: String!, message: String!, copilotChatHistoryJson: String,
-        selectedNodeId: String, selectedEdgeJson: String): CopilotPayload!
+        selectedNodeId: String, selectedEdgeJson: String,
+        copilotProvider: String, copilotModel: String): CopilotPayload!
 
     register(username: String!, password: String!): AuthPayload!
     login(username: String!, password: String!): AuthPayload!

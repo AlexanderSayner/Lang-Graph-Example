@@ -208,6 +208,10 @@ message CopilotRequest {
   string copilot_chat_history_json = 4; // Previous chat messages
   string selected_node_id = 5;
   string selected_edge_json = 6;
+  // Optional per-request copilot LLM overrides. Empty means "inherit": COPILOT_PROVIDER /
+  // COPILOT_MODEL, falling back to the service default (LLM_PROVIDER / LLM_MODEL).
+  string copilot_provider = 7;
+  string copilot_model = 8;
 }
 
 message CopilotResponse {

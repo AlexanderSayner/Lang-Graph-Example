@@ -1,3 +1,5 @@
+import { COPILOT_PROVIDER_OPTIONS } from './constants';
+
 // Helper: Simple Markdown-like formatter for AI responses
 const formatMessage = (text) => {
     if (!text) return "";
@@ -24,10 +26,36 @@ const copilotSuggestions = [
 
 export default function CopilotTab({
     copilotMessages, copilotInput, setCopilotInput, copilotLoading,
-    handleCopilotSend, chatEndRef, onClearChat
+    handleCopilotSend, chatEndRef, onClearChat,
+    copilotLLM, setCopilotLLM
 }) {
     return (
         <>
+            {/* Copilot LLM selector: a per-request override of the service COPILOT_* / LLM_*
+                default, remembered in this browser. The chosen provider/model rides along with
+                every question, independent of the graph being viewed. */}
+            <div style={{
+                display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px',
+                borderBottom: '1px solid #eee', background: '#f9fafb', fontSize: '12px'
+            }}>
+                <span style={{ color: '#555', fontWeight: 600, whiteSpace: 'nowrap' }}>Copilot model:</span>
+                <select
+                    className="form-select"
+                    value={copilotLLM?.provider || ''}
+                    onChange={(e) => setCopilotLLM(prev => ({ ...prev, provider: e.target.value }))}
+                    style={{ fontSize: '12px', padding: '4px 6px' }}
+                >
+                    {COPILOT_PROVIDER_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+                <input
+                    className="form-input"
+                    placeholder="model (provider default)"
+                    value={copilotLLM?.model || ''}
+                    onChange={(e) => setCopilotLLM(prev => ({ ...prev, model: e.target.value }))}
+                    style={{ fontSize: '12px', padding: '4px 6px', flex: 1, minWidth: 0 }}
+                />
+            </div>
+
             <div className="chat-messages" style={{ paddingBottom: '10px' }}>
                 {/* Empty State with Quick Actions */}
                 {copilotMessages.length === 0 && (

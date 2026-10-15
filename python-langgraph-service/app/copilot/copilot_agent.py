@@ -107,9 +107,12 @@ class CopilotAgent:
         return self.llm
 
     async def ask(self, user_message: str, graph_context_json: str, execution_history_json: str, chat_history_json: str,
-                  selected_node_id: str, selected_edge_json: str) -> str:
+                  selected_node_id: str, selected_edge_json: str, llm=None) -> str:
         """
         Processes a copilot request and returns the AI response.
+
+        ``llm`` optionally overrides the constructor's client - the servicer passes a
+        per-request one so the UI can choose the copilot's provider/model on every question.
         """
         # Build the System Prompt with Graph Context
         system_prompt = _build_system_prompt(graph_context_json, execution_history_json, selected_node_id,
@@ -121,7 +124,7 @@ class CopilotAgent:
         logger.info(
             f"Copilot processing request (Node: {selected_node_id or 'None'}, Edge: {'Yes' if selected_edge_json else 'None'})")
         try:
-            response_text = await self._resolve().generate(
+            response_text = await (llm or self._resolve()).generate(
                 user_message=formatted_user_message,
                 system_message=system_prompt
             )
