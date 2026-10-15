@@ -60,7 +60,7 @@ class GraphQlSchemaContractTest {
         assertThat(enumValues(schema, "NodeType"))
                 .containsExactlyInAnyOrder("START", "END", "ACTION", "HUMAN", "GRAPH", "HTTP_REQUEST");
         assertThat(enumValues(schema, "ExecutionEventType"))
-                .containsExactlyInAnyOrder("START", "NODE_START", "NODE_END", "END", "WAITING_FOR_INPUT", "ERROR");
+                .containsExactlyInAnyOrder("START", "NODE_START", "NODE_END", "END", "WAITING_FOR_INPUT", "ERROR", "CANCELLED");
         assertThat(enumValues(schema, "HttpMethod"))
                 .containsExactlyInAnyOrder("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS");
         assertThat(enumValues(schema, "GraphStatus"))
@@ -128,6 +128,22 @@ class GraphQlSchemaContractTest {
         assertThat(fieldTypeName(schema, "LlmModel", "label")).isEqualTo("String");
         assertThat(fieldTypeName(schema, "LlmModelsPayload", "source")).isEqualTo("String");
         assertThat(fieldTypeName(schema, "LlmModelsPayload", "errorMessage")).isEqualTo("String");
+    }
+
+    @Test
+    @DisplayName("The execution-cancel mutation and payload are exposed for the UI's Cancel button")
+    void cancelGraphExecutionMutationIsExposed() throws Exception {
+        GraphQLSchema schema = buildSchema();
+
+        // The viewer calls this to stop a runaway run without waiting for the node/LLM call
+        // to finish, so the mutation and its payload must stay available.
+        assertThat(schema.getMutationType().getField("cancelGraphExecution")).isNotNull();
+        assertThat(fieldTypeName(schema, "Mutation", "cancelGraphExecution")).isEqualTo("CancelGraphExecutionPayload");
+
+        // graphId + threadId identify the single logical run to stop.
+        assertThat(fieldTypeName(schema, "CancelGraphExecutionPayload", "success")).isEqualTo("Boolean");
+        assertThat(fieldTypeName(schema, "CancelGraphExecutionPayload", "cancelled")).isEqualTo("Boolean");
+        assertThat(fieldTypeName(schema, "CancelGraphExecutionPayload", "message")).isEqualTo("String");
     }
 
     private static List<String> enumValues(GraphQLSchema schema, String typeName) {

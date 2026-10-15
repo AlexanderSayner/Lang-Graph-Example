@@ -118,6 +118,14 @@ public class LangGraphController {
     }
 
     @MutationMapping
+    public @NonNull CancelGraphExecutionPayload cancelGraphExecution(
+            @Argument String graphId,
+            @Argument String threadId) {
+        log.info("Cancelling graph execution: {} (thread {})", graphId, threadId);
+        return langGraphService.cancelGraphExecution(graphId, threadId);
+    }
+
+    @MutationMapping
     public @NonNull RewindGraphPayload rewindGraph(@Argument String graphId,
                                                    @Argument String threadId,
                                                    @Argument String stateJson,

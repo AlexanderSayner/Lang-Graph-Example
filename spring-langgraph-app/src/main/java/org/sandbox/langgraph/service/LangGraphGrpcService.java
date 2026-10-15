@@ -201,6 +201,36 @@ public class LangGraphGrpcService {
         }
     }
 
+    /**
+     * Ask the Python engine to stop a graph execution that is currently running.
+     * <p>
+     * Sent on its own (short) RPC while the ExecuteGraph stream for the same thread is still
+     * open on another request thread. The blocking stub multiplexes both calls over the shared
+     * channel, so this is safe and returns as soon as the engine flags the live run. A
+     * {@code cancelled=false} simply means nothing was running - not an error.
+     */
+    public @NonNull CancelGraphExecutionPayload cancelGraphExecution(String graphId, String threadId) {
+        log.debug("Cancelling graph execution for {} (thread {})", graphId, threadId);
+
+        CancelGraphExecutionRequest request = CancelGraphExecutionRequest.newBuilder()
+                .setGraphId(graphId)
+                .setThreadId(threadId)
+                .build();
+
+        try {
+            org.sandbox.langgraph.grpc.CancelGraphExecutionResponse response = blockingStub
+                    .withDeadlineAfter(TIMEOUT, TIMEOUT_UNIT)
+                    .cancelGraphExecution(request);
+            log.debug("Cancel graph execution response for {}: cancelled={}", graphId, response.getCancelled());
+            return mapper.toCancelGraphExecutionPayload(response);
+        } catch (StatusRuntimeException e) {
+            // A cancellation is best-effort: surface a transport failure as a clean payload
+            // rather than failing the mutation, because the UI has already stopped locally.
+            log.warn("Failed to reach the engine to cancel {}: {}", graphId, e.getMessage());
+            return new CancelGraphExecutionPayload(false, false, "Cancel request failed: " + e.getMessage());
+        }
+    }
+
     public @NonNull RewindGraphPayload rewindGraph(String graphId, String threadId, String stateJson, String targetNodeId) {
         log.debug("Rewinding graph: {} to node: {}", graphId, targetNodeId);
         RewindGraphRequest request = RewindGraphRequest.newBuilder()

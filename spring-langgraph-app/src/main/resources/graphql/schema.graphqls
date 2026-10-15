@@ -17,6 +17,7 @@ type Mutation {
     executeGraph(input: ExecuteGraphInput!): ExecuteGraphPayload!
     updateGraphState(input: UpdateGraphStateInput!): UpdateGraphStatePayload!
     deleteGraph(graphId: String!): DeleteGraphPayload!
+    cancelGraphExecution(graphId: String!, threadId: String!): CancelGraphExecutionPayload!
     saveGraphCoordinates(graphId: String!, positions: [NodePositionInput!]!): GraphViewPayload!
     debugHttpRequest(input: HttpRequestDebugInput!): HttpRequestDebugPayload!
     rewindGraph(graphId: String!, threadId: String!, stateJson: String!, targetNodeId: String): RewindPayload!
@@ -157,6 +158,15 @@ type UpdateGraphStatePayload {
 type DeleteGraphPayload {
     success: Boolean!
     message: String!
+}
+
+# Response for the cancelGraphExecution mutation. `cancelled` is true only when a live
+# execution was actually found and asked to stop; a false value means the run had already
+# finished (or never started) - not a failure.
+type CancelGraphExecutionPayload {
+    success: Boolean!
+    cancelled: Boolean!
+    message: String
 }
 
 type GraphExecutionEventPayload {
@@ -325,6 +335,7 @@ enum ExecutionEventType {
     END
     WAITING_FOR_INPUT
     ERROR
+    CANCELLED
 }
 
 enum HttpMethod {

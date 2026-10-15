@@ -24,11 +24,15 @@ let resolvedApiUrl = null; // endpoint that answered JSON during this session
 export const API_URL = SAME_ORIGIN_GRAPHQL_URL;
 
 // --- Helpers ---
-const postJson = async (url, query, variables) => {
+// `options` may carry an AbortSignal so a long request (e.g. graph execution) can be
+// cancelled from the UI. An abort is NOT a transport failure, so callers distinguish it
+// via the AbortError name.
+const postJson = async (url, query, variables, options = {}) => {
     const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
+        signal: options.signal,
         body: JSON.stringify({ query, variables })
     });
     const contentType = response.headers.get('content-type') || '';
@@ -43,15 +47,19 @@ const postJson = async (url, query, variables) => {
     return JSON.parse(text);
 };
 
-export const fetchGraphQL = async (query, variables) => {
+export const fetchGraphQL = async (query, variables, options = {}) => {
     const candidates = resolvedApiUrl ? [resolvedApiUrl] : API_URL_CANDIDATES;
     const problems = [];
 
     for (const url of candidates) {
         let json;
         try {
-            json = await postJson(url, query, variables);
+            json = await postJson(url, query, variables, options);
         } catch (err) {
+            // A user-initiated abort (e.g. the Cancel button) is intentional, not an endpoint
+            // problem. Rethrow it immediately so it is NOT retried against the next candidate
+            // and is not mistaken for a transport failure.
+            if (err && err.name === 'AbortError') throw err;
             // Transport / non-JSON answer: this endpoint is unusable, try the next one.
             problems.push(err.message);
             resolvedApiUrl = null;
@@ -124,6 +132,11 @@ export const HISTORY_QUERY = `query History($graphId: String!, $threadId: String
 }`;
 export const BALANCE_QUERY = `query { getYandexBalance { success balance currency errorMessage } }`;
 export const EXECUTE_MUTATION = `mutation Exec($input: ExecuteGraphInput!) { executeGraph(input: $input) { output eventType state totalTokens errorMessage } }`;
+
+// Stops a running graph execution immediately (mid-node, mid-LLM call) server-side, so token
+// spend halts without waiting for the node to finish. `cancelled=false` just means the run
+// had already finished or never started.
+export const CANCEL_EXECUTION_MUTATION = `mutation CancelExec($graphId: String!, $threadId: String!) { cancelGraphExecution(graphId: $graphId, threadId: $threadId) { success cancelled message } }`;
 export const SAVE_MUTATION = `mutation Save($graphId: String!, $positions: [NodePositionInput!]!) { saveGraphCoordinates(graphId: $graphId, positions: $positions) { success } }`;
 export const DELETE_MUTATION = `mutation Del($graphId: String!) { deleteGraph(graphId: $graphId) { success } }`;
 export const REWIND_MUTATION = `mutation Rewind($graphId: String!, $threadId: String!, $stateJson: String!, $targetNodeId: String) { rewindGraph(graphId: $graphId, threadId: $threadId, stateJson: $stateJson, targetNodeId: $targetNodeId) { success message } }`;
@@ -227,6 +240,7 @@ export const EXECUTION_EVENT_TYPES = Object.freeze({
     END: 'END',
     WAITING_FOR_INPUT: 'WAITING_FOR_INPUT',
     ERROR: 'ERROR',
+    CANCELLED: 'CANCELLED',
 });
 
 export const HTTP_METHODS = Object.freeze({

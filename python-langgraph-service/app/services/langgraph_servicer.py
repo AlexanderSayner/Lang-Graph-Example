@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import functools
 import json
 import logging
@@ -22,8 +23,13 @@ from app.generated import langgraph_pb2_grpc, langgraph_pb2
 from app.graph_engine.graph_utils import parse_condition, GraphState
 from app.graph_engine.node_handlers import NodeHandler
 from app.models import GraphDefinition
+from app.services.execution_registry import ExecutionRegistry, run_key
 
 logger = logging.getLogger(__name__)
+
+# Placed on the event queue by the producer when the graph run is over. Distinct from any
+# protobuf message so the consumer can tell "done" from a real event.
+_STREAM_DONE = object()
 
 
 # --- Decorators ---
@@ -130,6 +136,10 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             self._load_and_compile_graph,
             default_llm_factory=lambda: self._llm_registry.lazy(resolve_llm_config({}, {})),
         )
+
+        # Live ExecuteGraph streams register here so a runaway run can be cancelled
+        # (CancelGraphExecution) without waiting for the node/LLM call to finish.
+        self._active_runs = ExecutionRegistry()
 
     async def _load_and_compile_graph(self, graph_id: str) -> Runnable:
         """Unified method to fetch, normalize, and compile a graph (prevents thundering herd)."""
@@ -365,62 +375,119 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                 if getattr(request, "input", None):
                     await compiled_graph.aupdate_state(config, {"input": request.input}, as_node=None)
                 stream_input = None
+                start_event = None
             else:
                 stream_input = {
                     "input": request.input,
                     "context": dict(request.context) if hasattr(request, "context") else {},
                     "timestamp": time.time()
                 }
-                yield langgraph_pb2.ExecuteGraphResponse(
+                start_event = langgraph_pb2.ExecuteGraphResponse(
                     event_type="START",
                     timestamp=int(time.time() * 1000),
                     state=_serialize_state(stream_input)
                 )
 
-            async for event in compiled_graph.astream(stream_input, config=config, stream_mode="updates"):
-                for node_name, updates in event.items():
-                    node_tokens = 0
-                    if isinstance(updates, dict):
-                        output_content = str(updates.get("output", ""))
-                        serialized_state = _serialize_state(updates)
-                        node_tokens = updates.get("total_tokens", 0)
+            # --- Cancellation support ---
+            # The LangGraph run is driven by a separate task that pushes events onto a queue.
+            # Cancelling that task (see CancelGraphExecution) raises CancelledError inside
+            # astream, which aborts the in-flight node and, through it, the awaiting LLM/HTTP
+            # call - so a huge token burn stops immediately. The generator below then drains
+            # the queue and reports a clean CANCELLED event instead of a crash.
+            run_id = run_key(graph_id, config["configurable"]["thread_id"])
+            queue: asyncio.Queue = asyncio.Queue()
+
+            async def _produce():
+                """Drive the graph and publish every event to the queue."""
+                try:
+                    if start_event is not None:
+                        await queue.put(start_event)
+
+                    async for event in compiled_graph.astream(stream_input, config=config, stream_mode="updates"):
+                        for node_name, updates in event.items():
+                            node_tokens = 0
+                            if isinstance(updates, dict):
+                                output_content = str(updates.get("output", ""))
+                                serialized_state = _serialize_state(updates)
+                                node_tokens = updates.get("total_tokens", 0)
+                            else:
+                                logger.warning(f"Node '{node_name}' returned non-dict update (type: {type(updates).__name__})")
+                                output_content = str(updates)
+                                serialized_state = _serialize_state({"raw_output": updates})
+
+                            await queue.put(langgraph_pb2.ExecuteGraphResponse(
+                                event_type="NODE_END",
+                                node_id=node_name,
+                                output=output_content,
+                                state=serialized_state,
+                                timestamp=int(time.time() * 1000),
+                                total_tokens=node_tokens
+                            ))
+
+                    final_snapshot = await compiled_graph.aget_state(config)
+                    final_next = getattr(final_snapshot, "next", None) or []
+                    final_values = getattr(final_snapshot, "values", {}) or {}
+
+                    if final_next:
+                        waiting_node = final_next[0] if isinstance(final_next, (list, tuple)) and final_next else final_next
+                        logger.info(f"Graph paused waiting for input at node: {waiting_node}")
+                        await queue.put(langgraph_pb2.ExecuteGraphResponse(
+                            event_type="WAITING_FOR_INPUT",
+                            node_id=waiting_node,
+                            output="Action required. Waiting for user input.",
+                            state=_serialize_state(final_values),
+                            timestamp=int(time.time() * 1000)
+                        ))
                     else:
-                        logger.warning(f"Node '{node_name}' returned non-dict update (type: {type(updates).__name__})")
-                        output_content = str(updates)
-                        serialized_state = _serialize_state({"raw_output": updates})
+                        await queue.put(langgraph_pb2.ExecuteGraphResponse(
+                            event_type="END",
+                            output=str(final_values.get("output", "")),
+                            state=_serialize_state(final_values),
+                            timestamp=int(time.time() * 1000),
+                            total_tokens=final_values.get("total_tokens", 0)
+                        ))
+                except asyncio.CancelledError:
+                    logger.info(f"Graph run {run_id} was cancelled")
+                    raise
+                except Exception as exec_error:
+                    logger.error(f"Execution error: {exec_error}", exc_info=True)
+                    await queue.put(langgraph_pb2.ExecuteGraphResponse(
+                        event_type="ERROR",
+                        error_message=str(exec_error),
+                        timestamp=int(time.time() * 1000)
+                    ))
+                finally:
+                    # Always unblock the consumer, whatever ended the run.
+                    queue.put_nowait(_STREAM_DONE)
 
-                    yield langgraph_pb2.ExecuteGraphResponse(
-                        event_type="NODE_END",
-                        node_id=node_name,
-                        output=output_content,
-                        state=serialized_state,
-                        timestamp=int(time.time() * 1000),
-                        total_tokens=node_tokens
-                    )
+            producer = asyncio.create_task(_produce())
+            self._active_runs.register(run_id, producer)
 
-            final_snapshot = await compiled_graph.aget_state(config)
-            final_next = getattr(final_snapshot, "next", None) or []
-            final_values = getattr(final_snapshot, "values", {}) or {}
+            try:
+                while True:
+                    item = await queue.get()
+                    if item is _STREAM_DONE:
+                        break
+                    yield item
+            finally:
+                cancelled = self._active_runs.is_cancelled(run_id)
+                self._active_runs.unregister(run_id)
+                if not producer.done():
+                    producer.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await producer
 
-            if final_next:
-                waiting_node = final_next[0] if isinstance(final_next, (list, tuple)) and final_next else final_next
-                logger.info(f"Graph paused waiting for input at node: {waiting_node}")
+            if cancelled:
                 yield langgraph_pb2.ExecuteGraphResponse(
-                    event_type="WAITING_FOR_INPUT",
-                    node_id=waiting_node,
-                    output="Action required. Waiting for user input.",
-                    state=_serialize_state(final_values),
+                    event_type="CANCELLED",
+                    output="Execution cancelled by user.",
                     timestamp=int(time.time() * 1000)
                 )
-            else:
-                yield langgraph_pb2.ExecuteGraphResponse(
-                    event_type="END",
-                    output=str(final_values.get("output", "")),
-                    state=_serialize_state(final_values),
-                    timestamp=int(time.time() * 1000),
-                    total_tokens=final_values.get("total_tokens", 0)
-                )
 
+        except asyncio.CancelledError:
+            # The RPC itself was torn down (e.g. the browser aborted the request). The inner
+            # finally already cancelled the producer, so the run stops here too.
+            raise
         except Exception as exec_error:
             logger.error(f"Execution error: {exec_error}", exc_info=True)
             yield langgraph_pb2.ExecuteGraphResponse(
@@ -428,6 +495,27 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                 error_message=str(exec_error),
                 timestamp=int(time.time() * 1000)
             )
+
+    @handle_grpc_errors
+    async def CancelGraphExecution(self, request, context):
+        """Ask the live ExecuteGraph stream for this (graph, thread) to stop immediately.
+
+        Cancelling the driver task aborts the in-flight LangGraph run and, with it, the
+        awaiting LLM/HTTP call, so token spend halts without waiting for the node to finish.
+        The still-open ExecuteGraph stream then reports a clean CANCELLED event.
+        """
+        run_id = run_key(request.graph_id, request.thread_id)
+        stopped = self._active_runs.request_cancel(run_id)
+
+        if stopped:
+            logger.info(f"Cancelled running graph {request.graph_id} (thread {request.thread_id})")
+        else:
+            logger.info(f"Cancel requested but no live run for {request.graph_id} (thread {request.thread_id})")
+
+        return langgraph_pb2.CancelGraphExecutionResponse(
+            cancelled=stopped,
+            message="Execution cancelled" if stopped else "No active execution found for this graph/thread"
+        )
 
     @handle_grpc_errors
     async def GetGraphState(self, request, context):

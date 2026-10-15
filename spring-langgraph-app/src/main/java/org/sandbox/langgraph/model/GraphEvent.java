@@ -4,7 +4,7 @@ import org.sandbox.langgraph.core.model.ExecutionEventType;
 
 import java.util.Map;
 
-public sealed interface GraphEvent permits GraphEvent.Start, GraphEvent.NodeStart, GraphEvent.NodeEnd, GraphEvent.End, GraphEvent.WaitingForInput, GraphEvent.Error {
+public sealed interface GraphEvent permits GraphEvent.Start, GraphEvent.NodeStart, GraphEvent.NodeEnd, GraphEvent.End, GraphEvent.WaitingForInput, GraphEvent.Error, GraphEvent.Cancelled {
 
     String graphId();
     long timestamp();
@@ -21,6 +21,9 @@ public sealed interface GraphEvent permits GraphEvent.Start, GraphEvent.NodeStar
 
     record Error(String graphId, String nodeId, String errorMessage, long timestamp) implements GraphEvent {}
 
+    /** The run was stopped early on purpose via CancelGraphExecution. */
+    record Cancelled(String graphId, long timestamp) implements GraphEvent {}
+
     static GraphEvent fromEventType(ExecutionEventType eventType, String graphId, String nodeId,
                                     String output, Map<String, String> state,
                                     String errorMessage, long timestamp) {
@@ -31,6 +34,7 @@ public sealed interface GraphEvent permits GraphEvent.Start, GraphEvent.NodeStar
             case END -> new End(graphId, state, timestamp);
             case WAITING_FOR_INPUT -> new WaitingForInput(graphId, nodeId, output, timestamp);
             case ERROR -> new Error(graphId, nodeId, errorMessage, timestamp);
+            case CANCELLED -> new Cancelled(graphId, timestamp);
         };
     }
 }
