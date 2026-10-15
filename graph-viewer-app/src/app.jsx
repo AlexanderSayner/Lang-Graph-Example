@@ -478,7 +478,7 @@ function App() {
             if (eventType === EXECUTION_EVENT_TYPES.CANCELLED) {
                 // The server honoured a cancel and stopped the run early. The graph is
                 // resumable from its last completed node.
-                setMessages(prev => [...prev, { type: 'system', text: '⛔ Execution cancelled. The graph can be resumed by sending another message.' }]);
+                setMessages(prev => [...prev, { type: 'system', text: 'Execution cancelled. The graph can be resumed by sending another message.' }]);
                 setGraphStatus('idle');
             } else if (errorText) {
                 setMessages(prev => [...prev, { type: 'error', text: errorText }]);
@@ -527,7 +527,7 @@ function App() {
 
         abortControllerRef.current = null;
         controller.abort();
-        setMessages(prev => [...prev, { type: 'system', text: '⛔ Execution cancelled by user.' }]);
+        setMessages(prev => [...prev, { type: 'system', text: 'Execution cancelled by user.' }]);
         setGraphStatus('idle');
         setLoading(false);
 

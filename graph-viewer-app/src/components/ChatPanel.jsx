@@ -118,7 +118,7 @@ export default function ChatPanel({
                                 </button>
                             </div>
                         )}
-                        {loading && <div className="msg msg-bot">Thinking… <span style={{ color: '#999', fontStyle: 'italic', fontSize: '11px' }}>press ⛔ Cancel to stop</span></div>}
+                        {loading && <div className="msg msg-bot">Thinking… <span style={{ color: '#999', fontStyle: 'italic', fontSize: '11px' }}>press Cancel to stop</span></div>}
                         <div ref={chatEndRef} />
                     </div>
                     <div className="chat-input-area">
@@ -126,7 +126,7 @@ export default function ChatPanel({
                         {loading ? (
                             /* While a run is in flight the Send button becomes a Cancel button, so
                                a runaway execution can be stopped immediately (mid-node, mid-LLM). */
-                            <button className="cancel-btn" onClick={handleCancel}>⛔ Cancel</button>
+                            <button className="cancel-btn" onClick={handleCancel}>Cancel</button>
                         ) : (
                             <button className="send-btn" onClick={handleExecute} disabled={!input.trim() || !selected}>Send</button>
                         )}

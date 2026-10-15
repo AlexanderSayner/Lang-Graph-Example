@@ -159,3 +159,35 @@ def test_client_disconnect_still_cancels_the_producer():
         assert servicer._active_runs.request_cancel("g1:t1") is False
 
     asyncio.run(scenario())
+
+
+def test_client_disconnect_still_cancels_the_producer():
+    """A browser abort (no explicit cancel RPC) must still stop the in-flight node.
+
+    When the client goes away, gRPC closes the stream, which runs ExecuteGraph's ``finally``.
+    That cleanup has to cancel the producer task so a huge LLM call does not keep burning
+    tokens with nobody listening.
+    """
+    async def scenario():
+        graph = _FakeGraph(block_forever=True)
+        servicer = _build_servicer(graph)
+        events = []
+
+        stream = servicer.ExecuteGraph(_request(), _grpc_context())
+        consumer = asyncio.create_task(_collect(stream, events))
+        await asyncio.wait_for(graph.started.wait(), timeout=5)
+
+        # Simulate the client disconnecting: gRPC stops iterating the stream, which throws
+        # CancelledError into the generator's suspension point (queue.get). That must run the
+        # finally block that cancels the producer.
+        consumer.cancel()
+        try:
+            await asyncio.wait_for(consumer, timeout=5)
+        except asyncio.CancelledError:
+            pass
+
+        # Cleanup cancelled the node, and the run is no longer registered.
+        assert graph.cancelled_inside_node is True
+        assert servicer._active_runs.request_cancel("g1:t1") is False
+
+    asyncio.run(scenario())
