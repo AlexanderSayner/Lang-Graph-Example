@@ -68,6 +68,21 @@ function App() {
     const [copilotMessages, setCopilotMessages] = useState([]);
     const [copilotInput, setCopilotInput] = useState("");
     const [copilotLoading, setCopilotLoading] = useState(false);
+    // Copilot LLM selection. A per-request override of the service COPILOT_* / LLM_* default,
+    // remembered in this browser so the choice survives reloads. It is deliberately NOT
+    // graph-scoped: the copilot is a UI-wide assistant, so the chosen model follows you across
+    // every graph instead of being stored in each graph's definition.
+    const [copilotLLM, setCopilotLLM] = useState(() => {
+        try {
+            const stored = JSON.parse(localStorage.getItem('copilotLLM') || '{}');
+            return { provider: stored.provider || '', model: stored.model || '' };
+        } catch {
+            return { provider: '', model: '' };
+        }
+    });
+    useEffect(() => {
+        localStorage.setItem('copilotLLM', JSON.stringify(copilotLLM));
+    }, [copilotLLM]);
 
     const [selectedNodeId, setSelectedNodeId] = useState(null);
     const [selectedEdge, setSelectedEdge] = useState(null);
@@ -602,7 +617,10 @@ function App() {
                 message: userText,
                 chatHistory: JSON.stringify(updatedHistory),
                 selectedNodeId: selectedNodeId,
-                selectedEdgeJson: selectedEdge ? JSON.stringify(selectedEdge) : null
+                selectedEdgeJson: selectedEdge ? JSON.stringify(selectedEdge) : null,
+                // null means "inherit": the service falls back to COPILOT_* then LLM_*.
+                copilotProvider: copilotLLM.provider || null,
+                copilotModel: copilotLLM.model || null
             });
 
             const result = data.askCopilot;
@@ -725,6 +743,7 @@ function App() {
                     copilotMessages={copilotMessages} copilotInput={copilotInput}
                     setCopilotInput={setCopilotInput} copilotLoading={copilotLoading}
                     handleCopilotSend={handleCopilotSend}
+                    copilotLLM={copilotLLM} setCopilotLLM={setCopilotLLM}
                     formatTimestamp={formatTimestamp}
                 />
             </div>

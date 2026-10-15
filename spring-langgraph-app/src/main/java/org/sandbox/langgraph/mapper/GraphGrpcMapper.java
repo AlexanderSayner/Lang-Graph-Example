@@ -193,6 +193,13 @@ public interface GraphGrpcMapper {
         return new CopilotGraphPayload(response.getSuccess(), response.getAiResponse(), response.getTotalTokens(), response.getErrorMessage());
     }
 
+    default LlmModelsPayload toLlmModelsPayload(org.sandbox.langgraph.grpc.ListLlmModelsResponse response) {
+        List<LlmModelsPayload.LlmModel> models = response.getModelsList().stream()
+                .map(model -> new LlmModelsPayload.LlmModel(model.getId(), model.getLabel()))
+                .toList();
+        return new LlmModelsPayload(response.getSuccess(), models, response.getSource(), response.getErrorMessage());
+    }
+
     // ============== Helper Methods ==============
 
     default Map<String, String> convertToStringMap(Map<String, Object> map) {

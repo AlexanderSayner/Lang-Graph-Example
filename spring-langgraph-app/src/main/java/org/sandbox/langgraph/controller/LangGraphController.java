@@ -68,6 +68,11 @@ public class LangGraphController {
         return langGraphService.getExecutionHistory(graphId, threadId);
     }
 
+    @QueryMapping
+    public @NonNull LlmModelsPayload llmModels(@Argument String provider) {
+        return langGraphService.listLlmModels(provider);
+    }
+
     @MutationMapping
     public @NonNull BuildGraphPayload buildGraph(@Valid @Argument BuildGraphInput input) {
         log.info("Building graph mutation: {}", input.graphId());
@@ -156,9 +161,12 @@ public class LangGraphController {
             @Argument String message,
             @Argument String copilotChatHistoryJson,
             @Argument String selectedNodeId,
-            @Argument String selectedEdgeJson
+            @Argument String selectedEdgeJson,
+            @Argument String copilotProvider,
+            @Argument String copilotModel
     ) {
-        return copilotService.askCopilot(graphId, threadId, message, copilotChatHistoryJson, selectedNodeId, selectedEdgeJson);
+        return copilotService.askCopilot(graphId, threadId, message, copilotChatHistoryJson, selectedNodeId,
+                selectedEdgeJson, copilotProvider, copilotModel);
     }
 
     // Internal helper class for accumulating stream results

@@ -14,7 +14,8 @@ from langgraph.constants import END
 from langgraph.graph import StateGraph
 
 from app.clients.java_client import JavaGraphClient
-from app.clients.yandex_client import YandexGPTClient
+from app.clients.llm import LLMClientRegistry, resolve_llm_config
+from app.clients.model_catalog import list_models
 from app.config import settings
 from app.copilot.copilot_agent import CopilotAgent
 from app.generated import langgraph_pb2_grpc, langgraph_pb2
@@ -106,11 +107,29 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         self._compile_lock = asyncio.Lock()
 
         self._checkpointer = checkpointer
-        self._llm_client = YandexGPTClient(api_key=settings.YC_API_KEY, folder_id=settings.YC_FOLDER_ID)
-        self.copilot = CopilotAgent(self._llm_client)
 
-        # Pass the unified loader to NodeHandler for subgraph resolution
-        self.node_handler = NodeHandler(self._llm_client, self._load_and_compile_graph)
+        # Multi-provider LLM layer (yandex / openai / groq / deepseek / openrouter / anthropic).
+        # The registry builds and caches one client per distinct config. Clients are resolved
+        # LAZILY (LazyLLMClient): nothing is constructed at startup or at graph compile time,
+        # so a missing API key can never block the server or a build - it surfaces when the
+        # node first calls the model.
+        self._llm_registry = LLMClientRegistry()
+
+        # The copilot is not a graph node, so it uses COPILOT_* or the service default.
+        # CopilotAgent accepts a ready client; the lazy wrapper defers the provider build
+        # until the first question.
+        self.copilot = CopilotAgent(
+            self._llm_registry.lazy(resolve_llm_config(
+                {}, {"llm_provider": settings.COPILOT_PROVIDER, "llm_model": settings.COPILOT_MODEL}
+            ))
+        )
+
+        # Pass the unified loader to NodeHandler for subgraph resolution. Nodes resolve their
+        # own client at compile time (see _build_langgraph); this is only the fallback.
+        self.node_handler = NodeHandler(
+            self._load_and_compile_graph,
+            default_llm_factory=lambda: self._llm_registry.lazy(resolve_llm_config({}, {})),
+        )
 
     async def _load_and_compile_graph(self, graph_id: str) -> Runnable:
         """Unified method to fetch, normalize, and compile a graph (prevents thundering herd)."""
@@ -175,9 +194,26 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                     if key:
                         expected_keys.add(str(key))
 
+            # Resolve this node's LLM provider at compile time: node metadata beats graph
+            # config beats the service default (app/clients/llm.py). resolve_llm_config runs
+            # eagerly, so an unknown/typo'd provider still fails the build fast and loud.
+            # The client itself is LAZY (LazyLLMClient): only nodes that really call the model
+            # get one - router nodes always do, the rest only when they carry a system_prompt
+            # (pass-through, TOOL and GRAPH nodes never touch the LLM) - and a missing API key
+            # surfaces on the node's first model call instead of failing the whole build.
+            node_type_val = node.node_type
+            uses_llm = is_router or (
+                node_type_val not in ("TOOL", "GRAPH") and bool(metadata.get("system_prompt"))
+            )
+            llm_client = (
+                self._llm_registry.lazy(resolve_llm_config(metadata, graph_data.config))
+                if uses_llm else None
+            )
+
             # Factory function to safely capture loop variables (avoids late-binding closure issues)
             def make_handler(n_id=node_id, n_meta=metadata, n_type=node.node_type,
-                             is_router_node=is_router, router_keys=expected_keys):
+                             is_router_node=is_router, router_keys=expected_keys,
+                             llm_client=llm_client):
                 async def handler(state: GraphState, config: RunnableConfig) -> Dict[str, Any]:
                     logger.info(f"Executing node: {n_id} Type: {n_type}")
                     return await self.node_handler.process(
@@ -187,7 +223,8 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                         is_router_node=is_router_node,
                         router_keys=router_keys,
                         state=state,
-                        config=config
+                        config=config,
+                        llm=llm_client
                     )
 
                 return handler
@@ -480,19 +517,46 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
     @handle_grpc_errors
     async def AskCopilot(self, request, context):
         logger.info("Copilot request received.")
+        # The UI can pick the copilot's model per request. An empty value means "inherit":
+        # fall back to COPILOT_PROVIDER / COPILOT_MODEL, which themselves fall back to the
+        # service-wide LLM_PROVIDER / LLM_MODEL default - the same chain the constructor used
+        # to bake into the startup client. resolve_llm_config is cheap and the registry caches
+        # one client per distinct config, so reusing providers across questions stays warm.
+        client = self._llm_registry.lazy(resolve_llm_config(
+            {},
+            {"llm_provider": request.copilot_provider or settings.COPILOT_PROVIDER,
+             "llm_model": request.copilot_model or settings.COPILOT_MODEL}
+        ))
         ai_response = await self.copilot.ask(
             user_message=request.user_message,
             graph_context_json=request.graph_context_json,
             execution_history_json=request.execution_history_json,
             chat_history_json=request.copilot_chat_history_json,
             selected_node_id=request.selected_node_id,
-            selected_edge_json=request.selected_edge_json
+            selected_edge_json=request.selected_edge_json,
+            llm=client
         )
 
         return langgraph_pb2.CopilotResponse(
             success=True,
             ai_response=ai_response,
             total_tokens=ai_response.usage.get('total_tokens', -1) if hasattr(ai_response, 'usage') else -1
+        )
+
+    @handle_grpc_errors
+    async def ListLlmModels(self, request, context):
+        """List the models a provider offers, to populate the UI's model suggestions.
+
+        Delegates to the model catalog, which never raises - an unknown provider, a missing
+        key or a network error resolve to a curated fallback plus a message, so the UI can
+        always render something and a user can still type an arbitrary model id by hand.
+        """
+        result = await list_models(request.provider)
+        return langgraph_pb2.ListLlmModelsResponse(
+            success=result.success,
+            models=[langgraph_pb2.LlmModel(id=model_id, label=label) for model_id, label in result.models],
+            source=result.source,
+            error_message=result.error_message,
         )
 
     @property

@@ -46,11 +46,19 @@ public class LangGraphGrpcService {
     private final GraphPostgresService graphPostgresService;
 
     public @NonNull BuildGraphPayload buildGraph(BuildGraphInput input) {
-        graphPostgresService.saveGraph(input);
         log.debug("Building graph: {}", input.graphId());
 
         BuildGraphRequest request = mapper.toBuildGraphRequest(input);
         BuildGraphResponse response = blockingStub.withDeadlineAfter(TIMEOUT, TIMEOUT_UNIT).buildGraph(request);
+
+        // Persist only after the engine accepted the definition. The Python service validates the
+        // config eagerly (e.g. an unknown `config.llm_provider` fails the compile with
+        // LLMConfigError), so saving first used to leave an uncompilable definition behind even
+        // though the mutation failed. Safe to reorder: the engine compiles straight from the
+        // request payload and never reads the saved row back during BuildGraph.
+        if (response.getSuccess()) {
+            graphPostgresService.saveGraph(input);
+        }
         return mapper.toBuildGraphPayload(response);
     }
 
@@ -176,6 +184,21 @@ public class LangGraphGrpcService {
         GraphHistoryRequest request = mapper.toGraphHistoryRequest(graphId, threadId);
         GraphHistoryResponse response = blockingStub.withDeadlineAfter(TIMEOUT, TIMEOUT_UNIT).getExecutionHistory(request);
         return apply(response);
+    }
+
+    public @NonNull LlmModelsPayload listLlmModels(String provider) {
+        log.debug("Listing LLM models for provider: {}", provider);
+
+        ListLlmModelsRequest request = ListLlmModelsRequest.newBuilder()
+                .setProvider(provider != null ? provider : "")
+                .build();
+        try {
+            ListLlmModelsResponse response = blockingStub.withDeadlineAfter(TIMEOUT, TIMEOUT_UNIT).listLlmModels(request);
+            return mapper.toLlmModelsPayload(response);
+        } catch (StatusRuntimeException e) {
+            // The catalog itself never fails; this is only for a transport/service outage.
+            throw wrapGrpcError(e);
+        }
     }
 
     public @NonNull RewindGraphPayload rewindGraph(String graphId, String threadId, String stateJson, String targetNodeId) {

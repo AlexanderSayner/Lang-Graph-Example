@@ -28,6 +28,9 @@ service LangGraphService {
 
   // Copilot questions chat
   rpc AskCopilot (CopilotRequest) returns (CopilotResponse);
+
+  // List the models a provider offers (drives the UI's model suggestions)
+  rpc ListLlmModels (ListLlmModelsRequest) returns (ListLlmModelsResponse);
 }
 
 // ==========================================
@@ -208,6 +211,10 @@ message CopilotRequest {
   string copilot_chat_history_json = 4; // Previous chat messages
   string selected_node_id = 5;
   string selected_edge_json = 6;
+  // Optional per-request copilot LLM overrides. Empty means "inherit": COPILOT_PROVIDER /
+  // COPILOT_MODEL, falling back to the service default (LLM_PROVIDER / LLM_MODEL).
+  string copilot_provider = 7;
+  string copilot_model = 8;
 }
 
 message CopilotResponse {
@@ -215,4 +222,24 @@ message CopilotResponse {
   string ai_response = 2;
   string error_message = 3;
   int32 total_tokens = 4;
+}
+
+// ==========================================
+// Model catalog Messages (UI suggestions)
+// ==========================================
+
+message ListLlmModelsRequest {
+  string provider = 1; // Which provider to list models for
+}
+
+message LlmModel {
+  string id = 1;    // Model id sent to the provider (e.g. "gpt-4o-mini")
+  string label = 2; // Human-readable name; falls back to the id when unknown
+}
+
+message ListLlmModelsResponse {
+  bool success = 1;
+  repeated LlmModel models = 2;
+  string source = 3;         // "live" when fetched from the provider, "curated" as a fallback
+  string error_message = 4;  // Set when the live list failed and we fell back to curated
 }

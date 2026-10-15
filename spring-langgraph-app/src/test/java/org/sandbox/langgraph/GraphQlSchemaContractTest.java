@@ -114,6 +114,22 @@ class GraphQlSchemaContractTest {
         assertThat(schema.getMutationType().getField("saveGraphCoordinates")).isNotNull();
     }
 
+    @Test
+    @DisplayName("The LLM model catalog query and types are exposed for the UI selectors")
+    void llmModelsCatalogIsExposed() throws Exception {
+        GraphQLSchema schema = buildSchema();
+
+        // The UI calls this per selected provider to populate the model <datalist>; it must
+        // stay a query returning the catalog payload with id/label entries.
+        assertThat(schema.getQueryType().getField("llmModels")).isNotNull();
+        assertThat(fieldTypeName(schema, "Query", "llmModels")).isEqualTo("LlmModelsPayload");
+        assertThat(fieldTypeName(schema, "LlmModelsPayload", "models")).isEqualTo("LlmModel");
+        assertThat(fieldTypeName(schema, "LlmModel", "id")).isEqualTo("String");
+        assertThat(fieldTypeName(schema, "LlmModel", "label")).isEqualTo("String");
+        assertThat(fieldTypeName(schema, "LlmModelsPayload", "source")).isEqualTo("String");
+        assertThat(fieldTypeName(schema, "LlmModelsPayload", "errorMessage")).isEqualTo("String");
+    }
+
     private static List<String> enumValues(GraphQLSchema schema, String typeName) {
         GraphQLEnumType enumType = schema.getTypeAs(typeName);
         assertThat(enumType)

@@ -66,7 +66,8 @@ public class GraphViewMapper {
                                 (String) edgeMap.get("condition"),
                                 (String) edgeMap.get("label")
                         ))
-                        .toList()
+                        .toList(),
+                data.config()
         );
     }
 }

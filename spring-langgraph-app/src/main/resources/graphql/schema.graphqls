@@ -5,6 +5,7 @@ type Query {
     getGraphState(graphId: String!, threadId: String): GraphStatePayload!
     getGraphView(graphId: String!): GraphViewPayload!
     getExecutionHistory(graphId: String!, threadId: String!): GraphHistoryPayload!
+    llmModels(provider: String!): LlmModelsPayload!
 
     getYandexBalance: YandexBalancePayload!
     getUserThreads: [UserThread!]!
@@ -20,7 +21,8 @@ type Mutation {
     debugTool(input: ToolDebugInput!): ToolDebugPayload!
     rewindGraph(graphId: String!, threadId: String!, stateJson: String!, targetNodeId: String): RewindPayload!
     askCopilot(graphId: String!, threadId: String!, message: String!, copilotChatHistoryJson: String,
-        selectedNodeId: String, selectedEdgeJson: String): CopilotPayload!
+        selectedNodeId: String, selectedEdgeJson: String,
+        copilotProvider: String, copilotModel: String): CopilotPayload!
 
     register(username: String!, password: String!): AuthPayload!
     login(username: String!, password: String!): AuthPayload!
@@ -200,6 +202,21 @@ type CopilotPayload {
     errorMessage: String
 }
 
+# ============== LLM Model Catalog (UI model suggestions) ==============
+
+type LlmModelsPayload {
+    success: Boolean!
+    models: [LlmModel!]!
+    # "live" when fetched from the provider, "curated" as a fallback (no key / no endpoint / error)
+    source: String
+    errorMessage: String
+}
+
+type LlmModel {
+    id: String!
+    label: String
+}
+
 # ============== Graph View Types (for visualization) ==============
 
 type GraphViewPayload {
@@ -210,6 +227,8 @@ type GraphViewPayload {
     nodes: [GraphNode!]!
     edges: [GraphEdge!]!
     message: String
+    # Graph-wide settings (e.g. llm_provider / llm_model) - overridden per node in metadata
+    config: JSON
 }
 
 type GraphNode {

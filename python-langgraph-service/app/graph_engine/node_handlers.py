@@ -29,6 +29,23 @@ RETRY_HINT = (
     "пояснений и без markdown. Ответь строго в том формате, который описан выше, и не отказывайся."
 )
 
+# Same retry instruction for the other providers. The retry hint is appended to the node's
+# system prompt, so a Russian instruction would be an odd (and usually counter-productive)
+# addition to an English prompt sent to OpenAI / Anthropic / Groq / DeepSeek / OpenRouter.
+RETRY_HINT_EN = (
+    "\n\nThe previous answer was not usable. Reply only with the task result: no refusals, "
+    "no apologies and no markdown. Answer strictly in the format described above and do not refuse."
+)
+
+
+def retry_hint_for(llm) -> str:
+    """Provider-appropriate retry instruction.
+
+    Russian for yandex (the historical behaviour) and for any client that does not expose a
+    ``provider`` (the pre-multi-provider Yandex-only path), English for every other provider.
+    """
+    return RETRY_HINT_EN if getattr(llm, "provider", "") not in ("", "yandex") else RETRY_HINT
+
 
 def is_unusable_answer(text: str) -> bool:
     """True when the LLM answer cannot be used by a node (refusal or empty output)."""
@@ -65,8 +82,13 @@ class NodeHandler:
         "full": (True, True),
     }
 
-    def __init__(self, llm_client, graph_loader: GraphLoader):
-        self.llm = llm_client
+    def __init__(self, graph_loader: GraphLoader, default_llm=None, default_llm_factory=None):
+        # Each node may carry its own provider/model: the servicer resolves a client per
+        # node (node metadata -> graph config -> service default) and passes it into
+        # process(). The service-level fallback below is built lazily so that a missing
+        # API key never prevents the server from starting up - it surfaces on first use.
+        self.default_llm = default_llm
+        self.default_llm_factory = default_llm_factory
         self.graph_loader = graph_loader
 
         try:
@@ -83,7 +105,13 @@ class NodeHandler:
         mode = str((n_meta or {}).get("context_mode", "full")).strip().lower()
         return self.CONTEXT_MODES.get(mode, self.CONTEXT_MODES["full"])
 
-    async def _generate(self, user_message: str, system_message: str):
+    def _default_client(self):
+        """Service-level fallback client, resolved on first use and then memoised."""
+        if self.default_llm is None and self.default_llm_factory is not None:
+            self.default_llm = self.default_llm_factory()
+        return self.default_llm
+
+    async def _generate(self, user_message: str, system_message: str, llm=None):
         """Call the LLM, retrying once when the answer is a refusal or empty text.
 
         On the retry we also shrink the prompt: the conversation history is dropped and a
@@ -92,12 +120,15 @@ class NodeHandler:
 
         Returns the LLM response object unchanged (so `.usage` stays available).
         """
+        client = llm or self._default_client()
+        if client is None:
+            raise RuntimeError("No LLM client resolved for this node (missing provider config).")
         attempts = max(1, settings.LLM_MAX_ATTEMPTS)
         prompt = system_message
         message = user_message
         response = None
         for attempt in range(1, attempts + 1):
-            response = await self.llm.generate(user_message=message, system_message=prompt)
+            response = await client.generate(user_message=message, system_message=prompt)
             text = str(response)
             if not is_unusable_answer(text):
                 return response
@@ -106,23 +137,24 @@ class NodeHandler:
                                attempt, text[:120].replace("\n", " "))
                 return response
             logger.warning("LLM refused or returned an empty answer (attempt %d), retrying", attempt)
-            prompt = system_message + RETRY_HINT
+            prompt = system_message + retry_hint_for(client)
             message = drop_history_block(user_message)
         return response
 
     async def process(self, n_id: str, n_meta: Dict, node_type: str, is_router_node: bool,
-                      router_keys: Set, state: GraphState, config: RunnableConfig) -> Dict:
+                      router_keys: Set, state: GraphState, config: RunnableConfig,
+                      llm=None) -> Dict:
         if is_router_node:
-            return await self._process_router(n_id, n_meta, router_keys, state)
+            return await self._process_router(n_id, n_meta, router_keys, state, llm)
         if node_type == "GRAPH":
             return await self._process_subgraph(n_id, n_meta, state, config)
         if node_type == "TOOL":
             return await self._process_tool(n_id, n_meta, state)
 
-        return await self._process_action(n_id, n_meta, state)
+        return await self._process_action(n_id, n_meta, state, llm)
 
-    async def _process_router(self, n_id: str, n_meta: Dict[str, Any], router_keys: Set, state: GraphState) -> Dict[
-        str, Any]:
+    async def _process_router(self, n_id: str, n_meta: Dict[str, Any], router_keys: Set,
+                              state: GraphState, llm=None) -> Dict[str, Any]:
         data_block = format_state_context(state, *self._context_flags(n_meta))
         system_prompt = n_meta.get("system_prompt", "You are a helpful assistant.")
         keys_list = ", ".join(router_keys) if router_keys else "intent"
@@ -136,7 +168,7 @@ class NodeHandler:
         )
 
         try:
-            llm_response = await self._generate(user_message=data_block, system_message=system_prompt)
+            llm_response = await self._generate(user_message=data_block, system_message=system_prompt, llm=llm)
 
             # Safely extract content and tokens regardless of whether llm_response is a string or an object
             output_content = getattr(llm_response, 'content', str(llm_response))
@@ -162,7 +194,8 @@ class NodeHandler:
             return {"last_node": n_id, "output": f"Error: {str(e)}",
                     "history": [{"node": n_id, "output": f"Error: {str(e)}"}]}
 
-    async def _process_action(self, n_id: str, n_meta: Dict[str, Any], state: GraphState) -> Dict[str, Any]:
+    async def _process_action(self, n_id: str, n_meta: Dict[str, Any], state: GraphState,
+                              llm=None) -> Dict[str, Any]:
         user_input = state.get("input") or ""
         if not user_input.strip():
             return {"last_node": n_id, "output": "No input provided."}
@@ -184,7 +217,7 @@ class NodeHandler:
                 logger.warning(f"Failed to serialize context for node {n_id}: {e}")
 
         try:
-            llm_response = await self._generate(user_message=final_user_input, system_message=system_prompt)
+            llm_response = await self._generate(user_message=final_user_input, system_message=system_prompt, llm=llm)
 
             output_content = getattr(llm_response, 'content', str(llm_response))
             usage = getattr(llm_response, 'usage', {})
