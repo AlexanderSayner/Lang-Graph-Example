@@ -163,6 +163,40 @@ export const COPILOT_PROVIDER_OPTIONS = Object.freeze(
     LLM_PROVIDER_OPTIONS.map(o => o.value === '' ? { ...o, label: 'Inherit (server default)' } : o)
 );
 
+// --- LLM model catalog (model suggestions) ---
+// The Python service holds the provider keys, so the model list is fetched server-side and
+// never exposes a key to the browser. `source` is "live" (fetched from the provider) or
+// "curated" (Yandex, or any provider we could not reach / have no key for).
+export const LLM_MODELS_QUERY = `
+    query LlmModels($provider: String!) {
+        llmModels(provider: $provider) {
+            success
+            models { id label }
+            source
+            errorMessage
+        }
+    }
+`;
+
+// Provider -> [{ id, label }] suggestions, cached for this session on top of the server's TTL
+// cache, so flipping a dropdown back and forth does not re-query. A failed or empty lookup
+// just yields [] - the model inputs stay free-text in that case, so a custom model id can
+// always still be typed.
+const _llmModelsCache = new Map();
+export const fetchLlmModels = async (provider) => {
+    if (!provider) return [];
+    if (_llmModelsCache.has(provider)) return _llmModelsCache.get(provider);
+    try {
+        const data = await fetchGraphQL(LLM_MODELS_QUERY, { provider });
+        const models = (data?.llmModels?.models || []).map(m => ({ id: m.id, label: m.label || m.id }));
+        _llmModelsCache.set(provider, models);
+        return models;
+    } catch (err) {
+        console.warn(`[llm-models] '${provider}' suggestions unavailable: ${err.message}`);
+        return [];
+    }
+};
+
 // Node types whose system prompt is actually sent to a model (NodeHandler.process).
 // Every type except TOOL and GRAPH runs the model when it carries a system_prompt, so
 // START/HUMAN nodes qualify too - only TOOL and GRAPH never do (unless they are routers,

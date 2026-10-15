@@ -68,6 +68,11 @@ public class LangGraphController {
         return langGraphService.getExecutionHistory(graphId, threadId);
     }
 
+    @QueryMapping
+    public @NonNull LlmModelsPayload llmModels(@Argument String provider) {
+        return langGraphService.listLlmModels(provider);
+    }
+
     @MutationMapping
     public @NonNull BuildGraphPayload buildGraph(@Valid @Argument BuildGraphInput input) {
         log.info("Building graph mutation: {}", input.graphId());

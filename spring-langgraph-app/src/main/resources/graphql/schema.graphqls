@@ -5,6 +5,7 @@ type Query {
     getGraphState(graphId: String!, threadId: String): GraphStatePayload!
     getGraphView(graphId: String!): GraphViewPayload!
     getExecutionHistory(graphId: String!, threadId: String!): GraphHistoryPayload!
+    llmModels(provider: String!): LlmModelsPayload!
 
     getYandexBalance: YandexBalancePayload!
     getUserThreads: [UserThread!]!
@@ -199,6 +200,21 @@ type CopilotPayload {
     aiResponse: String!
     totalTokens: Int
     errorMessage: String
+}
+
+# ============== LLM Model Catalog (UI model suggestions) ==============
+
+type LlmModelsPayload {
+    success: Boolean!
+    models: [LlmModel!]!
+    # "live" when fetched from the provider, "curated" as a fallback (no key / no endpoint / error)
+    source: String
+    errorMessage: String
+}
+
+type LlmModel {
+    id: String!
+    label: String
 }
 
 # ============== Graph View Types (for visualization) ==============

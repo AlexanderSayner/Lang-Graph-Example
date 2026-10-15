@@ -12,6 +12,7 @@ import { Toast, useToast } from './components/Toast';
 
 // Shared constants from your central file
 import { fetchGraphQL, LIST_QUERY, VIEW_QUERY, SAVE_MUTATION, NODE_TYPES, TOOL_METHOD_OPTIONS, LLM_PROVIDER_OPTIONS, AI_NODE_TYPES } from './constants';
+import ModelDatalist from './components/ModelDatalist';
 
 // --- Params ---
 const params = new URLSearchParams(window.location.search);
@@ -333,7 +334,8 @@ function Builder() {
                     <select className="form-select" style={{width: 200}} value={graphLLM.provider} onChange={(e) => setGraphLLM(prev => ({ ...prev, provider: e.target.value }))}>
                         {LLM_PROVIDER_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                     </select>
-                    <input className="form-input" style={{width: 240}} value={graphLLM.model} onChange={(e) => setGraphLLM(prev => ({ ...prev, model: e.target.value }))} placeholder="graph model (optional)" />
+                    <input className="form-input" style={{width: 240}} list="llm-models-graph" value={graphLLM.model} onChange={(e) => setGraphLLM(prev => ({ ...prev, model: e.target.value }))} placeholder="graph model (optional)" />
+                    <ModelDatalist id="llm-models-graph" provider={graphLLM.provider} />
                 </div>
                 <button onClick={handleSave} className="btn-save" disabled={loading}>{loading ? "Saving..." : "Save Graph"}</button>
             </div>
@@ -417,7 +419,9 @@ function Builder() {
                                         </div>
                                         <div className="form-group" style={{flex: 2}}>
                                             <label className="form-label">Model (optional)</label>
-                                            <input className="form-input" value={selectedElement.data.llmModel || ""} onChange={(e) => updateNode('llmModel', e.target.value)} placeholder="empty = provider default" />
+                                            <input className="form-input" list="llm-models-node" value={selectedElement.data.llmModel || ""} onChange={(e) => updateNode('llmModel', e.target.value)} placeholder="empty = provider default" />
+                                            {/* A node that inherits falls back to the graph-wide provider, so suggest from that. */}
+                                            <ModelDatalist id="llm-models-node" provider={selectedElement.data.llmProvider || graphLLM.provider} />
                                         </div>
                                     </div>
                                 )}

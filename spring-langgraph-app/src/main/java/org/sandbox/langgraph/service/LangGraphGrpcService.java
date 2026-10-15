@@ -186,6 +186,21 @@ public class LangGraphGrpcService {
         return apply(response);
     }
 
+    public @NonNull LlmModelsPayload listLlmModels(String provider) {
+        log.debug("Listing LLM models for provider: {}", provider);
+
+        ListLlmModelsRequest request = ListLlmModelsRequest.newBuilder()
+                .setProvider(provider != null ? provider : "")
+                .build();
+        try {
+            ListLlmModelsResponse response = blockingStub.withDeadlineAfter(TIMEOUT, TIMEOUT_UNIT).listLlmModels(request);
+            return mapper.toLlmModelsPayload(response);
+        } catch (StatusRuntimeException e) {
+            // The catalog itself never fails; this is only for a transport/service outage.
+            throw wrapGrpcError(e);
+        }
+    }
+
     public @NonNull RewindGraphPayload rewindGraph(String graphId, String threadId, String stateJson, String targetNodeId) {
         log.debug("Rewinding graph: {} to node: {}", graphId, targetNodeId);
         RewindGraphRequest request = RewindGraphRequest.newBuilder()

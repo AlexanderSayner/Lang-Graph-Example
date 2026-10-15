@@ -15,6 +15,7 @@ from langgraph.graph import StateGraph
 
 from app.clients.java_client import JavaGraphClient
 from app.clients.llm import LLMClientRegistry, resolve_llm_config
+from app.clients.model_catalog import list_models
 from app.config import settings
 from app.copilot.copilot_agent import CopilotAgent
 from app.generated import langgraph_pb2_grpc, langgraph_pb2
@@ -540,6 +541,22 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             success=True,
             ai_response=ai_response,
             total_tokens=ai_response.usage.get('total_tokens', -1) if hasattr(ai_response, 'usage') else -1
+        )
+
+    @handle_grpc_errors
+    async def ListLlmModels(self, request, context):
+        """List the models a provider offers, to populate the UI's model suggestions.
+
+        Delegates to the model catalog, which never raises - an unknown provider, a missing
+        key or a network error resolve to a curated fallback plus a message, so the UI can
+        always render something and a user can still type an arbitrary model id by hand.
+        """
+        result = await list_models(request.provider)
+        return langgraph_pb2.ListLlmModelsResponse(
+            success=result.success,
+            models=[langgraph_pb2.LlmModel(id=model_id, label=label) for model_id, label in result.models],
+            source=result.source,
+            error_message=result.error_message,
         )
 
     @property

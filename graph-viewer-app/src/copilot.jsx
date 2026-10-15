@@ -1,4 +1,5 @@
 import { COPILOT_PROVIDER_OPTIONS } from './constants';
+import ModelDatalist from './components/ModelDatalist';
 
 // Helper: Simple Markdown-like formatter for AI responses
 const formatMessage = (text) => {
@@ -50,10 +51,12 @@ export default function CopilotTab({
                 <input
                     className="form-input"
                     placeholder="model (provider default)"
+                    list="llm-models-copilot"
                     value={copilotLLM?.model || ''}
                     onChange={(e) => setCopilotLLM(prev => ({ ...prev, model: e.target.value }))}
                     style={{ fontSize: '12px', padding: '4px 6px', flex: 1, minWidth: 0 }}
                 />
+                <ModelDatalist id="llm-models-copilot" provider={copilotLLM?.provider} />
             </div>
 
             <div className="chat-messages" style={{ paddingBottom: '10px' }}>

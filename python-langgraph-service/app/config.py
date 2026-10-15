@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     COPILOT_PROVIDER: str = ""
     COPILOT_MODEL: str = ""
 
+    # Model catalog (UI model suggestions via ListLlmModels / the llmModels GraphQL query).
+    # Live provider lists are cached so the dropdown does not hammer the providers; failures
+    # are never cached, so a transient blip recovers on the next attempt.
+    LLM_MODELS_CACHE_TTL_SECONDS: int = 600
+    LLM_MODELS_HTTP_TIMEOUT_SECONDS: float = 5.0
+
     # Per-provider credentials (only the selected provider's key is required).
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o-mini"
