@@ -7,7 +7,7 @@ NODE TYPES:
 - END: The exit point.
 - ACTION: Nodes that run LLM prompts or logic. They have a 'system_prompt'.
 - HUMAN: Pause points waiting for user input.
-- TOOL: Nodes that execute HTTP API calls.
+- HTTP_REQUEST: Nodes that execute HTTP API calls.
 - GRAPH: Subgraphs (nested workflows).
 
 EDGES:

@@ -58,7 +58,7 @@ class GraphQlSchemaContractTest {
         GraphQLSchema schema = buildSchema();
 
         assertThat(enumValues(schema, "NodeType"))
-                .containsExactlyInAnyOrder("START", "END", "ACTION", "HUMAN", "GRAPH", "TOOL");
+                .containsExactlyInAnyOrder("START", "END", "ACTION", "HUMAN", "GRAPH", "HTTP_REQUEST");
         assertThat(enumValues(schema, "ExecutionEventType"))
                 .containsExactlyInAnyOrder("START", "NODE_START", "NODE_END", "END", "WAITING_FOR_INPUT", "ERROR");
         assertThat(enumValues(schema, "HttpMethod"))
@@ -73,7 +73,7 @@ class GraphQlSchemaContractTest {
         GraphQLSchema schema = buildSchema();
 
         assertThat(fieldTypeName(schema, "NodeInput", "nodeType")).isEqualTo("NodeType");
-        assertThat(fieldTypeName(schema, "ToolDebugInput", "method")).isEqualTo("HttpMethod");
+        assertThat(fieldTypeName(schema, "HttpRequestDebugInput", "method")).isEqualTo("HttpMethod");
         assertThat(fieldTypeName(schema, "GraphNode", "nodeType")).isEqualTo("NodeType");
         assertThat(fieldTypeName(schema, "GraphExecutionEventPayload", "eventType")).isEqualTo("ExecutionEventType");
         assertThat(fieldTypeName(schema, "ExecuteGraphPayload", "eventType")).isEqualTo("ExecutionEventType");

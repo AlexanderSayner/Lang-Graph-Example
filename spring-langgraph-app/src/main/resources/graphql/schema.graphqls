@@ -18,7 +18,7 @@ type Mutation {
     updateGraphState(input: UpdateGraphStateInput!): UpdateGraphStatePayload!
     deleteGraph(graphId: String!): DeleteGraphPayload!
     saveGraphCoordinates(graphId: String!, positions: [NodePositionInput!]!): GraphViewPayload!
-    debugTool(input: ToolDebugInput!): ToolDebugPayload!
+    debugHttpRequest(input: HttpRequestDebugInput!): HttpRequestDebugPayload!
     rewindGraph(graphId: String!, threadId: String!, stateJson: String!, targetNodeId: String): RewindPayload!
     askCopilot(graphId: String!, threadId: String!, message: String!, copilotChatHistoryJson: String,
         selectedNodeId: String, selectedEdgeJson: String,
@@ -101,9 +101,9 @@ input ClaimThreadInput {
     title: String
 }
 
-# ============== Tool Debug Types ==============
+# ============== HTTP Request Debug Types ==============
 
-input ToolDebugInput {
+input HttpRequestDebugInput {
     method: HttpMethod!       # GET, POST, etc.
     url: String!            # The URL to hit
     headers: JSON           # Key-Value pairs
@@ -111,7 +111,7 @@ input ToolDebugInput {
     variables: JSON         # The state variables to inject (e.g. { "user_id": "123" })
 }
 
-type ToolDebugPayload {
+type HttpRequestDebugPayload {
     success: Boolean!
     statusCode: Int
     body: String
@@ -315,7 +315,7 @@ enum NodeType {
     ACTION
     HUMAN
     GRAPH
-    TOOL
+    HTTP_REQUEST
 }
 
 enum ExecutionEventType {

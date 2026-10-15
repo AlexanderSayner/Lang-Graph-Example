@@ -1,11 +1,11 @@
 package org.sandbox.langgraph.core.model;
 
 /**
- * HTTP methods supported by the TOOL node and the {@code debugTool} mutation.
+ * HTTP methods supported by the HTTP_REQUEST node and the {@code debugHttpRequest} mutation.
  * <p>
  * Exposed as the GraphQL {@code HttpMethod} enum. The constant names match
  * {@link org.springframework.http.HttpMethod}, so the value can be handed straight to
- * the tool executor. The Python engine upper-cases the configured method, so this stays
+ * the HTTP request executor. The Python engine upper-cases the configured method, so this stays
  * compatible with the {@code string}-typed gRPC field.
  */
 public enum HttpMethod {

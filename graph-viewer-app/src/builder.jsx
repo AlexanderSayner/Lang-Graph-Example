@@ -11,7 +11,7 @@ import './styles-builder.css';
 import { Toast, useToast } from './components/Toast';
 
 // Shared constants from your central file
-import { fetchGraphQL, LIST_QUERY, VIEW_QUERY, SAVE_MUTATION, NODE_TYPES, TOOL_METHOD_OPTIONS, LLM_PROVIDER_OPTIONS, AI_NODE_TYPES } from './constants';
+import { fetchGraphQL, LIST_QUERY, VIEW_QUERY, SAVE_MUTATION, NODE_TYPES, HTTP_REQUEST_METHOD_OPTIONS, LLM_PROVIDER_OPTIONS, AI_NODE_TYPES, nodeClassName } from './constants';
 import ModelDatalist from './components/ModelDatalist';
 
 // --- Params ---
@@ -22,16 +22,13 @@ const URL_NAME = params.get('graphName');
 
 // --- GraphQL Mutations specific to Builder ---
 const BUILD_MUTATION = `mutation Build($input: BuildGraphInput!) { buildGraph(input: $input) { success message } }`;
-const TOOL_DEBUG_MUTATION = `mutation Debug($input: ToolDebugInput!) { debugTool(input: $input) { success statusCode body errorMessage } }`;
+const HTTP_REQUEST_DEBUG_MUTATION = `mutation Debug($input: HttpRequestDebugInput!) { debugHttpRequest(input: $input) { success statusCode body errorMessage } }`;
 
 // --- Custom Node ---
 const DesignNode = ({ data, selected }) => {
-    let bgClass = 'node-action';
-    if (data.type === NODE_TYPES.START) bgClass = 'node-start';
-    if (data.type === NODE_TYPES.END) bgClass = 'node-end';
-    if (data.type === NODE_TYPES.HUMAN) bgClass = 'node-human';
-    if (data.type === NODE_TYPES.GRAPH) bgClass = 'node-graph';
-    if (data.type === NODE_TYPES.TOOL) bgClass = 'node-tool';
+    // Shared whitelist from constants.js: an unknown node type gets the visible "unknown" style
+    // instead of being silently painted as ACTION.
+    const bgClass = nodeClassName(data.type);
 
     const displayText = data.friendlyName || data.label;
 
@@ -110,9 +107,9 @@ function Builder() {
 
     // Whether this node can call the model, mirroring `uses_llm` in
     // python-langgraph-service/app/services/langgraph_servicer.py: every node type except
-    // TOOL/GRAPH sends its system_prompt to the model, and a router node - any node with an
+    // HTTP_REQUEST/GRAPH sends its system_prompt to the model, and a router node - any node with an
     // outgoing conditional (labelled) edge - always does, whatever its type. Without
-    // the router check a TOOL/GRAPH router could not be given a per-node provider here.
+    // the router check a HTTP_REQUEST/GRAPH router could not be given a per-node provider here.
     const nodeUsesLlm = (el) =>
         AI_NODE_TYPES.includes(el.data?.type) ||
         edges.some(e => e.source === el.id && String(e.label || '').trim());
@@ -210,7 +207,7 @@ function Builder() {
             const payloadNodes = nodes.map(n => {
                 const meta = { system_prompt: n.data?.prompt || "", label: n.data?.friendlyName || "" };
                 if (n.data?.type === NODE_TYPES.GRAPH && n.data.subgraphId) meta.subgraph_id = n.data.subgraphId;
-                if (n.data?.type === NODE_TYPES.TOOL) { meta.method = n.data.method || "GET"; meta.url = n.data.url || ""; meta.headers = n.data.headers || "{}"; meta.body = n.data.body || ""; }
+                if (n.data?.type === NODE_TYPES.HTTP_REQUEST) { meta.method = n.data.method || "GET"; meta.url = n.data.url || ""; meta.headers = n.data.headers || "{}"; meta.body = n.data.body || ""; }
                 // Per-node AI overrides (empty = inherit the graph/server default).
                 // context_mode is written back too - it used to be silently dropped here.
                 if (n.data?.llmProvider) meta.llm_provider = n.data.llmProvider;
@@ -290,8 +287,8 @@ function Builder() {
         updateNode('prompt', newText);
     };
 
-    // --- Tool Test Logic ---
-    const testTool = async () => {
+    // --- HTTP Request Test Logic ---
+    const testHttpRequest = async () => {
         // Get fresh data
         const selectedNode = nodes.find(n => n.selected);
         if (!selectedNode) return;
@@ -307,7 +304,7 @@ function Builder() {
         setTestResult(null);
         try {
             const mockVariables = { "user_id": "123" };
-            const result = await fetchGraphQL(TOOL_DEBUG_MUTATION, {
+            const result = await fetchGraphQL(HTTP_REQUEST_DEBUG_MUTATION, {
                 input: {
                     method: selectedNode.data.method,
                     url: selectedNode.data.url,
@@ -316,7 +313,7 @@ function Builder() {
                     variables: JSON.stringify(mockVariables)
                 }
             });
-            setTestResult(result.debugTool);
+            setTestResult(result.debugHttpRequest);
         } catch (e) { setTestResult({ success: false, errorMessage: e.message }); }
         finally { setLoading(false); }
     };
@@ -346,7 +343,7 @@ function Builder() {
                     <div className="palette-node" title="Action Node" draggable onDragStart={(e) => onDragStart(e, NODE_TYPES.ACTION)}>🤖</div>
                     <div className="palette-node" title="Human Node" draggable onDragStart={(e) => onDragStart(e, NODE_TYPES.HUMAN)}>👤</div>
                     <div className="palette-node" title="Subgraph Node" draggable onDragStart={(e) => onDragStart(e, NODE_TYPES.GRAPH)}>🧩</div>
-                    <div className="palette-node" title="Tool Node (HTTP)" draggable onDragStart={(e) => onDragStart(e, NODE_TYPES.TOOL)}>🔧</div>
+                    <div className="palette-node" title="HTTP Request Node" draggable onDragStart={(e) => onDragStart(e, NODE_TYPES.HTTP_REQUEST)}>🔧</div>
                     <div className="palette-node" title="End Node" draggable onDragStart={(e) => onDragStart(e, NODE_TYPES.END)}>🛑</div>
                 </div>
 
@@ -435,13 +432,13 @@ function Builder() {
                                             </select>
                                         </div>
                                     </div>
-                                ) : selectedElement.data.type === NODE_TYPES.TOOL ? (
+                                ) : selectedElement.data.type === NODE_TYPES.HTTP_REQUEST ? (
                                     <>
                                         <div className="form-row">
                                             <div className="form-group" style={{flex: 0.3}}>
                                                 <label className="form-label">Method</label>
                                                 <select className="form-select" value={selectedElement.data.method || "GET"} onChange={(e) => updateNode('method', e.target.value)}>
-                                                    {TOOL_METHOD_OPTIONS.map(m => <option key={m} value={m}>{m}</option>)}
+                                                    {HTTP_REQUEST_METHOD_OPTIONS.map(m => <option key={m} value={m}>{m}</option>)}
                                                 </select>
                                             </div>
                                             <div className="form-group" style={{flex: 1.7}}>
@@ -459,7 +456,7 @@ function Builder() {
                                                 <textarea className="form-input form-textarea" style={{height: '40px'}} value={selectedElement.data.body || ""} onChange={(e) => updateNode('body', e.target.value)} />
                                             </div>
                                         </div>
-                                        <button className="btn-test-tool" onClick={testTool} disabled={loading}>{loading ? "Testing..." : "🛠️ Test Tool"}</button>
+                                        <button className="btn-test-http-request" onClick={testHttpRequest} disabled={loading}>{loading ? "Testing..." : "🛠️ HTTP Request"}</button>
                                         {testResult && (
                                             <div className="result-box">
                                                 <strong>Result (Status {testResult.statusCode}):</strong>
@@ -475,7 +472,7 @@ function Builder() {
                                             <div className="prompt-lib-bar">
                                                 <label className="form-label" style={{margin: 0}}>System Prompt</label>
                                                 <button className="btn-sm" onClick={() => insertVariable('input')}>+ Input</button>
-                                                <button className="btn-sm" onClick={() => insertVariable('tool_result')}>+ Tool Result</button>
+                                                <button className="btn-sm" onClick={() => insertVariable('http_result')}>+ HTTP Result</button>
                                                 <button className="btn-sm" onClick={() => { const v = prompt("Variable name:"); if(v) insertVariable(v); }}>+ Custom</button>
                                             </div>
                                             <textarea

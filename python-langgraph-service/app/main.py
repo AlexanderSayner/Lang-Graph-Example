@@ -69,7 +69,7 @@ async def create_server(redis_client) -> tuple[grpc.aio.Server, asyncio.Task]:
     checkpointer = await init_postgres_checkpointer()
 
     # Create a gRPC channel to the Java Service (Source of Truth)
-    java_channel = grpc.aio.insecure_channel(f"{settings.TOOL_SERVICE_HOST}:{settings.TOOL_SERVICE_PORT}")
+    java_channel = grpc.aio.insecure_channel(f"{settings.HTTP_REQUEST_SERVICE_HOST}:{settings.HTTP_REQUEST_SERVICE_PORT}")
 
     server = grpc.aio.server(
         interceptors=[LoggingInterceptor()],

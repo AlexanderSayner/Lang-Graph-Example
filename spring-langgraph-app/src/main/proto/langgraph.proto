@@ -34,10 +34,10 @@ service LangGraphService {
 }
 
 // ==========================================
-// Tool Service (Execution)
+// HTTP Request Service (Execution)
 // ==========================================
-service ToolService {
-  // Execute an HTTP Request Tool
+service HttpRequestService {
+  // Execute an HTTP Request
   rpc ExecuteHttpRequest (HttpRequestInput) returns (HttpRequestOutput);
 }
 
@@ -181,7 +181,7 @@ message RewindGraphPayload {
 }
 
 // ==========================================
-// Tool Messages
+// HTTP Request Messages
 // ==========================================
 
 message HttpRequestInput {

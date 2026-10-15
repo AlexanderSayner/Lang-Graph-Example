@@ -140,7 +140,7 @@ export const NODE_TYPES = Object.freeze({
     ACTION: 'ACTION',
     HUMAN: 'HUMAN',
     GRAPH: 'GRAPH',
-    TOOL: 'TOOL',
+    HTTP_REQUEST: 'HTTP_REQUEST',
 });
 
 // Multi-provider LLM selection. Keep the values in sync with
@@ -198,11 +198,27 @@ export const fetchLlmModels = async (provider) => {
 };
 
 // Node types whose system prompt is actually sent to a model (NodeHandler.process).
-// Every type except TOOL and GRAPH runs the model when it carries a system_prompt, so
-// START/HUMAN nodes qualify too - only TOOL and GRAPH never do (unless they are routers,
+// Every type except HTTP_REQUEST and GRAPH runs the model when it carries a system_prompt, so
+// START/HUMAN nodes qualify too - only HTTP_REQUEST and GRAPH never do (unless they are routers,
 // which builder.jsx adds back via nodeUsesLlm).
 // Keep in sync with `uses_llm` in python-langgraph-service/app/services/langgraph_servicer.py.
 export const AI_NODE_TYPES = Object.freeze([NODE_TYPES.START, NODE_TYPES.END, NODE_TYPES.ACTION, NODE_TYPES.HUMAN]);
+
+// CSS class suffix per node type. An explicit whitelist rather than a
+// `nodeType.toLowerCase().replace(/_/g, '-')` transform, so a type this build does not know about
+// renders with a visibly distinct "unknown" style instead of silently falling back to React
+// Flow's unstyled white default. `.node-unknown` is defined in styles.css and styles-builder.css.
+const NODE_CLASS_SUFFIXES = Object.freeze({
+    [NODE_TYPES.START]: 'start',
+    [NODE_TYPES.END]: 'end',
+    [NODE_TYPES.ACTION]: 'action',
+    [NODE_TYPES.HUMAN]: 'human',
+    [NODE_TYPES.GRAPH]: 'graph',
+    [NODE_TYPES.HTTP_REQUEST]: 'http-request',
+});
+
+/** React Flow node class for a node type, e.g. HTTP_REQUEST -> "node-http-request". */
+export const nodeClassName = (nodeType) => `node-${NODE_CLASS_SUFFIXES[nodeType] || 'unknown'}`;
 
 export const EXECUTION_EVENT_TYPES = Object.freeze({
     START: 'START',
@@ -230,8 +246,8 @@ export const GRAPH_STATUS = Object.freeze({
     BUILDING: 'BUILDING',
 });
 
-// Methods offered in the TOOL node editor dropdown (a practical subset of HTTP_METHODS).
-export const TOOL_METHOD_OPTIONS = [HTTP_METHODS.GET, HTTP_METHODS.POST, HTTP_METHODS.PUT, HTTP_METHODS.DELETE];
+// Methods offered in the HTTP_REQUEST node editor dropdown (a practical subset of HTTP_METHODS).
+export const HTTP_REQUEST_METHOD_OPTIONS = [HTTP_METHODS.GET, HTTP_METHODS.POST, HTTP_METHODS.PUT, HTTP_METHODS.DELETE];
 
 
 // --- Node size estimation ---

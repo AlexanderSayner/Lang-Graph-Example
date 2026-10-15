@@ -41,8 +41,13 @@ This document provides a deep architectural analysis and comprehensive user guid
                                               ▼
                                      ┌──────────────────────┐
                                      │      Redis           │
-                                     │  - Graph Metadata    │
-                                     │  - Coordinates       │
+                                     │  - Sessions          │
+                                     │  - Checkpoints       │
+                                     └──────────────────────┘
+                                     ┌──────────────────────┐
+                                     │     PostgreSQL       │
+                                     │  - Graphs (JSONB)    │
+                                     │  - Users / Threads   │
                                      └──────────────────────┘
 ```
 
@@ -159,32 +164,38 @@ public class LangGraphGrpcService {
 - Proper error translation from gRPC Status codes to domain exceptions
 - Uses `boundedElastic()` scheduler for blocking gRPC operations
 
-### 3. Redis Services
+### 3. Graph Storage Services
 
-**File**: `RedisGraphViewService.java`
+**File**: `PostgresGraphViewService.java`
 
-Provides read-only access to graph visualization data from Redis:
-
-```java
-@Service
-public class RedisGraphViewService {
-
-    public Mono<@NonNull GraphViewData> getGraphViewData(String graphId);
-}
-```
-
-**File**: `RedisGraphCoordinatesService.java`
-
-Manages graph node coordinates storage in Redis:
+Reads the graph definition and its layout straight from the `core.graphs` row (`definition` and
+`coordinates` JSONB columns) and flattens them into the GraphQL view:
 
 ```java
 @Service
-public class RedisGraphCoordinatesService {
+public class PostgresGraphViewService {
 
-    public Mono<@NonNull Boolean> saveCoordinates(String graphId, Map<String, Map<String, Double>> coordinates);
-    public Mono<@NonNull Map<String, Map<String, Double>>> getCoordinates(String graphId);
+    public @NonNull GraphViewData getGraphViewData(String graphId);
 }
 ```
+
+**File**: `GraphPostgresService.java`
+
+Owns the writes: `saveGraph` persists the definition and the per-node `coordinates` in one row
+write, `deleteGraph` removes the row. Redis is not involved in graph storage - it holds sessions
+and LangGraph checkpoints only.
+
+```java
+@Service
+public class GraphPostgresService {
+
+    public Optional<GraphEntity> findById(String graphId);
+    public void saveGraph(BuildGraphInput input);
+    public PageData listGraphs(int limit, int offset);
+    public boolean deleteGraph(String graphId);
+}
+```
+
 
 ### 4. Mapper Layer
 
@@ -221,7 +232,7 @@ public interface GraphGrpcMapper {
 }
 ```
 
-**File**: `RedisGraphStorageMapper.java` (Manual mapper)
+**File**: `GraphViewMapper.java` (Manual mapper)
 
 Converts Redis graph data to GraphQL payload:
 
@@ -363,31 +374,31 @@ public sealed class LangGraphException extends RuntimeException permits
 }
 ```
 
-### 5. Redis Integration
+### 5. Postgres Graph Storage
 
-**File**: `RedisGraphViewService.java`
+**File**: `PostgresGraphViewService.java`
 
-Provides read-only access to graph visualization data:
+The definition and its coordinates live in one `core.graphs` row, so `getGraphView` is a read of
+those two JSONB columns - there is no `graph_def:` Redis cache any more. The only definition cache
+left in the system is the Python service's short-lived `graph:def:<graphId>` key (1 h TTL), which
+`BuildGraph` refreshes and which the UI never reads.
 
 ```java
 @Service
-public class RedisGraphViewService {
-    
-    private static final String GRAPH_META_KEY_PREFIX = "graph_def:";
-    
-    public Mono<@NonNull GraphViewData> getGraphViewData(String graphId) {
-        String key = GRAPH_META_KEY_PREFIX + graphId;
-        
-        return redisOperations.opsForValue().get(key)
-            .switchIfEmpty(Mono.error(new RuntimeException("Graph not found")))
-            .flatMap(data -> {
-                // Parse JSON and transform to GraphViewData
-                Map<String, Object> graphData = objectMapper.readValue(data, typeRef);
-                return Mono.just(new GraphViewData(...));
-            });
+public class PostgresGraphViewService {
+
+    private final GraphRepository repository;
+    private final ObjectMapper objectMapper;
+
+    public @NonNull GraphViewData getGraphViewData(String graphId) {
+        return repository.findById(graphId)
+                .map(this::mapEntityToViewData)
+                .orElseThrow(() -> new LangGraphException.GraphNotFoundException(
+                        "Graph not found: " + graphId));
     }
 }
 ```
+
 
 ---
 
@@ -427,7 +438,7 @@ input BuildGraphInput {
 
 input NodeInput {
     nodeId: String!
-    nodeType: NodeType!      # START | END | ACTION | HUMAN | GRAPH | TOOL
+    nodeType: NodeType!      # START | END | ACTION | HUMAN | GRAPH | HTTP_REQUEST
     handlerName: String!
     metadata: JSON
     # Optional UI coordinates per node: written into the `coordinates` column together with the
@@ -463,7 +474,7 @@ enum NodeType {
     ACTION
     HUMAN
     GRAPH
-    TOOL
+    HTTP_REQUEST
 }
 
 enum ExecutionEventType {
@@ -2024,12 +2035,12 @@ spring-langgraph-app/
 │   │   └── LangGraphException.java
 │   ├── mapper/
 │   │   ├── GraphGrpcMapper.java
-│   │   └── RedisGraphStorageMapper.java
+│   │   └── GraphViewMapper.java
 │   ├── model/
 │   │   └── GraphEvent.java
 │   └── service/
 │       ├── LangGraphGrpcService.java
-│       └── RedisGraphViewService.java
+│       └── PostgresGraphViewService.java
 ├── src/main/proto/
 │   └── langgraph.proto
 ├── src/main/resources/
