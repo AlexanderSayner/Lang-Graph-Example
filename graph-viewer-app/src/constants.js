@@ -114,7 +114,7 @@ export const LOGOUT_MUTATION = `mutation { logout }`;
 
 // --- Existing Queries/Mutations ---
 export const LIST_QUERY = `query { listGraphs(pageSize: 100) { graphs { graphId graphName nodeCount } } }`;
-export const VIEW_QUERY = `query Get($graphId: String!) { getGraphView(graphId: $graphId) { nodes { nodeId nodeType metadata position { x y } } edges { source target condition } } }`;
+export const VIEW_QUERY = `query Get($graphId: String!) { getGraphView(graphId: $graphId) { config nodes { nodeId nodeType metadata position { x y } } edges { source target condition } } }`;
 export const HISTORY_QUERY = `query History($graphId: String!, $threadId: String!) {
     getExecutionHistory(graphId: $graphId, threadId: $threadId) {
         success
@@ -140,8 +140,85 @@ export const NODE_TYPES = Object.freeze({
     ACTION: 'ACTION',
     HUMAN: 'HUMAN',
     GRAPH: 'GRAPH',
-    TOOL: 'TOOL',
+    HTTP_REQUEST: 'HTTP_REQUEST',
 });
+
+// Multi-provider LLM selection. Keep the values in sync with
+// python-langgraph-service/app/clients/llm.py PROVIDER_PRESETS.
+// An empty value means "inherit": fall back to graph config, then to the server default.
+export const LLM_PROVIDER_OPTIONS = Object.freeze([
+    { value: '',         label: 'Inherit (graph / server default)' },
+    { value: 'yandex',   label: 'YandexGPT' },
+    { value: 'openai',   label: 'OpenAI' },
+    { value: 'groq',     label: 'Groq' },
+    { value: 'deepseek', label: 'DeepSeek' },
+    { value: 'openrouter', label: 'OpenRouter' },
+    { value: 'anthropic', label: 'Anthropic (Claude)' },
+]);
+
+// Copilot provider options: the same choices as the graph/node selectors, but the empty value
+// means "inherit the server-side COPILOT_* / LLM_* default". The copilot is a UI assistant, not
+// a graph node, so it has no graph-level config to inherit from - hence the clearer label.
+export const COPILOT_PROVIDER_OPTIONS = Object.freeze(
+    LLM_PROVIDER_OPTIONS.map(o => o.value === '' ? { ...o, label: 'Inherit (server default)' } : o)
+);
+
+// --- LLM model catalog (model suggestions) ---
+// The Python service holds the provider keys, so the model list is fetched server-side and
+// never exposes a key to the browser. `source` is "live" (fetched from the provider) or
+// "curated" (Yandex, or any provider we could not reach / have no key for).
+export const LLM_MODELS_QUERY = `
+    query LlmModels($provider: String!) {
+        llmModels(provider: $provider) {
+            success
+            models { id label }
+            source
+            errorMessage
+        }
+    }
+`;
+
+// Provider -> [{ id, label }] suggestions, cached for this session on top of the server's TTL
+// cache, so flipping a dropdown back and forth does not re-query. A failed or empty lookup
+// just yields [] - the model inputs stay free-text in that case, so a custom model id can
+// always still be typed.
+const _llmModelsCache = new Map();
+export const fetchLlmModels = async (provider) => {
+    if (!provider) return [];
+    if (_llmModelsCache.has(provider)) return _llmModelsCache.get(provider);
+    try {
+        const data = await fetchGraphQL(LLM_MODELS_QUERY, { provider });
+        const models = (data?.llmModels?.models || []).map(m => ({ id: m.id, label: m.label || m.id }));
+        _llmModelsCache.set(provider, models);
+        return models;
+    } catch (err) {
+        console.warn(`[llm-models] '${provider}' suggestions unavailable: ${err.message}`);
+        return [];
+    }
+};
+
+// Node types whose system prompt is actually sent to a model (NodeHandler.process).
+// Every type except HTTP_REQUEST and GRAPH runs the model when it carries a system_prompt, so
+// START/HUMAN nodes qualify too - only HTTP_REQUEST and GRAPH never do (unless they are routers,
+// which builder.jsx adds back via nodeUsesLlm).
+// Keep in sync with `uses_llm` in python-langgraph-service/app/services/langgraph_servicer.py.
+export const AI_NODE_TYPES = Object.freeze([NODE_TYPES.START, NODE_TYPES.END, NODE_TYPES.ACTION, NODE_TYPES.HUMAN]);
+
+// CSS class suffix per node type. An explicit whitelist rather than a
+// `nodeType.toLowerCase().replace(/_/g, '-')` transform, so a type this build does not know about
+// renders with a visibly distinct "unknown" style instead of silently falling back to React
+// Flow's unstyled white default. `.node-unknown` is defined in styles.css and styles-builder.css.
+const NODE_CLASS_SUFFIXES = Object.freeze({
+    [NODE_TYPES.START]: 'start',
+    [NODE_TYPES.END]: 'end',
+    [NODE_TYPES.ACTION]: 'action',
+    [NODE_TYPES.HUMAN]: 'human',
+    [NODE_TYPES.GRAPH]: 'graph',
+    [NODE_TYPES.HTTP_REQUEST]: 'http-request',
+});
+
+/** React Flow node class for a node type, e.g. HTTP_REQUEST -> "node-http-request". */
+export const nodeClassName = (nodeType) => `node-${NODE_CLASS_SUFFIXES[nodeType] || 'unknown'}`;
 
 export const EXECUTION_EVENT_TYPES = Object.freeze({
     START: 'START',
@@ -169,8 +246,8 @@ export const GRAPH_STATUS = Object.freeze({
     BUILDING: 'BUILDING',
 });
 
-// Methods offered in the TOOL node editor dropdown (a practical subset of HTTP_METHODS).
-export const TOOL_METHOD_OPTIONS = [HTTP_METHODS.GET, HTTP_METHODS.POST, HTTP_METHODS.PUT, HTTP_METHODS.DELETE];
+// Methods offered in the HTTP_REQUEST node editor dropdown (a practical subset of HTTP_METHODS).
+export const HTTP_REQUEST_METHOD_OPTIONS = [HTTP_METHODS.GET, HTTP_METHODS.POST, HTTP_METHODS.PUT, HTTP_METHODS.DELETE];
 
 
 // --- Node size estimation ---

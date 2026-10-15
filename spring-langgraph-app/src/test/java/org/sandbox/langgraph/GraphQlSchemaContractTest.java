@@ -58,7 +58,7 @@ class GraphQlSchemaContractTest {
         GraphQLSchema schema = buildSchema();
 
         assertThat(enumValues(schema, "NodeType"))
-                .containsExactlyInAnyOrder("START", "END", "ACTION", "HUMAN", "GRAPH", "TOOL");
+                .containsExactlyInAnyOrder("START", "END", "ACTION", "HUMAN", "GRAPH", "HTTP_REQUEST");
         assertThat(enumValues(schema, "ExecutionEventType"))
                 .containsExactlyInAnyOrder("START", "NODE_START", "NODE_END", "END", "WAITING_FOR_INPUT", "ERROR");
         assertThat(enumValues(schema, "HttpMethod"))
@@ -73,7 +73,7 @@ class GraphQlSchemaContractTest {
         GraphQLSchema schema = buildSchema();
 
         assertThat(fieldTypeName(schema, "NodeInput", "nodeType")).isEqualTo("NodeType");
-        assertThat(fieldTypeName(schema, "ToolDebugInput", "method")).isEqualTo("HttpMethod");
+        assertThat(fieldTypeName(schema, "HttpRequestDebugInput", "method")).isEqualTo("HttpMethod");
         assertThat(fieldTypeName(schema, "GraphNode", "nodeType")).isEqualTo("NodeType");
         assertThat(fieldTypeName(schema, "GraphExecutionEventPayload", "eventType")).isEqualTo("ExecutionEventType");
         assertThat(fieldTypeName(schema, "ExecuteGraphPayload", "eventType")).isEqualTo("ExecutionEventType");
@@ -112,6 +112,22 @@ class GraphQlSchemaContractTest {
         // must stay available - they still need the flat nodeId + coordinates pair.
         assertThat(schema.getType("NodePositionInput")).isNotNull();
         assertThat(schema.getMutationType().getField("saveGraphCoordinates")).isNotNull();
+    }
+
+    @Test
+    @DisplayName("The LLM model catalog query and types are exposed for the UI selectors")
+    void llmModelsCatalogIsExposed() throws Exception {
+        GraphQLSchema schema = buildSchema();
+
+        // The UI calls this per selected provider to populate the model <datalist>; it must
+        // stay a query returning the catalog payload with id/label entries.
+        assertThat(schema.getQueryType().getField("llmModels")).isNotNull();
+        assertThat(fieldTypeName(schema, "Query", "llmModels")).isEqualTo("LlmModelsPayload");
+        assertThat(fieldTypeName(schema, "LlmModelsPayload", "models")).isEqualTo("LlmModel");
+        assertThat(fieldTypeName(schema, "LlmModel", "id")).isEqualTo("String");
+        assertThat(fieldTypeName(schema, "LlmModel", "label")).isEqualTo("String");
+        assertThat(fieldTypeName(schema, "LlmModelsPayload", "source")).isEqualTo("String");
+        assertThat(fieldTypeName(schema, "LlmModelsPayload", "errorMessage")).isEqualTo("String");
     }
 
     private static List<String> enumValues(GraphQLSchema schema, String typeName) {

@@ -1,7 +1,6 @@
 import json
 import logging
 
-from app.clients.yandex_client import YandexGPTClient
 from app.prompt_loader import _read_prompt
 
 logger = logging.getLogger(__name__)
@@ -92,13 +91,28 @@ class CopilotAgent:
     Handles context injection and LLM communication separately from the graph execution engine.
     """
 
-    def __init__(self, llm_client: YandexGPTClient):
-        self.llm = llm_client
+    def __init__(self, llm):
+        """``llm`` is either a ready ``LLMClient`` or a zero-arg factory that builds one.
+
+        The factory form is used so the copilot's provider (COPILOT_* / LLM_* settings) is
+        only materialised on the first question - a missing API key therefore cannot prevent
+        the server from starting up.
+        """
+        self.llm = llm if not callable(llm) else None
+        self._llm_factory = llm if callable(llm) else None
+
+    def _resolve(self):
+        if self.llm is None and self._llm_factory is not None:
+            self.llm = self._llm_factory()
+        return self.llm
 
     async def ask(self, user_message: str, graph_context_json: str, execution_history_json: str, chat_history_json: str,
-                  selected_node_id: str, selected_edge_json: str) -> str:
+                  selected_node_id: str, selected_edge_json: str, llm=None) -> str:
         """
         Processes a copilot request and returns the AI response.
+
+        ``llm`` optionally overrides the constructor's client - the servicer passes a
+        per-request one so the UI can choose the copilot's provider/model on every question.
         """
         # Build the System Prompt with Graph Context
         system_prompt = _build_system_prompt(graph_context_json, execution_history_json, selected_node_id,
@@ -110,7 +124,7 @@ class CopilotAgent:
         logger.info(
             f"Copilot processing request (Node: {selected_node_id or 'None'}, Edge: {'Yes' if selected_edge_json else 'None'})")
         try:
-            response_text = await self.llm.generate(
+            response_text = await (llm or self._resolve()).generate(
                 user_message=formatted_user_message,
                 system_message=system_prompt
             )

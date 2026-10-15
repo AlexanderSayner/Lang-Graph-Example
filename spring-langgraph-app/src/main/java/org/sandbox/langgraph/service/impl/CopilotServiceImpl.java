@@ -36,7 +36,9 @@ public class CopilotServiceImpl implements CopilotService {
                                                    String message,
                                                    String copilotChatHistoryJson,
                                                    String selectedNodeId,
-                                                   String selectedEdgeJson) {
+                                                   String selectedEdgeJson,
+                                                   String copilotProvider,
+                                                   String copilotModel) {
         log.debug("Copilot request for graph: {}, thread: {}", graphId, threadId);
 
         GraphViewData graphView = postgresGraphViewService.getGraphViewData(graphId);
@@ -53,6 +55,9 @@ public class CopilotServiceImpl implements CopilotService {
                     .setCopilotChatHistoryJson(copilotChatHistoryJson != null ? copilotChatHistoryJson : "[]")
                     .setSelectedNodeId(selectedNodeId != null ? selectedNodeId : "")
                     .setSelectedEdgeJson(selectedEdgeJson != null ? selectedEdgeJson : "")
+                    // Empty means "inherit": the Python service falls back to COPILOT_* / LLM_*.
+                    .setCopilotProvider(copilotProvider != null ? copilotProvider : "")
+                    .setCopilotModel(copilotModel != null ? copilotModel : "")
                     .build();
 
             CopilotResponse response = blockingStub.withDeadlineAfter(30, TimeUnit.SECONDS).askCopilot(request);

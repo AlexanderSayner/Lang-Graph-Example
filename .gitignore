@@ -34,6 +34,8 @@ logs/
 .env
 .env.local
 .env.*
+# ...but keep the documented example config under version control
+!.env.example
 
 # OS files
 .DS_Store

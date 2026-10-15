@@ -18,13 +18,17 @@ public enum NodeType {
     ACTION,
     HUMAN,
     GRAPH,
-    TOOL;
+    HTTP_REQUEST;
 
     /**
      * Lenient parser used on the <b>read</b> path (persisted graph definitions coming
      * back from Redis/Postgres, which may contain legacy casing or old README-style
      * names). Input writes never use this - the GraphQL enum already guarantees a
      * valid value.
+     * <p>
+     * Deprecated aliases are kept on purpose (for example {@code TOOL} for
+     * {@link #HTTP_REQUEST}): dropping one makes every persisted graph that still uses it
+     * un-loadable, because a single unknown value fails the whole {@code getGraphView}.
      *
      * @param value raw string, case-insensitive
      * @return matching {@link NodeType}
@@ -41,7 +45,10 @@ public enum NodeType {
             case "ACTION", "AGENT", "LLM", "CHAT" -> ACTION;
             case "HUMAN", "HUMAN_INPUT", "INTERRUPT" -> HUMAN;
             case "GRAPH", "SUBGRAPH" -> GRAPH;
-            case "TOOL", "HTTP" -> TOOL;
+            case "HTTP_REQUEST", "HTTP" -> HTTP_REQUEST;
+            // Pre-rename name of the very same node type (an outbound HTTP requester).
+            // Read path only: definitions persisted before the rename still carry TOOL.
+            case "TOOL" -> HTTP_REQUEST;
             default -> throw new IllegalArgumentException("Unknown node type: " + value);
         };
     }

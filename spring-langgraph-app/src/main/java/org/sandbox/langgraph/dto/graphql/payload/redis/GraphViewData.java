@@ -13,6 +13,7 @@ public record GraphViewData(
         String graphName,
         GraphStatus status,
         List<Map<String, Object>> nodes,
-        List<Map<String, Object>> edges
+        List<Map<String, Object>> edges,
+        Map<String, Object> config
 ) {
 }

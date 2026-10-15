@@ -4,10 +4,10 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.sandbox.langgraph.dto.graphql.input.ToolDebugInput;
-import org.sandbox.langgraph.dto.graphql.payload.ToolDebugPayload;
+import org.sandbox.langgraph.dto.graphql.input.HttpRequestDebugInput;
+import org.sandbox.langgraph.dto.graphql.payload.HttpRequestDebugPayload;
 import org.sandbox.langgraph.dto.web.HttpRequestOutput;
-import org.sandbox.langgraph.service.impl.ToolExecutorServiceImpl;
+import org.sandbox.langgraph.service.impl.HttpRequestExecutorServiceImpl;
 import org.springframework.graphql.data.method.annotation.Argument;
 import org.springframework.graphql.data.method.annotation.MutationMapping;
 import org.springframework.stereotype.Controller;
@@ -19,13 +19,13 @@ import java.util.Map;
 @Controller
 @RequiredArgsConstructor
 @Slf4j
-public class ToolDebugController {
+public class HttpRequestDebugController {
 
-    private final ToolExecutorServiceImpl toolExecutor;
+    private final HttpRequestExecutorServiceImpl httpRequestExecutor;
     private final ObjectMapper objectMapper;
 
     @MutationMapping
-    public ToolDebugPayload debugTool(@Argument ToolDebugInput input) {
+    public HttpRequestDebugPayload debugHttpRequest(@Argument HttpRequestDebugInput input) {
         try {
             Map<String, String> headers = new HashMap<>();
             if (input.headers() != null && !input.headers().isBlank()) {
@@ -43,7 +43,7 @@ public class ToolDebugController {
             }
             String variablesJson = objectMapper.writeValueAsString(variables);
 
-            HttpRequestOutput result = toolExecutor.executeHttpRequest(
+            HttpRequestOutput result = httpRequestExecutor.executeHttpRequest(
                     input.method().name(),
                     input.url(),
                     headers,
@@ -51,7 +51,7 @@ public class ToolDebugController {
                     variablesJson
             );
 
-            return new ToolDebugPayload(
+            return new HttpRequestDebugPayload(
                     result.isSuccess(),
                     result.getStatusCode(),
                     result.getBody(),
@@ -59,8 +59,8 @@ public class ToolDebugController {
             );
 
         } catch (Exception e) {
-            log.error("Debug tool failed", e);
-            return new ToolDebugPayload(false, 0, null, "Internal Error: " + e.getMessage());
+            log.error("Debug HTTP request failed", e);
+            return new HttpRequestDebugPayload(false, 0, null, "Internal Error: " + e.getMessage());
         }
     }
 }

@@ -60,7 +60,8 @@ public class PostgresGraphViewService {
                 entity.getName(), // Source of truth is the name column (same one that feeds listGraphs),
                 entity.getStatus(), // Use the status directly from the Postgres entity
                 nodes,
-                edges
+                edges,
+                graphDef.config()
         );
     }
 

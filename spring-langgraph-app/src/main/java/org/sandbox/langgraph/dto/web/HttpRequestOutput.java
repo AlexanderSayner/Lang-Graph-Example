@@ -5,7 +5,7 @@ import lombok.Data;
 import java.util.Map;
 
 /**
- * DTO for the result of an HTTP Tool Execution.
+ * DTO for the result of an HTTP Request execution.
  * Used internally by the service layer before mapping to gRPC response.
  */
 @Data

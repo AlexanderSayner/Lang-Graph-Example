@@ -4,6 +4,7 @@ import time
 
 import httpx
 
+from app.clients.llm import GenerationResult
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -11,17 +12,6 @@ logger = logging.getLogger(__name__)
 
 class AsyncOperationTimeout(RuntimeError):
     """Raised when a Yandex async (deferred) operation does not finish within the deadline."""
-
-
-class GenerationResult(str):
-    """
-    Preserves the string interface while adding usage metadata.
-    """
-
-    def __new__(cls, text, usage=None):
-        instance = super().__new__(cls, text)
-        instance.usage = usage or {}
-        return instance
 
 
 class YandexGPTClient:
@@ -44,10 +34,16 @@ class YandexGPTClient:
     ASYNC_URL = "https://ai.api.cloud.yandex.net/foundationModels/v1/completionAsync"
     OPERATIONS_URL = "https://operation.api.cloud.yandex.net/operations"
 
-    def __init__(self, api_key: str, folder_id: str, mode: str | None = None):
+    def __init__(self, api_key: str, folder_id: str, mode: str | None = None,
+                 model_name: str = "yandexgpt", temperature: float = 0.6,
+                 max_tokens: int = 2000):
         self.api_key = api_key
         self.folder_id = folder_id
         self.mode = (mode or settings.YC_COMPLETION_MODE or "sync").strip().lower()
+        # Defaults used when a caller does not override them per request.
+        self.model_name = model_name or "yandexgpt"
+        self.temperature = temperature
+        self.max_tokens = max_tokens
 
     def _headers(self) -> dict:
         return {
@@ -57,6 +53,11 @@ class YandexGPTClient:
 
     def _payload(self, user_message: str, system_message: str, model_name: str,
                  temperature: float, max_tokens: int) -> dict:
+        messages = []
+        # Never send an empty system message: the REST API rejects {"role":"system","text":""}.
+        if system_message and system_message.strip():
+            messages.append({"role": "system", "text": system_message})
+        messages.append({"role": "user", "text": user_message})
         return {
             "modelUri": f"gpt://{self.folder_id}/{model_name}",
             "completionOptions": {
@@ -64,16 +65,7 @@ class YandexGPTClient:
                 "temperature": temperature,
                 "maxTokens": str(max_tokens)
             },
-            "messages": [
-                {
-                    "role": "system",
-                    "text": system_message
-                },
-                {
-                    "role": "user",
-                    "text": user_message
-                }
-            ]
+            "messages": messages
         }
 
     @staticmethod
@@ -96,22 +88,30 @@ class YandexGPTClient:
     async def generate(
             self,
             user_message: str,
-            system_message: str = settings.system_prompt,
-            model_name: str = "yandexgpt",
-            temperature: float = 0.6,
-            max_tokens: int = 2000
+            system_message: str = "",
+            model_name: str | None = None,
+            temperature: float | None = None,
+            max_tokens: int | None = None
     ) -> GenerationResult:
         """
         Generates a completion using the configured completion mode.
+
+        ``model_name`` / ``temperature`` / ``max_tokens`` fall back to the values
+        supplied to the constructor when omitted.
         """
         if not self.api_key:
             raise ValueError("Yandex API Key is not configured.")
+
+        model_name = model_name or self.model_name
+        temperature = self.temperature if temperature is None else temperature
+        max_tokens = self.max_tokens if max_tokens is None else max_tokens
 
         payload = self._payload(user_message, system_message, model_name, temperature, max_tokens)
 
         if self.mode == "async":
             try:
-                return await self._generate_async(payload)
+                result = await self._generate_async(payload)
+                return self._stamp(result, model_name)
             except AsyncOperationTimeout as e:
                 if not settings.YC_ASYNC_FALLBACK_TO_SYNC:
                     raise
@@ -120,7 +120,14 @@ class YandexGPTClient:
                     f"({e}); falling back to the synchronous endpoint."
                 )
 
-        return await self._generate_sync(payload)
+        return self._stamp(await self._generate_sync(payload), model_name)
+
+    @staticmethod
+    def _stamp(result: GenerationResult, model_name: str) -> GenerationResult:
+        """Attach provenance so logs can show which provider/model answered."""
+        result.provider = "yandex"
+        result.model = model_name
+        return result
 
     async def _generate_sync(self, payload: dict) -> GenerationResult:
         async with httpx.AsyncClient() as client:
@@ -189,6 +196,5 @@ class YandexGPTClient:
                 if polls % 10 == 0:
                     logger.info(
                         f"Yandex async operation {operation_id} still pending "
-                        f"({polls} polls, {settings.YC_ASYNC_MAX_WAIT_SECONDS:g}s limit)"
+                        f"({polls} polls / {settings.YC_ASYNC_MAX_WAIT_SECONDS:g}s limit)"
                     )
-

@@ -1,0 +1,3 @@
+# Test-only dependencies. Runtime dependencies stay in requirements.txt so the service
+# image is unaffected - install with:  pip install -r requirements.txt -r requirements-dev.txt
+pytest>=8.0

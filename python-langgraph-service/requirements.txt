@@ -11,6 +11,8 @@ grpcio-reflection>=1.68.1
 langgraph>=0.2.53
 langchain-core>=0.3.25
 langchain-openai>=1.1.14
+# Anthropic (Claude) - the other providers reuse langchain-openai via base_url
+langchain-anthropic>=0.3.20
 
 langgraph-checkpoint-postgres>=0.1.0
 psycopg[binary]>=3.2.0

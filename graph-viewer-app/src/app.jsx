@@ -11,7 +11,7 @@ import {
     BALANCE_QUERY, EXECUTE_MUTATION, SAVE_MUTATION,
     DELETE_MUTATION, REWIND_MUTATION, COPILOT_MUTATION,
     CLAIM_THREADS_MUTATION,
-    layoutGraph, NODE_TYPES, EXECUTION_EVENT_TYPES
+    layoutGraph, NODE_TYPES, EXECUTION_EVENT_TYPES, nodeClassName
 } from './constants';
 import CopilotTab from './copilot';
 import Sidebar from './components/Sidebar';
@@ -68,6 +68,21 @@ function App() {
     const [copilotMessages, setCopilotMessages] = useState([]);
     const [copilotInput, setCopilotInput] = useState("");
     const [copilotLoading, setCopilotLoading] = useState(false);
+    // Copilot LLM selection. A per-request override of the service COPILOT_* / LLM_* default,
+    // remembered in this browser so the choice survives reloads. It is deliberately NOT
+    // graph-scoped: the copilot is a UI-wide assistant, so the chosen model follows you across
+    // every graph instead of being stored in each graph's definition.
+    const [copilotLLM, setCopilotLLM] = useState(() => {
+        try {
+            const stored = JSON.parse(localStorage.getItem('copilotLLM') || '{}');
+            return { provider: stored.provider || '', model: stored.model || '' };
+        } catch {
+            return { provider: '', model: '' };
+        }
+    });
+    useEffect(() => {
+        localStorage.setItem('copilotLLM', JSON.stringify(copilotLLM));
+    }, [copilotLLM]);
 
     const [selectedNodeId, setSelectedNodeId] = useState(null);
     const [selectedEdge, setSelectedEdge] = useState(null);
@@ -240,19 +255,19 @@ function App() {
                     const prompt = n.metadata?.system_prompt || "";
                     const subgraphId = n.metadata?.subgraph_id;
                     const label = n.metadata?.label;
-                    const toolUrl = n.metadata?.url || "";
+                    const httpUrl = n.metadata?.url || "";
                     const subgraphName = graphs.find(g => g.graphId === subgraphId)?.graphName || "Unknown Graph";
 
                     // Raw text of the node body - used by estimateNodeSize() for the automatic layout.
                     const bodyText = n.nodeType === NODE_TYPES.GRAPH
                         ? `Subgraph: ${subgraphName}`
-                        : n.nodeType === NODE_TYPES.TOOL
-                            ? `Tool: ${n.metadata?.method || 'GET'} ${toolUrl}`
+                        : n.nodeType === NODE_TYPES.HTTP_REQUEST
+                            ? `HTTP: ${n.metadata?.method || 'GET'} ${httpUrl}`
                             : prompt;
 
                     return {
                         id: n.nodeId,
-                        className: `node-${n.nodeType.toLowerCase()}`,
+                        className: nodeClassName(n.nodeType),
                         data: {
                             label: (
                                 <div>
@@ -266,10 +281,10 @@ function App() {
                                                 <div style={{marginBottom: '5px'}}><strong>Subgraph:</strong><br/>{subgraphName}</div>
                                                 <div className="subgraph-link" onClick={(e) => { e.stopPropagation(); if(subgraphId) loadGraph(subgraphId); }}>View Subgraph &rarr;</div>
                                             </div>
-                                        ) : n.nodeType === NODE_TYPES.TOOL ? (
+                                        ) : n.nodeType === NODE_TYPES.HTTP_REQUEST ? (
                                             <div>
-                                                <strong>Tool:</strong> {n.metadata?.method || 'GET'}<br/>
-                                                <span className="node-tool-url">{toolUrl}</span>
+                                                <strong>HTTP:</strong> {n.metadata?.method || 'GET'}<br/>
+                                                <span className="node-http-request-url">{httpUrl}</span>
                                             </div>
                                         ) : (
                                             <div className="node-prompt">{prompt}</div>
@@ -602,7 +617,10 @@ function App() {
                 message: userText,
                 chatHistory: JSON.stringify(updatedHistory),
                 selectedNodeId: selectedNodeId,
-                selectedEdgeJson: selectedEdge ? JSON.stringify(selectedEdge) : null
+                selectedEdgeJson: selectedEdge ? JSON.stringify(selectedEdge) : null,
+                // null means "inherit": the service falls back to COPILOT_* then LLM_*.
+                copilotProvider: copilotLLM.provider || null,
+                copilotModel: copilotLLM.model || null
             });
 
             const result = data.askCopilot;
@@ -725,6 +743,7 @@ function App() {
                     copilotMessages={copilotMessages} copilotInput={copilotInput}
                     setCopilotInput={setCopilotInput} copilotLoading={copilotLoading}
                     handleCopilotSend={handleCopilotSend}
+                    copilotLLM={copilotLLM} setCopilotLLM={setCopilotLLM}
                     formatTimestamp={formatTimestamp}
                 />
             </div>
