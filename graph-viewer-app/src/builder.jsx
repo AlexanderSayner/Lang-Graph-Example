@@ -216,7 +216,28 @@ function Builder() {
                 return { nodeId: n.id, nodeType: n.data?.type, handlerName: `${n.id}Handler`, metadata: meta, position: { x: n.position.x, y: n.position.y } };
             });
 
-            const payloadEdges = edges.map(e => ({ source: e.source, target: e.target, condition: e.label || null }));
+            // Trimmed so a label of stray whitespace becomes the unconditional edge it looks like;
+            // the condition rule below then sees exactly what the engine will receive.
+            const payloadEdges = edges.map(e => ({ source: e.source, target: e.target, condition: (e.label || '').trim() || null }));
+
+            // The engine rejects any condition without a key == value shape when the graph is
+            // built, and its message quotes the offending text. Catching it here instead names the
+            // edge, selects it for the user, and stops a doomed save before it reaches the server.
+            // It also flags an empty value, which the engine does parse but which can never match
+            // anything - a UI-side rule only, not a server rule.
+            const badIndex = payloadEdges.findIndex(e => {
+                if (!e.condition) return false;                     // unconditional edge
+                const [key, ...rest] = e.condition.split('==');
+                return !key.trim() || rest.length === 0 || !rest.join('==').trim();
+            });
+            if (badIndex >= 0) {
+                const bad = payloadEdges[badIndex];
+                setEdges(eds => eds.map((e, i) => (i === badIndex ? { ...e, selected: true } : e)));
+                throw new Error(
+                    `Invalid condition on ${bad.source} -> ${bad.target}: "${bad.condition}". ` +
+                    "Use key == value, e.g. output == true"
+                );
+            }
 
             // Graph-wide AI default - read by the Python service before each node's own override.
             // Start from the config that was loaded so unrelated graph-level keys (anything set
@@ -394,7 +415,7 @@ function Builder() {
                             <div className="form-row">
                                 <div className="form-group">
                                     <label className="form-label">Condition</label>
-                                    <input className="form-input" value={selectedElement.label || ""} onChange={(e) => updateEdge(e.target.value)} placeholder="e.g. intent == 'build'" />
+                                    <input className="form-input" value={selectedElement.label || ""} onChange={(e) => updateEdge(e.target.value)} placeholder="e.g. intent == 'build' | output == true | count == 3" />
                                 </div>
                                 <div className="form-group">
                                     <label className="form-label">Connection</label>

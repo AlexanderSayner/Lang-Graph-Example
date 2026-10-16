@@ -45,6 +45,13 @@ class LLMConfigError(ValueError):
     """
 
 
+class LLMRequestError(ValueError):
+    """A request to the model provider failed at run time (timeout, connection refused,
+    HTTP error). Raised from the LLM client and mapped to a user-facing message in the
+    graph engine, so a chat stays readable instead of echoing a stack dump.
+    """
+
+
 class MissingApiKeyError(LLMConfigError):
     """The selected provider has no API key configured in the service settings.
 
