@@ -71,6 +71,8 @@ spring:
       timeout: 2000ms
 
   grpc:
+    # Internal server only: the Python engine calls back into this port
+    # (ToolService / JavaGraphProvider). Never expose it outside the cluster.
     server:
       port: 9090
     client:
@@ -81,6 +83,49 @@ spring:
           enable-keep-alive: true
           keep-alive-time: 30s
           keep-alive-without-calls: true
+
+# B2B (backend-to-backend) gRPC facade - external.v1, its own port, its own auth.
+# Deliberately NOT under spring.grpc.*: Spring gRPC serves a single native server
+# (the internal one above), so the second server is built by B2bGrpcServerConfig.
+b2b:
+  grpc:
+    enabled: ${B2B_GRPC_ENABLED:true}
+    host: ${B2B_GRPC_HOST:*}
+    port: ${B2B_GRPC_PORT:9091}
+    max-inbound-message-size: 4MB
+    shutdown-grace-period: 30s
+    reflection:
+      # Server reflection (grpcurl discovery) on the B2B port. Keep it off outside
+      # development: it publishes the contract's shape to anyone who can reach the port.
+      enabled: ${B2B_GRPC_REFLECTION_ENABLED:false}
+    ssl:
+      # Blank = plaintext, acceptable only while the port stays inside the cluster
+      # (same arrangement as the internal Python channel). Anything reachable from
+      # outside must set a bundle and preferably client-auth: REQUIRE (mTLS).
+      bundle: ${B2B_GRPC_SSL_BUNDLE:}
+      client-auth: ${B2B_GRPC_SSL_CLIENT_AUTH:NONE}
+    security:
+      # Service accounts. Credentials are stored as SHA-256 digests at runtime and
+      # never logged. An entry with neither api-key nor api-key-sha256 is not an
+      # error: it is skipped with a warning, so no B2B_API_KEY in the environment
+      # boots the app with every B2B call rejected with UNAUTHENTICATED (secure by
+      # default). A *broken* credential (bad digest, duplicate key) still fails
+      # startup - see B2BServiceAccounts.
+      clients:
+        - client-id: ${B2B_CLIENT_ID:orchestra}
+          tenant-id: ${B2B_TENANT_ID:orchestra}
+          owner-id: ${B2B_OWNER_ID:}
+          api-key: ${B2B_API_KEY:}
+          api-key-sha256: ${B2B_API_KEY_SHA256:}
+          allowed-methods: ["*"]
+          # Graph scope: which graphs this account may build, run, read, cancel and
+          # delete. Exact ids, entries ending in '*' as prefixes, or '*' for every
+          # graph. '*' is the single-tenant convenience default - narrow it to a
+          # tenant's graphs (e.g. "acme-*") before a second B2B tenant is onboarded,
+          # because core.graphs carries no owner column to fall back on. An account
+          # with no entry at all may touch no graph.
+          allowed-graphs: ${B2B_ALLOWED_GRAPHS:*}
+          allow-tenant-override: false
 
 management:
   endpoints:

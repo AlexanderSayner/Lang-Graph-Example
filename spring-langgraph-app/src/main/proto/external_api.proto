@@ -1,0 +1,308 @@
+syntax = "proto3";
+
+package external.v1;
+
+import "google/protobuf/struct.proto";
+
+option java_multiple_files = true;
+option java_package = "org.sandbox.langgraph.grpc.external";
+option java_outer_classname = "ExternalApiProto";
+
+// ============================================================================
+// LangGraphExternalApi - the B2B (backend-to-backend) facade of the LangGraph
+// service. Deliberately narrow: no UI concerns (canvas coordinates), no
+// session/user-management RPCs and no arbitrary-HTTP escape hatch. Callers are
+// service accounts authenticated with an API key (see B2BAuthInterceptor):
+//
+//   x-api-key: <key>                 (or)  authorization: Bearer <key>
+//   x-tenant-id: <tenant>            optional, only if the account may claim it
+//   x-owner-id:  <owner>             optional, recorded for audit
+//
+// Two scopes are enforced on every call:
+//   - threads are namespaced <tenant>:<thread_id> (B2BThreadScope), and
+//   - graphs are restricted to the account's allowed-graphs (B2BGraphScope):
+//     BuildGraph / ExecuteGraph / ExecuteGraphStream / GetGraphState /
+//     UpdateGraphState / GetExecutionHistory / CancelExecution / DeleteGraph /
+//     AskCopilot all answer PERMISSION_DENIED + x-error-code GRAPH_ACCESS_DENIED
+//     for a graph outside that scope, and ListGraphs only returns in-scope rows.
+//
+// Structured JSON travels as google.protobuf.Struct; raw JSON strings (e.g. the
+// copilot chat history) stay strings so the payload is passed through verbatim.
+// ============================================================================
+service LangGraphExternalApi {
+
+  // Compile and persist a graph definition. UI coordinates are not accepted.
+  rpc BuildGraph (BuildGraphRequest) returns (BuildGraphResponse);
+
+  // Run a graph to completion and return the final state (single response).
+  rpc ExecuteGraph (ExecuteGraphRequest) returns (ExecuteGraphResponse);
+
+  // Run a graph and stream every execution event.
+  //
+  // Cancellation is native gRPC: cancelling the stream stops the run and
+  // releases the engine's resources (same cleanup as the internal cancel RPC).
+  // Sending another ExecuteGraph with the same thread_id resumes a graph that
+  // stopped on WAITING_FOR_INPUT.
+  rpc ExecuteGraphStream (ExecuteGraphRequest) returns (stream GraphExecutionEvent);
+
+  // Current state (and node history) of a thread.
+  rpc GetGraphState (GetGraphStateRequest) returns (GetGraphStateResponse);
+
+  // Inject state updates into a thread.
+  rpc UpdateGraphState (UpdateGraphStateRequest) returns (UpdateGraphStateResponse);
+
+  // Snapshot history of a thread, with per-step state diffs.
+  rpc GetExecutionHistory (GetExecutionHistoryRequest) returns (GetExecutionHistoryResponse);
+
+  // Stop a run started with the unary ExecuteGraph (a stream cancels by
+  // cancelling itself). Best-effort: cancelled=false means nothing was running.
+  rpc CancelExecution (CancelExecutionRequest) returns (CancelExecutionResponse);
+
+  // Delete a graph definition.
+  //
+  // Gated by the caller's graph scope: an account may only delete a graph listed
+  // in its allowed-graphs (see ListGraphs for why the scope is configuration and
+  // not a database column). An out-of-scope id is PERMISSION_DENIED with the
+  // x-error-code GRAPH_ACCESS_DENIED, and the answer says nothing about whether
+  // such a graph exists.
+  rpc DeleteGraph (DeleteGraphRequest) returns (DeleteGraphResponse);
+
+  // Read-only catalogue of the graphs known to this service.
+  //
+  // Scoped: only the graphs in the caller's allowed-graphs are returned, and the
+  // scope is applied in the query, so total_count / has_next_page /
+  // next_page_token describe what this account may see. It is intentionally
+  // narrower than the UI's getGraphView (no coordinates, no node/edge topology)
+  // and flattens the UI cursor shape into a plain page token.
+  //
+  // Why configuration rather than a column: core.graphs has no owner/tenant
+  // column today, so an account's allowed-graphs (exact ids, a trailing-*
+  // prefix, or "*") is what makes the catalogue, and every graph-keyed RPC,
+  // tenant-safe. Narrow it before onboarding a second B2B tenant.
+  rpc ListGraphs (ListGraphsRequest) returns (ListGraphsResponse);
+
+  // Ask the graph copilot about a graph/thread.
+  rpc AskCopilot (AskCopilotRequest) returns (AskCopilotResponse);
+}
+
+// ============================== Graph building ==============================
+
+message BuildGraphRequest {
+  string graph_id = 1;
+  string graph_name = 2;
+  repeated NodeDefinition nodes = 3;
+  repeated EdgeDefinition edges = 4;
+  // Graph-wide settings (e.g. llm_provider / llm_model). Nested values are
+  // flattened to strings by the engine contract, as on the GraphQL path.
+  google.protobuf.Struct config = 5;
+}
+
+message NodeDefinition {
+  string node_id = 1;
+  NodeType node_type = 2;
+  string handler_name = 3;
+  google.protobuf.Struct metadata = 4;
+  // No `position` on purpose: canvas coordinates are a UI concern and are
+  // never persisted through this facade.
+}
+
+message EdgeDefinition {
+  string source = 1;
+  string target = 2;
+  string condition = 3;   // optional conditional edge
+}
+
+message BuildGraphResponse {
+  bool success = 1;
+  string graph_id = 2;
+  string message = 3;
+}
+
+// ============================= Graph execution =============================
+
+message ExecuteGraphRequest {
+  string graph_id = 1;
+  // Mandatory for B2B: the thread is the address used for state reads,
+  // cancellation and multi-turn resume. The facade scopes it to the caller's
+  // tenant (see B2BThreadScope) to prevent cross-tenant state access.
+  string thread_id = 2;
+  string input = 3;
+  google.protobuf.Struct context = 4;
+}
+
+message ExecuteGraphResponse {
+  bool success = 1;
+  string output = 2;
+  ExecutionEventType event_type = 3;
+  google.protobuf.Struct state = 4;
+  int32 total_tokens = 5;
+  string error_message = 6;
+}
+
+// One frame of ExecuteGraphStream.
+message GraphExecutionEvent {
+  ExecutionEventType event_type = 1;
+  string node_id = 2;
+  string output = 3;
+  google.protobuf.Struct state = 4;
+  int64 timestamp = 5;      // epoch millis, as emitted by the engine
+  int32 total_tokens = 6;
+  string error_message = 7;
+}
+
+// =============================== Graph state ===============================
+
+message GetGraphStateRequest {
+  string graph_id = 1;
+  string thread_id = 2;
+}
+
+message GetGraphStateResponse {
+  bool success = 1;
+  google.protobuf.Struct state = 2;
+  string current_node = 3;
+  repeated string node_history = 4;
+}
+
+message UpdateGraphStateRequest {
+  string graph_id = 1;
+  string thread_id = 2;
+  string as_node = 3;
+  google.protobuf.Struct state_updates = 4;
+}
+
+message UpdateGraphStateResponse {
+  bool success = 1;
+  google.protobuf.Struct updated_state = 2;
+  string message = 3;
+}
+
+message GetExecutionHistoryRequest {
+  string graph_id = 1;
+  string thread_id = 2;
+}
+
+message GetExecutionHistoryResponse {
+  bool success = 1;
+  repeated StateSnapshot history = 2;
+  string error_message = 3;
+}
+
+message StateSnapshot {
+  string node_id = 1;
+  google.protobuf.Struct state = 2;
+  string timestamp = 3;
+  StateDiff diff = 4;
+  int32 tokens_used = 5;
+  int32 total_tokens = 6;
+}
+
+message StateDiff {
+  google.protobuf.Struct added = 1;     // path -> value for keys added
+  repeated string removed = 2;          // JSON Pointer paths of removed keys
+  google.protobuf.Struct modified = 3;  // path -> { "old": .., "new": .. }
+  repeated string summary = 4;          // human-readable summary lines
+}
+
+// ============================== Cancellation ===============================
+
+message CancelExecutionRequest {
+  string graph_id = 1;
+  string thread_id = 2;
+}
+
+message CancelExecutionResponse {
+  bool success = 1;
+  bool cancelled = 2;   // false = nothing was running (not an error)
+  string message = 3;
+}
+
+// ================================ Deletion =================================
+
+message DeleteGraphRequest {
+  string graph_id = 1;
+}
+
+message DeleteGraphResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// ============================= Graph catalogue =============================
+
+message ListGraphsRequest {
+  int32 page_size = 1;    // default 10, capped at 100
+  string page_token = 2;  // opaque; the current implementation is the numeric offset
+}
+
+message ListGraphsResponse {
+  repeated GraphInfo graphs = 1;
+  int32 total_count = 2;        // total across every page, not the page size
+  bool has_next_page = 3;
+  string next_page_token = 4;
+}
+
+message GraphInfo {
+  string graph_id = 1;
+  string graph_name = 2;
+  int32 node_count = 3;
+  string created_at = 4;        // ISO-8601, as stored
+  GraphStatus status = 5;
+}
+
+// ================================= Copilot =================================
+
+message AskCopilotRequest {
+  string graph_id = 1;
+  string thread_id = 2;
+  string message = 3;
+  string copilot_chat_history_json = 4;   // raw JSON string, passed through
+  string selected_node_id = 5;
+  string selected_edge_json = 6;
+  string copilot_provider = 7;
+  string copilot_model = 8;
+}
+
+message AskCopilotResponse {
+  bool success = 1;
+  string ai_response = 2;
+  int32 total_tokens = 3;
+  string error_message = 4;
+}
+
+// ================================= Enums ===================================
+
+// Graph lifecycle states carried by the service. Every value is prefixed with
+// the enum name because generated proto enums share one scope: an unprefixed
+// `ERROR` would collide between GraphStatus and ExecutionEventType.
+enum GraphStatus {
+  GRAPH_STATUS_UNSPECIFIED = 0;
+  GRAPH_STATUS_ACTIVE = 1;
+  GRAPH_STATUS_INACTIVE = 2;
+  GRAPH_STATUS_ERROR = 3;
+  GRAPH_STATUS_BUILDING = 4;
+}
+
+enum NodeType {
+  NODE_TYPE_UNSPECIFIED = 0;
+  NODE_TYPE_START = 1;
+  NODE_TYPE_END = 2;
+  NODE_TYPE_ACTION = 3;
+  NODE_TYPE_HUMAN = 4;
+  NODE_TYPE_GRAPH = 5;
+  NODE_TYPE_HTTP_REQUEST = 6;
+}
+
+enum ExecutionEventType {
+  EXECUTION_EVENT_TYPE_UNSPECIFIED = 0;
+  EXECUTION_EVENT_TYPE_START = 1;
+  EXECUTION_EVENT_TYPE_NODE_START = 2;
+  EXECUTION_EVENT_TYPE_NODE_END = 3;
+  EXECUTION_EVENT_TYPE_END = 4;
+  EXECUTION_EVENT_TYPE_WAITING_FOR_INPUT = 5;
+  EXECUTION_EVENT_TYPE_ERROR = 6;
+  EXECUTION_EVENT_TYPE_CANCELLED = 7;
+}
+
+
+
