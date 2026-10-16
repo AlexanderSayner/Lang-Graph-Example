@@ -36,6 +36,7 @@ The service was designed to:
 - **Error Handling**: Decorator-based error mapping to gRPC status codes
 - **In-Memory Store**: Thread-safe storage for graph definitions and execution states
 - **Pydantic Validation**: All graph definitions are validated using Pydantic models
+- **Conditional Routing**: typed condition literals on edges, validated when the graph is compiled - see [Conditional Edges](#conditional-edges)
 - **gRPC Reflection**: Enabled for easier debugging and client development
 - **uvloop Support**: Optional high-performance event loop for Linux/macOS
 
@@ -90,24 +91,44 @@ from app.generated import langgraph_pb2, langgraph_pb2_grpc
 channel = grpc.aio.insecure_channel('localhost:50051')
 stub = langgraph_pb2_grpc.LangGraphServiceStub(channel)
 
-# Build a graph
+# Build a graph: START -> judge -> two END nodes, routed by an edge condition.
+# Node types must be one of START | END | ACTION | HUMAN | GRAPH | HTTP_REQUEST, and a graph
+# always needs a node of type START - anything else is rejected at build time.
 request = langgraph_pb2.BuildGraphRequest(
     graph_id="my-graph",
     graph_name="My Workflow",
     nodes=[
         langgraph_pb2.NodeDefinition(
             node_id="start",
-            node_type="processor",
-            handler_name="text_processor"
+            node_type="START",
+            handler_name="startHandler",
+            metadata={"system_prompt": "Ask the user how much 2 + 2 is."}
         ),
         langgraph_pb2.NodeDefinition(
-            node_id="llm",
-            node_type="llm",
-            handler_name="llm_call"
+            node_id="judge",
+            node_type="ACTION",
+            handler_name="judgeHandler",
+            metadata={"system_prompt": "Decide whether the answer is right. "
+                                      "Reply with JSON: {\"output\": true} or {\"output\": false}"}
+        ),
+        langgraph_pb2.NodeDefinition(
+            node_id="congrats",
+            node_type="END",
+            handler_name="congratsHandler",
+            metadata={"system_prompt": "Congratulate the user."}
+        ),
+        langgraph_pb2.NodeDefinition(
+            node_id="retry",
+            node_type="END",
+            handler_name="retryHandler",
+            metadata={"system_prompt": "Ask the question again."}
         )
     ],
     edges=[
-        langgraph_pb2.EdgeDefinition(source="start", target="llm")
+        langgraph_pb2.EdgeDefinition(source="start", target="judge"),
+        # A condition turns `judge` into a router - see "Conditional Edges" below.
+        langgraph_pb2.EdgeDefinition(source="judge", target="congrats", condition="output == true"),
+        langgraph_pb2.EdgeDefinition(source="judge", target="retry", condition="output == false")
     ]
 )
 
@@ -217,11 +238,110 @@ it, drop the `llm_max_tokens` override for that node/graph.
 
 ---
 
+## Conditional Edges
+
+An edge with a `condition` turns its source node into a **router**. The string is parsed once, when
+the graph is compiled, and at run time the engine compares the parsed literal against one state key
+and follows the first matching edge (`app/graph_engine/graph_utils.py`: `parse_condition`,
+`parse_literal`, `parse_conditions`, `values_match`, `resolve_route`).
+
+```text
+output == true          # boolean literal - routes on the JSON true/false the model returned
+intent == 'billing'     # quoted text - a string
+count == 3              # number - also matches 3.0 and "3"
+mode == null            # null - only an explicitly stored null, never an absent key
+```
+
+### Literals
+
+| Written as | Parsed as | Notes |
+|---|---|---|
+| `true` `false` `yes` `no` | `bool` | case-insensitive |
+| `1` `42` `-3` `3.14` | `int` / `float` | `x == 1` is the **number** 1 |
+| `null` `none` | `None` | the *text* `none` must be quoted: `mode == 'none'` |
+| `'text'` / `"text"` | `str` | quoting controls parsing only — see below |
+| anything else | `str` | a bare word stays text: `intent == billing` |
+
+### Comparison
+
+`values_match()` decides in this order:
+
+1. **Missing key → no match.** If neither `variables` nor the state defines the key, no branch
+   fires — `x == null` included, because absent is not null. When both exist the *variable* wins, so
+   an explicit `null` is never masked by a same-named state field (`output`, `input`, `last_node`).
+2. **Booleans**, when either side is boolean: `output == true` matches a JSON `true`, the string
+   `"true"`, `yes` or `1` — a model may spell the same answer in any of those ways (which is also
+   what makes `1 ~ True` and `0 ~ False`).
+3. **Numbers**, when both sides are numbers: `count == 3` matches `3`, `3.0` and `"3"`.
+4. **Text**, ignoring case: `'billing'` matches `"Billing"`.
+
+Coercion happens at *comparison* time, so quoting never turns matching into a string-only check:
+`flag == 'true'` still matches a real boolean `True`. Keys, on the other hand, are matched
+**exactly** — a condition on `Output` never sees the variable `output`, and the warnings below show
+both spellings when that happens.
+
+### Validation at build time
+
+A condition without a `key == value` shape can never route, so `_build_langgraph` rejects it:
+
+```text
+Malformed condition 'output = true' on node 'judge': expected 'key == value' (e.g. output == true)
+```
+
+- A key that is not a simple identifier still parses — data keys are arbitrary names; only the
+  missing `key == value` shape is fatal.
+- `BuildGraph` aborts with `INVALID_ARGUMENT` (a `ValueError` maps automatically), and
+  `ExecuteGraph` maps the same way, so an already-stored bad definition reports the reason instead
+  of a generic `INTERNAL`.
+- The Spring gateway turns it into `GraphBuildException` → GraphQL `BAD_REQUEST`, and the graph
+  builder refuses to send such a condition at all, naming the edge it came from.
+- A **blank** condition (`""`, `null`, or a whitespace-only label the builder trims) means an
+  *unconditional* edge. A non-empty, whitespace-only string is rejected rather than silently
+  ignored: silently treating it as unconditional would fork a router that also has real conditions.
+
+### Single-key routers accept a bare answer
+
+The router prompt asks for JSON, but a router with **exactly one** expected key also accepts a bare
+answer, so no prompt micro-management is needed:
+
+```text
+true         -> {"output": True}             billing      -> {"intent": "billing"}
+4            -> {"count": 4}                 'very good'  -> {"verdict": "very good"}
+```
+
+Quoted text may contain spaces; unquoted text must be a single word token (letters of any script,
+digits, `_`, `-`, at most one decimal point). Truncated JSON (`{"output":true`), stray punctuation
+(`true.`) and prose are rejected with `JsonGenerationError` rather than stored as a variable that
+matches nothing. Multi-key routers still need the object form.
+
+### When routing fails
+
+| WARNING | Meaning |
+|---|---|
+| `Router judge answered without the expected key(s) ['Output']; got ['output']. Edges conditioned on those keys cannot match.` | The answer parsed but did not carry the conditioned key — usually a key-case mismatch |
+| `No condition matched for node judge. Conditions=[('output', True), ('output', False)]; variables={'output': True}. Ending the run without executing a branch node.` | Nothing matched: the run ends at the `END` sentinel **without** executing an `END` node |
+
+Both lines carry the parsed conditions and the variables they were checked against, so a wrong
+condition is diagnosable from the service log alone. The short user-facing summary lives in the
+repository root `README.md` → *Edge conditions*.
+
+---
+
 ## Tests
 
-The provider/model selection rules are unit tested in `tests/` - they are the contract the
-whole feature rests on (precedence, aliases, unknown-provider failure, and the two model
-regressions described above):
+Every suite below runs without a gRPC server, database, Redis or model access — the model and the
+other collaborators are stubbed:
+
+| Suite | Pins |
+|---|---|
+| `test_graph_utils.py` | Condition literals and the router matcher: typed parsing, boolean/numeric/text comparison, missing keys, null masking, build-time rejection of malformed conditions |
+| `test_scalar_router_answer.py` | The bare-answer fallback of a single-key router: word tokens accepted, truncated JSON and prose rejected |
+| `test_router_edges.py` | End-to-end routing on a quiz-shaped graph (real builder and node handler, stubbed model): which END node runs, build-time rejection, the `INVALID_ARGUMENT` abort, and both routing warnings |
+| `test_execute_graph_cancel.py` | Cancellation aborts the in-flight node and reports a clean `CANCELLED` event |
+| `test_execution_registry.py` | The live-run registry behind cancellation |
+| `test_llm_config.py` | Provider/model precedence, aliases, unknown-provider failure |
+| `test_model_catalog.py` | Model suggestions per provider |
+| `test_yandex_client_error.py` | YandexGPT error mapping |
 
 ```bash
 cd python-langgraph-service
@@ -237,26 +357,34 @@ python -m pytest tests/ -q
 python-langgraph-service/
 ├── app/
 │   ├── __init__.py
-│   ├── config.py              # Configuration settings
-│   ├── interceptors.py        # gRPC logging interceptor
-│   ├── main.py                # Application entry point
-│   ├── proto/
-│   │   └── langgraph.proto    # Protocol buffer definitions
-│   ├── generated/             # Auto-generated protobuf files
-│   ├── services/
-│   │   ├── __init__.py
-│   │   ├── graph_store.py     # Graph and state storage
-│   │   └── langgraph_servicer.py  # gRPC service implementation
-│   └── handlers/              # [TO BE CREATED] Real handler implementations
-│       ├── __init__.py
-│       ├── registry.py        # Handler registry
-│       └── conditions.py      # Conditional routing functions
+│   ├── config.py                  # Settings (env / .env driven)
+│   ├── interceptors.py            # gRPC logging interceptor (latency per RPC)
+│   ├── main.py                    # Server entry point
+│   ├── models.py                  # Pydantic DTOs for graph / node / edge definitions
+│   ├── prompt_loader.py           # Loads the prompt templates below
+│   ├── proto/langgraph.proto      # Protocol buffer definitions
+│   ├── generated/                 # Auto-generated protobuf files (see Development → Proto)
+│   ├── clients/
+│   │   ├── java_client.py         # Fetches graph definitions from the Java gateway
+│   │   ├── llm.py                 # Multi-provider model layer (lazy clients, config precedence)
+│   │   ├── model_catalog.py       # Model suggestions per provider
+│   │   └── yandex_client.py       # YandexGPT HTTP client
+│   ├── copilot/
+│   │   └── copilot_agent.py       # Graph-copilot Q&A (not a graph node)
+│   ├── graph_engine/
+│   │   ├── graph_utils.py         # State schema, condition parsing and matching, prompt context
+│   │   └── node_handlers.py       # Node execution (ACTION / HUMAN / HTTP_REQUEST / GRAPH) + routers
+│   ├── prompts/                   # Copilot prompt templates (*.md)
+│   └── services/
+│       ├── execution_registry.py  # Live-run registry behind CancelGraphExecution
+│       └── langgraph_servicer.py  # gRPC service: build/compile, ExecuteGraph, cancellation
+├── tests/                         # pytest suites - see Tests
 ├── scripts/
-│   ├── generate_proto.sh      # Proto generation script
-│   └── start_local.sh         # Local development startup
-├── Dockerfile                 # Container build instructions
-├── requirements.txt           # Python dependencies
-└── docker-compose.yml         # [TO BE CREATED] Multi-service orchestration
+│   ├── generate_proto.sh          # Proto generation script
+│   └── start_local.sh             # Local development startup
+├── Dockerfile                     # Container build instructions
+├── requirements.txt               # Runtime dependencies
+└── requirements-dev.txt           # Test dependencies (pytest)
 ```
 
 ---

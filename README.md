@@ -382,9 +382,55 @@ mutation {
 ### 3. LangGraph Integration
 - Dynamic graph building from node/edge definitions
 - Node handlers, conditional edges and copilot agent (YandexGPT / OpenAI / Groq / DeepSeek / OpenRouter / Anthropic)
+- Conditional routing with typed literals (booleans, numbers, quoted strings, null), validated when the graph is built — see *Edge conditions* below
 - Per-node and per-graph LLM provider/model selection layered over the service defaults, so credentials are only needed for the selected provider (see `python-langgraph-service/README.md` → *Multi-Provider LLM Configuration*)
 - Checkpointed execution state persisted in PostgreSQL
 - Execution history with state diffs and rewind
+
+#### Edge conditions
+
+An edge with a condition turns its source node into a router: the engine compares one state key
+against a literal and follows the first edge whose condition holds.
+
+```text
+output == true
+intent == 'billing'
+count == 3
+mode == null
+```
+
+What the engine does with that text
+(`python-langgraph-service/app/graph_engine/graph_utils.py`):
+
+- **Parse once, at build time** (`parse_condition` → `parse_literal` → `parse_conditions`):
+  `true` / `false` / `yes` / `no` become booleans, `null` / `none` becomes null, numbers become
+  `int` / `float` (`x == 1` is the number `1`), and single- or double-quoted text is a string.
+  Anything else stays a plain string. A non-identifier key is fine — data keys are arbitrary names.
+- **Compare at routing time** (`values_match`): booleans first, then null, then numbers, then text.
+  `output == true` matches a JSON `true`, the string `"true"`, `yes` or `1`, because a model may
+  spell the same answer in any of those forms; `count == 3` matches `3`, `3.0` and `"3"`; text
+  matches ignoring case (`'billing'` accepts `"Billing"`). Quoting only controls *parsing*, never
+  matching — `flag == 'true'` still matches a real boolean.
+- **A missing key never matches**: if neither the state variables nor the state itself defines the
+  key, no branch fires — including `key == null`, which only matches an explicitly stored `null`.
+  When both exist, the variable wins, so an explicit `null` is never masked by a same-named state
+  field such as `output`.
+- **Keys are matched exactly.** The condition key must spell the variable as it is stored —
+  `Output == true` never sees `output`; both warnings below name the two spellings when that happens.
+- **Malformed conditions fail the build.** A condition without a `key == value` shape can never
+  route, so compiling the graph raises `Malformed condition '<text>' on node '<id>' …`
+  (`INVALID_ARGUMENT` in the engine → `GraphBuildException` → GraphQL `BAD_REQUEST`), and the
+  builder refuses to send one at all, naming the offending edge. The same reason is reported when
+  executing an already-stored graph whose condition the engine rejects. A *blank* condition
+  (`""`, `null`, or a whitespace-only label the builder trims) means an unconditional edge; a
+  non-empty, whitespace-only string is rejected instead of being silently relaxed.
+- **Nothing matched** ends the run at the `END` sentinel without executing an `END` node, and the
+  service logs a `WARNING` with the parsed conditions and the variables they were checked against.
+  A router answer that parses but lacks the expected key is flagged by its own `WARNING`.
+
+The service-level reference — literal table, comparison order, the bare-answer fallback for a
+single-key router, and both warning texts — is in
+`python-langgraph-service/README.md` → *Conditional Edges*.
 
 ### 4. Visual Graph Editor
 - React + ReactFlow UI for building, running and inspecting graphs

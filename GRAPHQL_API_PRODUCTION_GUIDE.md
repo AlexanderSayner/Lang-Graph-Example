@@ -814,6 +814,15 @@ mutation BuildSupportTriageGraph {
 }
 ```
 
+> **Condition syntax**: an edge `condition` compares one state key against a literal
+> (`key == value`). Booleans, numbers and null are written bare (`output == true`,
+> `count == 3`, `mode == null`); text may be bare or quoted (`intent == billing`,
+> `intent == 'billing'`) and compares ignoring case either way. The key must spell the variable
+> exactly. Conditions are parsed and validated when the graph is built — one without
+> `key == value` is rejected with `INVALID_ARGUMENT` (`GRAPH_BUILD_FAILED` as its error code)
+> instead of silently routing nowhere. References: repository `README.md` → *Edge conditions* and
+> `python-langgraph-service/README.md` → *Conditional Edges*.
+
 **Expected Response**:
 ```json
 {
