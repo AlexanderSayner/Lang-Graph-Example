@@ -15,13 +15,20 @@ import org.sandbox.langgraph.dto.graphql.input.EdgeInput;
 import org.sandbox.langgraph.dto.graphql.input.NodeInput;
 import org.sandbox.langgraph.dto.graphql.input.PositionInput;
 import org.sandbox.langgraph.dto.graphql.payload.redis.GraphViewData;
+import org.sandbox.langgraph.dto.pagination.GraphScopeFilter;
 import org.sandbox.langgraph.service.PostgresGraphViewService;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.jpa.domain.Specification;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -162,5 +169,64 @@ class GraphPostgresServiceTest {
 
         assertThat(coordinates).containsOnlyKeys("start");
         assertThat(coordinates.get("start")).containsEntry("x", 5.0);
+    }
+
+    @Test
+    @DisplayName("A restricted graph scope is pushed into the query, never applied to the page")
+    void pushesTheScopeIntoTheQuery() {
+        stubUnscopedAndScopedListings();
+
+        service.listGraphs(10, 0, GraphScopeFilter.of(List.of("acme-*")));
+
+        // The scoped overload carries total_count / has_next_page / next_page_token, so it
+        // must be the one that counts: filtering the fetched page would report wrong totals.
+        verify(repository).findAll(any(Specification.class), any(Pageable.class));
+        verify(repository).count(any(Specification.class));
+        verify(repository, never()).findAll(any(Pageable.class));
+        verify(repository, never()).count();
+    }
+
+    @Test
+    @DisplayName("An empty scope still goes through the filter - it must match nothing, not everything")
+    void emptyScopeDoesNotFallBackToTheUnfilteredQuery() {
+        stubUnscopedAndScopedListings();
+
+        service.listGraphs(10, 0, GraphScopeFilter.of(List.of()));
+
+        // Fail closed: the Specification path (cb.disjunction() for an empty scope), never the
+        // plain findAll that a null/empty filter would otherwise degrade to.
+        verify(repository).findAll(any(Specification.class), any(Pageable.class));
+        verify(repository, never()).findAll(any(Pageable.class));
+        verify(repository, never()).count();
+    }
+
+    @Test
+    @DisplayName("The UI path keeps the plain unscoped query")
+    void unscopedListingKeepsThePlainQuery() {
+        stubUnscopedAndScopedListings();
+
+        service.listGraphs(10, 0);
+
+        verify(repository).findAll(any(Pageable.class));
+        verify(repository).count();
+        verify(repository, never()).findAll(any(Specification.class), any(Pageable.class));
+    }
+
+    @Test
+    @DisplayName("a non-positive page size fails with a clear contract violation, not a division by zero")
+    void rejectsNonPositivePageSize() {
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> service.listGraphs(0, 0, GraphScopeFilter.anyGraph()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Page size must be positive");
+    }
+
+    /** Both query shapes are stubbed so each test can prove which one is taken. */
+    private void stubUnscopedAndScopedListings() {
+        when(repository.findAll(any(Pageable.class))).thenReturn(new PageImpl<>(List.of()));
+        when(repository.findAll(any(Specification.class), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of()));
+        when(repository.count(any(Specification.class))).thenReturn(0L);
+        when(repository.count()).thenReturn(0L);
     }
 }

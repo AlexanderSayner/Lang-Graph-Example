@@ -15,6 +15,7 @@ import org.sandbox.langgraph.dto.graphql.payload.*;
 import org.sandbox.langgraph.dto.graphql.payload.RewindGraphPayload;
 import org.sandbox.langgraph.dto.graphql.payload.StateSnapshot;
 import org.sandbox.langgraph.dto.graphql.payload.meta.PageInfo;
+import org.sandbox.langgraph.dto.pagination.GraphScopeFilter;
 import org.sandbox.langgraph.dto.pagination.PageData;
 import org.sandbox.langgraph.exception.LangGraphException;
 import org.sandbox.langgraph.grpc.*;
@@ -35,6 +36,19 @@ import java.util.concurrent.TimeUnit;
 @Service
 @RequiredArgsConstructor
 public class LangGraphGrpcService {
+
+    /**
+     * Page size used when a caller asks for nothing usable (notably {@code 0}), which every surface
+     * documents as "default 10". Also the value the B2B contract's {@code page_size} falls back to.
+     */
+    public static final int DEFAULT_PAGE_SIZE = 10;
+
+    /**
+     * Upper bound of one page - the cap documented on the B2B contract's {@code page_size}. One
+     * constant, two enforcement points (the facade clamps at the wire, this service clamps for the
+     * GraphQL path and for anything else that calls in), so the two can never drift apart.
+     */
+    public static final int MAX_PAGE_SIZE = 100;
 
     private static final Logger log = LoggerFactory.getLogger(LangGraphGrpcService.class);
     private static final int TIMEOUT = 30;
@@ -108,7 +122,28 @@ public class LangGraphGrpcService {
     }
 
     public @NonNull GraphListPayload listGraphs(int pageSize, String pageToken) {
-        log.debug("Listing graphs with page size: {}", pageSize);
+        return listGraphs(pageSize, pageToken, GraphScopeFilter.anyGraph());
+    }
+
+    /**
+     * Lists graphs, restricted to the caller's graph scope when one is given.
+     * <p>
+     * The scope reaches the repository so that {@code total_count} / {@code has_next_page}
+     * / {@code next_page_token} describe the rows the caller is allowed to see. The UI
+     * (GraphQL) path has no tenant and keeps the unrestricted overload.
+     *
+     * @param pageSize requested page size; clamped here ({@link #clampPageSize}) so the GraphQL
+     *                 path and the B2B facade share one rule
+     * @param pageToken numeric offset as a string; null/blank means the first page
+     * @param filter   the caller's graph scope
+     * @return the filtered page
+     */
+    public @NonNull GraphListPayload listGraphs(int pageSize, String pageToken, GraphScopeFilter filter) {
+        // Clamp before anything computes from it: the page size feeds offset / limit (the GraphQL
+        // path could send pageSize: 0 straight into a division by zero -> 500) and
+        // nextOffset = offset + pageSize, so an unclamped value corrupts paging as well.
+        int clampedPageSize = clampPageSize(pageSize);
+        log.debug("Listing graphs with page size: {}", clampedPageSize);
 
         int parsedOffset = 0;
         if (pageToken != null && !pageToken.isEmpty()) {
@@ -122,7 +157,7 @@ public class LangGraphGrpcService {
         final int offset = parsedOffset;
 
         try {
-            PageData pageData = graphPostgresService.listGraphs(pageSize, offset);
+            PageData pageData = graphPostgresService.listGraphs(clampedPageSize, offset, filter);
             List<GraphSummary> infos = pageData.entities().stream()
                     .map(entity -> {
                         int nodeCount = 0;
@@ -146,7 +181,7 @@ public class LangGraphGrpcService {
                     })
                     .toList();
 
-            int nextOffset = offset + pageSize;
+            int nextOffset = offset + clampedPageSize;
             boolean hasNext = nextOffset < pageData.totalCount();
             String nextToken = hasNext ? String.valueOf(nextOffset) : null;
 
@@ -241,6 +276,14 @@ public class LangGraphGrpcService {
                 .build();
         org.sandbox.langgraph.grpc.RewindGraphPayload response = blockingStub.withDeadlineAfter(TIMEOUT, TIMEOUT_UNIT).rewindGraph(request);
         return mapper.toRewindGraphPayload(response);
+    }
+
+    /** The one page-size rule: default below a single page, cap at {@link #MAX_PAGE_SIZE}. */
+    public static int clampPageSize(int requested) {
+        if (requested <= 0) {
+            return DEFAULT_PAGE_SIZE;
+        }
+        return Math.min(requested, MAX_PAGE_SIZE);
     }
 
     private @NonNull RuntimeException wrapGrpcError(StatusRuntimeException e) {
