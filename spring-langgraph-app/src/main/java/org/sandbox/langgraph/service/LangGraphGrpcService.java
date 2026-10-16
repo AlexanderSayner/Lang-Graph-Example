@@ -63,7 +63,19 @@ public class LangGraphGrpcService {
         log.debug("Building graph: {}", input.graphId());
 
         BuildGraphRequest request = mapper.toBuildGraphRequest(input);
-        BuildGraphResponse response = blockingStub.withDeadlineAfter(TIMEOUT, TIMEOUT_UNIT).buildGraph(request);
+        BuildGraphResponse response;
+        try {
+            response = blockingStub.withDeadlineAfter(TIMEOUT, TIMEOUT_UNIT).buildGraph(request);
+        } catch (StatusRuntimeException e) {
+            // The engine rejects an invalid definition with INVALID_ARGUMENT and a precise reason
+            // (unknown provider, malformed edge condition, ...). Left unwrapped, the raw
+            // StatusRuntimeException matched no case in GraphQlExceptionHandler and surfaced as a
+            // bare "Internal server error", hiding exactly what the editor needs to show. Mapping
+            // it here mirrors what executeGraphStream and the state calls already do:
+            // INVALID_ARGUMENT becomes GraphBuildException -> BAD_REQUEST carrying the description,
+            // and builder.jsx renders it in its error toast.
+            throw wrapGrpcError(e);
+        }
 
         // Persist only after the engine accepted the definition. The Python service validates the
         // config eagerly (e.g. an unknown `config.llm_provider` fails the compile with
