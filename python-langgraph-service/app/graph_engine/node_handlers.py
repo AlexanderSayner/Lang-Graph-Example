@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from typing import Dict, Set, Callable, Awaitable, Any
 
 import grpc
@@ -10,7 +11,7 @@ from langgraph.pregel import Pregel
 from app.config import settings
 from app.generated import langgraph_pb2_grpc, langgraph_pb2
 from app.graph_engine.graph_utils import format_state_context, extract_json_from_response, JsonGenerationError, \
-    GraphState
+    parse_literal, GraphState
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,47 @@ def drop_history_block(user_message: str) -> str:
     head, _, rest = user_message.partition(HISTORY_MARKER)
     _, _, tail = rest.partition(VARIABLES_MARKER)
     return head + VARIABLES_MARKER + tail
+
+
+# A bare answer counts as a value only when it is a single word token: letters of any script,
+# digits, underscore, hyphen, and at most one decimal point. Everything else - truncated JSON,
+# stray punctuation, prose - is not a value, and storing it as a variable would only produce a
+# second silent no-match instead of the parse error that tells the operator what went wrong.
+_WORD_TOKEN = re.compile(r"[\w\-]+(?:\.[\w\-]+)*")
+
+
+def parse_scalar_answer(text: str, keys: Set) -> Dict[str, Any]:
+    """Reads a bare (non-JSON) answer as the value of a single-key router.
+
+    A router expecting exactly one key must not fail because the model replied ``true`` instead of
+    ``{"output": true}`` - that is precisely the prompt micro-management this engine should not
+    require. Quoted text may contain spaces; unquoted text must be a single word token, so
+    truncated JSON, punctuation and prose are rejected instead of being stored as a variable that
+    silently matches nothing. Multi-key routers need the object form and raise.
+    """
+    if len(keys) != 1:
+        raise JsonGenerationError(
+            f"Expected a JSON object with keys {sorted(keys)}, got a bare answer instead: "
+            f"{(text or '')[:100]!r}"
+        )
+
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        cleaned = "\n".join(lines[1:-1]).strip() if len(lines) > 2 else cleaned.strip("`").strip()
+
+    if not cleaned or "\n" in cleaned or is_unusable_answer(cleaned):
+        raise JsonGenerationError(f"Answer is not a usable value: {(text or '')[:100]!r}")
+
+    quoted = len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in ("'", '"')
+    if quoted:
+        value: Any = cleaned[1:-1]
+    elif not _WORD_TOKEN.fullmatch(cleaned) or len(cleaned) > 40:
+        raise JsonGenerationError(f"Bare answer is not a single value: {cleaned[:100]!r}")
+    else:
+        value = parse_literal(cleaned)
+
+    return {next(iter(keys)): value}
 
 
 class NodeHandler:
@@ -188,7 +230,27 @@ class NodeHandler:
             usage = getattr(llm_response, 'usage', {})
             tokens = usage.get('total_tokens', 0) if isinstance(usage, dict) else 0
 
-            parsed_data = extract_json_from_response(output_content)
+            try:
+                parsed_data = extract_json_from_response(output_content)
+            except JsonGenerationError:
+                # Single-key routers also accept a bare answer ("true", "4", "billing"): forcing
+                # the model to spell {"output": true} is prompt micro-management, and bailing out
+                # here used to leave `variables` untouched, so no outgoing edge could ever match.
+                parsed_data = parse_scalar_answer(output_content, router_keys)
+                logger.info(f"Router {n_id} accepted a bare scalar answer: {parsed_data}")
+
+            # The JSON parsed, but did it answer the keys the edges are conditioned on? A model that
+            # returns {answer: true} while the edges wait on `output` is about to end the run with no
+            # branch taken - naming the gap here puts the cause in the log at the moment it happens,
+            # instead of leaving only "no condition matched" further down the pipeline.
+            missing = {str(key) for key in router_keys} - {str(key) for key in parsed_data}
+            if missing:
+                logger.warning(
+                    f"Router {n_id} answered without the expected key(s) {sorted(missing)}; "
+                    f"got {sorted(str(key) for key in parsed_data)}. Edges conditioned on those "
+                    f"keys cannot match."
+                )
+
             current_vars = state.get("variables", {}) or {}
             merged_vars = {**current_vars, **parsed_data}
 

@@ -20,7 +20,7 @@ from app.clients.model_catalog import list_models
 from app.config import settings
 from app.copilot.copilot_agent import CopilotAgent
 from app.generated import langgraph_pb2_grpc, langgraph_pb2
-from app.graph_engine.graph_utils import parse_condition, GraphState
+from app.graph_engine.graph_utils import parse_conditions, resolve_route, GraphState
 from app.graph_engine.node_handlers import NodeHandler
 from app.models import GraphDefinition
 from app.services.execution_registry import ExecutionRegistry, run_key
@@ -189,6 +189,16 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             else:
                 unconditional_edges.append(edge)
 
+        # --- 1b. Parse every condition once, at build time ---
+        # A condition that cannot be parsed can never route, so it fails the build here (naming the
+        # node) instead of being skipped on every evaluation where the only trace was a debug line.
+        # Parsing once also means the router compares pre-parsed literals on every pass instead of
+        # re-splitting condition strings while the graph is running.
+        parsed_conditions = {
+            source: parse_conditions(conditions, source)
+            for source, conditions in conditional_map.items()
+        }
+
         interrupt_nodes = [n.node_id for n in graph_data.nodes if n.node_type == "HUMAN"]
 
         # --- 2. Build Nodes ---
@@ -199,10 +209,9 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
 
             expected_keys = set()
             if is_router:
-                for _, cond_str in conditional_map[node_id]:
-                    key, _ = parse_condition(cond_str)
-                    if key:
-                        expected_keys.add(str(key))
+                # The same parse the router uses below - one build-time pass, one source of truth.
+                for _, key, _ in parsed_conditions[node_id]:
+                    expected_keys.add(str(key))
 
             # Resolve this node's LLM provider at compile time: node metadata beats graph
             # config beats the service default (app/clients/llm.py). resolve_llm_config runs
@@ -246,36 +255,34 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             workflow.add_edge(edge.source, edge.target)
 
         # --- 4. Add Conditional Edges ---
-        for source, conditions in conditional_map.items():
+        for source, conditions in parsed_conditions.items():
             def make_router(condition_list=conditions, src=source):
                 def router(state: GraphState) -> str:
-                    logger.info(f"Routing from {src}...")
-                    for target, condition_str in condition_list:
-                        parsed_key, expected_val = parse_condition(condition_str)
-                        if not parsed_key:
-                            continue
+                    # %s formatting, not f-strings: this runs on every evaluation of every outgoing
+                    # edge, so the message must not be built when nobody logs at INFO.
+                    logger.info("Routing from %s...", src)
+                    target = resolve_route(state.get("variables"), condition_list, state)
+                    if target is not None:
+                        logger.info("Router %s selected '%s'", src, target)
+                        return target
 
-                        vars_dict = state.get("variables", {}) or {}
-                        current_val = vars_dict.get(parsed_key)
-                        if current_val is None and parsed_key in state:
-                            current_val = state[parsed_key]
-
-                        if isinstance(expected_val, (int, float)) and isinstance(current_val, (int, float)):
-                            match = current_val == expected_val
-                        else:
-                            match = str(current_val).strip() == str(expected_val).strip()
-
-                        logger.debug(
-                            f"Router Check: Key='{parsed_key}', Expected='{expected_val}', Actual='{current_val}', Match='{match}'")
-                        if match:
-                            return target
-
-                    logger.warning(f"No condition matched for node {src}. Ending.")
+                    # Ending the run rather than raising keeps the old contract (an undecided
+                    # router must never hang a graph), but the failure is no longer silent: the
+                    # conditions and the variables they were checked against go to the log, so a
+                    # wrong condition can be spotted without diffing the final state by hand.
+                    logger.warning(
+                        f"No condition matched for node {src}. "
+                        # Parsed key/literal pairs rather than the raw strings: this is exactly
+                        # what the matcher compared against, so the log shows why it did not fire.
+                        f"Conditions={[(key, expected) for _, key, expected in condition_list]}; "
+                        f"variables={state.get('variables')}. "
+                        f"Ending the run without executing a branch node."
+                    )
                     return END
 
                 return router
 
-            path_map = {target: target for target, _ in conditions}
+            path_map = {target: target for target, _, _ in conditions}
             path_map[END] = END
             workflow.add_conditional_edges(source, make_router(), path_map)
 
@@ -344,6 +351,12 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             compiled_graph = await self._load_and_compile_graph(graph_id)
         except KeyError as e:
             await context.abort(grpc.StatusCode.NOT_FOUND, str(e))
+            return
+        except ValueError as e:
+            # A stored definition the engine now rejects (e.g. a malformed edge condition).
+            # INVALID_ARGUMENT carries the reason, which the gateway turns into a readable
+            # message; INTERNAL would bury it behind a generic failure.
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
             return
         except Exception as e:
             logger.error(f"Failed to load graph {graph_id}: {e}", exc_info=True)
