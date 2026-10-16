@@ -17,8 +17,7 @@ docker run -d \
   --name langgraph-gateway \
   -p 9191:9191 \
   -p 9091:9091 \
-  -e LANGGRAPH_HOST=host.docker.internal \
-  -e LANGGRAPH_PORT=50051 \
+  -e LANGGRAPH_SERVICE_ADDRESS=host.docker.internal:50051 \
   -e B2B_API_KEY=change-me \
   spring-langgraph-gateway
 ```
@@ -381,8 +380,7 @@ mutation DeleteGraph {
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `SERVER_PORT` | The port the Spring Boot app runs on. | `9191` |
-| `LANGGRAPH_HOST` | The hostname of the LangGraph gRPC server. | `localhost` |
-| `LANGGRAPH_PORT` | The port of the LangGraph gRPC server. | `50051` |
+| `LANGGRAPH_SERVICE_ADDRESS` | Address of the Python LangGraph engine's gRPC server, as `host:port`. | `localhost:50051` |
 | `LANGGRAPH_EXECUTION_TIMEOUT` | Timeout for gRPC execution calls. | `60s` |
 | `B2B_GRPC_ENABLED` | Serve the B2B gRPC facade. | `true` |
 | `B2B_GRPC_PORT` | Port of the B2B gRPC facade. | `9091` |

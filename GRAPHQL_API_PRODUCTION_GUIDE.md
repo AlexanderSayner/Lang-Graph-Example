@@ -578,8 +578,7 @@ docker build -t spring-langgraph-gateway .
 docker run -d \
   --name langgraph-gateway \
   -p 9191:9191 \
-  -e LANGGRAPH_HOST=host.docker.internal \
-  -e LANGGRAPH_PORT=50051 \
+  -e LANGGRAPH_SERVICE_ADDRESS=host.docker.internal:50051 \
   spring-langgraph-gateway
 ```
 
