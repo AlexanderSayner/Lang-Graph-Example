@@ -4,7 +4,7 @@ import time
 
 import httpx
 
-from app.clients.llm import GenerationResult
+from app.clients.llm import GenerationResult, LLMRequestError
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -132,14 +132,42 @@ class YandexGPTClient:
     async def _generate_sync(self, payload: dict) -> GenerationResult:
         async with httpx.AsyncClient() as client:
             logger.debug(f"Submitting sync request to Yandex: {payload}")
-            response = await client.post(
-                self.SYNC_URL,
-                json=payload,
-                headers=self._headers(),
-                timeout=settings.YC_TIMEOUT_SECONDS
-            )
-            response.raise_for_status()
-            return self._parse_result(response.json())
+            try:
+                response = await client.post(
+                    self.SYNC_URL,
+                    json=payload,
+                    headers=self._headers(),
+                    timeout=settings.YC_TIMEOUT_SECONDS,
+                )
+                response.raise_for_status()
+                return self._parse_result(response.json())
+            except httpx.ConnectTimeout as exc:
+                # The connection to the model provider was refused or never established.
+                # Show one clean, user-facing line and log the raw traceback for
+                # operators. The chat stays readable, not a stack dump.
+                logger.error(f"Yandex provider connection timeout for model '{self.model_name}': {exc}")
+                raise LLMRequestError(
+                    "Could not reach the model provider to start a request. Check your "
+                    "internet connection and the provider's API key, then try again."
+                ) from exc
+            except httpx.TimeoutException as exc:
+                logger.error(f"Yandex provider request timed out after {settings.YC_TIMEOUT_SECONDS:g}s: {exc}")
+                raise LLMRequestError(
+                    "The model provider took too long to answer. Try again or shorten your input."
+                ) from exc
+            except httpx.HTTPStatusError as exc:
+                logger.error(
+                    f"Yandex provider returned HTTP {exc.response.status_code}: {exc.response.text[:200]}"
+                )
+                raise LLMRequestError(
+                    f"The model provider rejected the request (HTTP {exc.response.status_code}). "
+                    "Check your configuration and try again."
+                ) from exc
+            except httpx.HTTPError as exc:
+                logger.error(f"Yandex provider request failed: {exc}")
+                raise LLMRequestError(
+                    "The model provider could not be reached. Check your connection and try again."
+                ) from exc
 
     async def _generate_async(self, payload: dict) -> GenerationResult:
         """

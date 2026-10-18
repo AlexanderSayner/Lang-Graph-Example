@@ -13,7 +13,13 @@ public enum ExecutionEventType {
     NODE_END,
     END,
     WAITING_FOR_INPUT,
-    ERROR;
+    ERROR,
+    /**
+     * The run was stopped early on purpose via CancelGraphExecution. Distinguished from ERROR
+     * so the UI can show "cancelled" rather than a failure, and so it can tell that the graph
+     * is resumable from its last completed node.
+     */
+    CANCELLED;
 
     /**
      * Lenient parser for the {@code string}-typed gRPC {@code event_type} field.
@@ -36,6 +42,7 @@ public enum ExecutionEventType {
             case "END" -> END;
             case "WAITING_FOR_INPUT" -> WAITING_FOR_INPUT;
             case "ERROR" -> ERROR;
+            case "CANCELLED" -> CANCELLED;
             default -> throw new IllegalArgumentException("Unknown execution event type: " + value);
         };
     }

@@ -31,6 +31,9 @@ service LangGraphService {
 
   // List the models a provider offers (drives the UI's model suggestions)
   rpc ListLlmModels (ListLlmModelsRequest) returns (ListLlmModelsResponse);
+
+  // Cancel a graph execution that is currently running (mid-node, mid-LLM call).
+  rpc CancelGraphExecution (CancelGraphExecutionRequest) returns (CancelGraphExecutionResponse);
 }
 
 // ==========================================
@@ -242,4 +245,18 @@ message ListLlmModelsResponse {
   repeated LlmModel models = 2;
   string source = 3;         // "live" when fetched from the provider, "curated" as a fallback
   string error_message = 4;  // Set when the live list failed and we fell back to curated
+}
+
+// ==========================================
+// Execution cancellation Messages
+// ==========================================
+
+message CancelGraphExecutionRequest {
+  string graph_id = 1;
+  string thread_id = 2;
+}
+
+message CancelGraphExecutionResponse {
+  bool cancelled = 1;   // True when a live execution was found and asked to stop
+  string message = 2;
 }

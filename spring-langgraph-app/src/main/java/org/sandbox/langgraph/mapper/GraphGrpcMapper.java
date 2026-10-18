@@ -185,6 +185,11 @@ public interface GraphGrpcMapper {
         return new DeleteGraphPayload(response.getSuccess(), response.getMessage());
     }
 
+    default CancelGraphExecutionPayload toCancelGraphExecutionPayload(
+            org.sandbox.langgraph.grpc.CancelGraphExecutionResponse response) {
+        return new CancelGraphExecutionPayload(true, response.getCancelled(), response.getMessage());
+    }
+
     default RewindGraphPayload toRewindGraphPayload(org.sandbox.langgraph.grpc.RewindGraphPayload response) {
         return new RewindGraphPayload(response.getSuccess(), response.getMessage());
     }

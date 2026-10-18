@@ -8,7 +8,7 @@ import 'reactflow/dist/style.css'; // Import ReactFlow CSS directly!
 import './styles.css';
 import {
     fetchGraphQL, LIST_QUERY, VIEW_QUERY, HISTORY_QUERY,
-    BALANCE_QUERY, EXECUTE_MUTATION, SAVE_MUTATION,
+    BALANCE_QUERY, EXECUTE_MUTATION, CANCEL_EXECUTION_MUTATION, SAVE_MUTATION,
     DELETE_MUTATION, REWIND_MUTATION, COPILOT_MUTATION,
     CLAIM_THREADS_MUTATION,
     layoutGraph, NODE_TYPES, EXECUTION_EVENT_TYPES, nodeClassName
@@ -56,6 +56,8 @@ function App() {
     const [threadId, setThreadId] = useState(Date.now().toString());
     const [loading, setLoading] = useState(false);
     const chatEndRef = useRef(null);
+    // AbortController of the in-flight ExecuteGraph request, so the Cancel button can stop it.
+    const abortControllerRef = useRef(null);
 
     const [activeTab, setActiveTab] = useState('chat');
     const [historyItems, setHistoryItems] = useState([]);
@@ -443,10 +445,18 @@ function App() {
         setInput("");
         setLoading(true);
 
+        // AbortController for this run, so the Cancel button can tear the request down and
+        // free the connection while the server-side cancel RPC stops the actual work.
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+
         try {
             const data = await fetchGraphQL(EXECUTE_MUTATION, {
                 input: { graphId: selected, threadId: threadId, input: userText }
-            });
+            }, { signal: controller.signal });
+
+            // A newer run started (or a cancel cleared this one) while we were waiting.
+            if (abortControllerRef.current !== controller) return;
 
             const result = data.executeGraph;
             let outputText = "Graph executed successfully.";
@@ -465,8 +475,16 @@ function App() {
                 eventType = result.eventType;
             }
 
-            if (errorText) setMessages(prev => [...prev, { type: 'error', text: errorText }]);
-            else setMessages(prev => [...prev, { type: 'bot', text: outputText, tokens: result.totalTokens || -1  }]);
+            if (eventType === EXECUTION_EVENT_TYPES.CANCELLED) {
+                // The server honoured a cancel and stopped the run early. The graph is
+                // resumable from its last completed node.
+                setMessages(prev => [...prev, { type: 'system', text: 'Execution cancelled. The graph can be resumed by sending another message.' }]);
+                setGraphStatus('idle');
+            } else if (errorText) {
+                setMessages(prev => [...prev, { type: 'error', text: errorText }]);
+            } else {
+                setMessages(prev => [...prev, { type: 'bot', text: outputText, tokens: result.totalTokens || -1  }]);
+            }
 
             if (eventType === EXECUTION_EVENT_TYPES.END) {
                 setGraphStatus('finished');
@@ -483,10 +501,40 @@ function App() {
             await loadHistory();
 
         } catch (err) {
+            if (err && err.name === 'AbortError') {
+                // User pressed Cancel; handleCancel already updated the chat/status, so just
+                // leave this request's cleanup to the finally block below.
+                return;
+            }
             setMessages(prev => [...prev, { type: 'error', text: "Error: " + err.message }]);
             setGraphStatus('idle');
         } finally {
+            if (abortControllerRef.current === controller) {
+                abortControllerRef.current = null;
+            }
             setLoading(false);
+        }
+    };
+
+    // Stop a running execution immediately. Two things happen in order:
+    //  1) the browser stops the execute request and updates the UI, so the user sees one
+    //     clear cancel notice; and
+    //  2) the cancel mutation reaches the Python engine, which aborts the in-flight node and
+    //     its LLM call (stops the token burn), so the work is halted server-side too.
+    const handleCancel = async () => {
+        const controller = abortControllerRef.current;
+        if (!controller) return;
+
+        abortControllerRef.current = null;
+        controller.abort();
+        setMessages(prev => [...prev, { type: 'system', text: 'Execution cancelled by user.' }]);
+        setGraphStatus('idle');
+        setLoading(false);
+
+        try {
+            await fetchGraphQL(CANCEL_EXECUTION_MUTATION, { graphId: selected, threadId });
+        } catch (err) {
+            console.warn('cancel execution request failed', err);
         }
     };
 
@@ -737,7 +785,8 @@ function App() {
                     copyThreadId={copyThreadId} copyGraphId={copyGraphId} resetThread={resetThread}
                     panelHeight={panelHeight} panelRef={panelRef} startResizing={startResizing}
                     messages={messages} graphStatus={graphStatus} loading={loading}
-                    input={input} setInput={setInput} handleExecute={handleExecute} chatEndRef={chatEndRef}
+                    input={input} setInput={setInput} handleExecute={handleExecute}
+                    handleCancel={handleCancel} chatEndRef={chatEndRef}
                     historyItems={historyItems} setModalData={setModalData}
                     getNodeDisplayName={getNodeDisplayName} handleRewind={handleRewind}
                     copilotMessages={copilotMessages} copilotInput={copilotInput}

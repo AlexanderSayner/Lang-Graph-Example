@@ -27,7 +27,7 @@ RUN chown -R appuser:appuser /app
 
 USER appuser
 
-EXPOSE 9191
+EXPOSE 9191 9091
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
   CMD curl -f http://localhost:9191/actuator/health || exit 1
