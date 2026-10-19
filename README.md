@@ -10,7 +10,7 @@ This project demonstrates a microservices architecture where:
    - Provides a GraphQL API (queries, mutations, subscriptions) for clients
    - Handles graph building, execution and state management requests
    - Persists graph definitions and users in PostgreSQL (Flyway migrations), sessions and caches in Redis
-   - Acts as a gRPC **client** of the Python service (graph operations) and as a gRPC **server** on port `9090`, so the Python service can call Java-side tools back
+   - Acts as a gRPC **client** of the Python service (graph operations) and as a gRPC **server** on port `9090`, so the Python service can call Java-side HTTP request executor back
    - Implements user accounts (register/login, thread claiming) and an optional Yandex Cloud billing integration
 
 2. **Python LangGraph Service** (`python-langgraph-service/`, Python 3.10+)
@@ -142,7 +142,7 @@ This starts all services:
 | Graph Viewer UI | http://localhost:8080 |
 | Spring Boot GraphQL | http://localhost:9191/graphql |
 | Spring Boot GraphiQL | http://localhost:9191/graphiql |
-| Spring Boot gRPC server (tool execution) | localhost:9090 |
+| Spring Boot gRPC server (HTTP request execution) | localhost:9090 |
 | Python LangGraph gRPC | localhost:50051 |
 | PostgreSQL | localhost:7432 |
 | Redis | localhost:6879 |
@@ -370,7 +370,7 @@ mutation {
 
 ### 1. Bidirectional gRPC Communication
 - Java → Python: build/execute graphs, read and update state
-- Python → Java: tool execution callbacks (`ToolGrpcService` on port `9090`)
+- Python → Java: HTTP request execution callbacks (`HttpRequestGrpcService` on port `9090`)
 - Efficient binary protocol with strong typing via Protocol Buffers
 - Server-side streaming for real-time graph execution events
 
@@ -381,9 +381,56 @@ mutation {
 
 ### 3. LangGraph Integration
 - Dynamic graph building from node/edge definitions
-- Node handlers, conditional edges and copilot agent (OpenAI / YandexGPT)
+- Node handlers, conditional edges and copilot agent (YandexGPT / OpenAI / Groq / DeepSeek / OpenRouter / Anthropic)
+- Conditional routing with typed literals (booleans, numbers, quoted strings, null), validated when the graph is built — see *Edge conditions* below
+- Per-node and per-graph LLM provider/model selection layered over the service defaults, so credentials are only needed for the selected provider (see `python-langgraph-service/README.md` → *Multi-Provider LLM Configuration*)
 - Checkpointed execution state persisted in PostgreSQL
 - Execution history with state diffs and rewind
+
+#### Edge conditions
+
+An edge with a condition turns its source node into a router: the engine compares one state key
+against a literal and follows the first edge whose condition holds.
+
+```text
+output == true
+intent == 'billing'
+count == 3
+mode == null
+```
+
+What the engine does with that text
+(`python-langgraph-service/app/graph_engine/graph_utils.py`):
+
+- **Parse once, at build time** (`parse_condition` → `parse_literal` → `parse_conditions`):
+  `true` / `false` / `yes` / `no` become booleans, `null` / `none` becomes null, numbers become
+  `int` / `float` (`x == 1` is the number `1`), and single- or double-quoted text is a string.
+  Anything else stays a plain string. A non-identifier key is fine — data keys are arbitrary names.
+- **Compare at routing time** (`values_match`): booleans first, then null, then numbers, then text.
+  `output == true` matches a JSON `true`, the string `"true"`, `yes` or `1`, because a model may
+  spell the same answer in any of those forms; `count == 3` matches `3`, `3.0` and `"3"`; text
+  matches ignoring case (`'billing'` accepts `"Billing"`). Quoting only controls *parsing*, never
+  matching — `flag == 'true'` still matches a real boolean.
+- **A missing key never matches**: if neither the state variables nor the state itself defines the
+  key, no branch fires — including `key == null`, which only matches an explicitly stored `null`.
+  When both exist, the variable wins, so an explicit `null` is never masked by a same-named state
+  field such as `output`.
+- **Keys are matched exactly.** The condition key must spell the variable as it is stored —
+  `Output == true` never sees `output`; both warnings below name the two spellings when that happens.
+- **Malformed conditions fail the build.** A condition without a `key == value` shape can never
+  route, so compiling the graph raises `Malformed condition '<text>' on node '<id>' …`
+  (`INVALID_ARGUMENT` in the engine → `GraphBuildException` → GraphQL `BAD_REQUEST`), and the
+  builder refuses to send one at all, naming the offending edge. The same reason is reported when
+  executing an already-stored graph whose condition the engine rejects. A *blank* condition
+  (`""`, `null`, or a whitespace-only label the builder trims) means an unconditional edge; a
+  non-empty, whitespace-only string is rejected instead of being silently relaxed.
+- **Nothing matched** ends the run at the `END` sentinel without executing an `END` node, and the
+  service logs a `WARNING` with the parsed conditions and the variables they were checked against.
+  A router answer that parses but lacks the expected key is flagged by its own `WARNING`.
+
+The service-level reference — literal table, comparison order, the bare-answer fallback for a
+single-key router, and both warning texts — is in
+`python-langgraph-service/README.md` → *Conditional Edges*.
 
 ### 4. Visual Graph Editor
 - React + ReactFlow UI for building, running and inspecting graphs
@@ -453,7 +500,7 @@ Key environment variables: `SPRING_JDBC_URL`, `POSTGRES_FLYWAY_URL`, `SPRING_JDB
 
 ### Python Service
 
-Configured via environment variables or a `.env` file in `python-langgraph-service/` (see `python-langgraph-service/README.md` for the full list): `SERVER_PORT`, `LOG_LEVEL`, `DATABASE_URL`, `REDIS_URL`, `OPENAI_API_KEY`, `YC_API_KEY`, `YC_FOLDER_ID`, `YC_COMPLETION_MODE`, `TOOL_SERVICE_HOST`, `TOOL_SERVICE_PORT`.
+Configured via environment variables or a `.env` file in `python-langgraph-service/` (see `python-langgraph-service/README.md` for the full list): `SERVER_PORT`, `LOG_LEVEL`, `DATABASE_URL`, `REDIS_URL`, `OPENAI_API_KEY`, `YC_API_KEY`, `YC_FOLDER_ID`, `YC_MODEL_NAME`, `YC_COMPLETION_MODE`, `HTTP_REQUEST_SERVICE_HOST`, `HTTP_REQUEST_SERVICE_PORT`, and the LLM selection settings `LLM_PROVIDER`, `LLM_MODEL`, `LLM_TEMPERATURE`, `LLM_MAX_OUTPUT_TOKENS`, `COPILOT_PROVIDER`, `COPILOT_MODEL` plus the per-provider `<PROVIDER>_API_KEY` / `<PROVIDER>_MODEL` / `<PROVIDER>_BASE_URL`.
 
 ## License
 

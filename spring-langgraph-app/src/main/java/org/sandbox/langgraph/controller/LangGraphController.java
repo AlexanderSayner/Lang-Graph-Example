@@ -15,6 +15,7 @@ import org.sandbox.langgraph.dto.graphql.payload.redis.GraphViewPayload;
 import org.sandbox.langgraph.exception.LangGraphException;
 import org.sandbox.langgraph.mapper.GraphViewMapper;
 import org.sandbox.langgraph.service.CopilotService;
+import org.sandbox.langgraph.service.GraphExecutionAggregator;
 import org.sandbox.langgraph.service.LangGraphGrpcService;
 import org.sandbox.langgraph.service.PostgresGraphViewService;
 import org.sandbox.langgraph.service.ui.PostgresGraphCoordinatesService;
@@ -44,6 +45,7 @@ public class LangGraphController {
     private final GraphViewMapper graphStorageMapper;
     private final PostgresGraphCoordinatesService coordinatesService;
     private final CopilotService copilotService;
+    private final GraphExecutionAggregator aggregator;
 
     @QueryMapping
     public @NonNull GraphListPayload listGraphs(@Argument int pageSize, @Argument String pageToken) {
@@ -68,6 +70,11 @@ public class LangGraphController {
         return langGraphService.getExecutionHistory(graphId, threadId);
     }
 
+    @QueryMapping
+    public @NonNull LlmModelsPayload llmModels(@Argument String provider) {
+        return langGraphService.listLlmModels(provider);
+    }
+
     @MutationMapping
     public @NonNull BuildGraphPayload buildGraph(@Valid @Argument BuildGraphInput input) {
         log.info("Building graph mutation: {}", input.graphId());
@@ -77,10 +84,10 @@ public class LangGraphController {
     @MutationMapping
     public Mono<@NonNull ExecuteGraphPayload> executeGraph(@Valid @Argument ExecuteGraphInput input) {
         log.info("Executing graph: {}", input.graphId());
-        return langGraphService.executeGraphStream(input, false)
-                .reduce(new ExecuteGraphPayloadAccumulator(), ExecuteGraphPayloadAccumulator::accumulate)
-                .map(ExecuteGraphPayloadAccumulator::toPayload)
-                .defaultIfEmpty(new ExecuteGraphPayload(true, "", null, null, null, null))
+        // No defaultIfEmpty: GraphExecutionAggregator uses Flux.reduce(seed, ...), which
+        // emits the seed for an empty stream (pinned by GraphExecutionAggregatorTest), so
+        // this Mono is never empty.
+        return aggregator.aggregate(langGraphService.executeGraphStream(input, false))
                 .onErrorResume(e -> {
                     log.error("Graph execution failed for {}: {}", input.graphId(), e.getMessage(), e);
                     return Mono.just(new ExecuteGraphPayload(
@@ -110,6 +117,14 @@ public class LangGraphController {
     public @NonNull DeleteGraphPayload deleteGraph(@Argument String graphId) {
         log.info("Deleting graph: {}", graphId);
         return langGraphService.deleteGraph(graphId);
+    }
+
+    @MutationMapping
+    public @NonNull CancelGraphExecutionPayload cancelGraphExecution(
+            @Argument String graphId,
+            @Argument String threadId) {
+        log.info("Cancelling graph execution: {} (thread {})", graphId, threadId);
+        return langGraphService.cancelGraphExecution(graphId, threadId);
     }
 
     @MutationMapping
@@ -156,47 +171,14 @@ public class LangGraphController {
             @Argument String message,
             @Argument String copilotChatHistoryJson,
             @Argument String selectedNodeId,
-            @Argument String selectedEdgeJson
+            @Argument String selectedEdgeJson,
+            @Argument String copilotProvider,
+            @Argument String copilotModel
     ) {
-        return copilotService.askCopilot(graphId, threadId, message, copilotChatHistoryJson, selectedNodeId, selectedEdgeJson);
+        return copilotService.askCopilot(graphId, threadId, message, copilotChatHistoryJson, selectedNodeId,
+                selectedEdgeJson, copilotProvider, copilotModel);
     }
 
-    // Internal helper class for accumulating stream results
-    private static final class ExecuteGraphPayloadAccumulator {
-        private String output;
-        private ExecutionEventType eventType;
-        private final Map<String, Object> state = new HashMap<>();
-        private String errorMessage;
-        private boolean hasError;
-        private Integer totalTokens = 0;
-
-        ExecuteGraphPayloadAccumulator accumulate(GraphExecutionEventPayload event) {
-            if (event.output() != null && !event.output().isEmpty()) {
-                this.output = event.output();
-            }
-            eventType = event.eventType();
-            if (event.state() != null) {
-                this.state.putAll(event.state());
-            }
-            if (event.eventType() == ExecutionEventType.ERROR) {
-                this.hasError = true;
-                this.errorMessage = event.errorMessage();
-            }
-            if (event.totalTokens() != null && event.totalTokens() > this.totalTokens) {
-                this.totalTokens = event.totalTokens();
-            }
-            return this;
-        }
-
-        ExecuteGraphPayload toPayload() {
-            return new ExecuteGraphPayload(
-                    !hasError,
-                    output,
-                    eventType,
-                    state.isEmpty() ? null : state,
-                    totalTokens,
-                    errorMessage
-            );
-        }
-    }
+    // Accumulation of the blocking run lives in GraphExecutionAggregator, shared
+    // with the B2B ExecuteGraph RPC.
 }

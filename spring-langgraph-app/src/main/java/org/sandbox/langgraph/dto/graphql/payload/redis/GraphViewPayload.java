@@ -3,6 +3,7 @@ package org.sandbox.langgraph.dto.graphql.payload.redis;
 import org.sandbox.langgraph.core.model.GraphStatus;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Payload for graph visualization query.
@@ -15,14 +16,17 @@ public record GraphViewPayload(
         GraphStatus status,
         List<GraphNode> nodes,
         List<GraphEdge> edges,
-        String message
+        String message,
+        Map<String, Object> config
 ) {
     public static GraphViewPayload success(String graphId, String graphName, GraphStatus status,
-                                           List<GraphNode> nodes, List<GraphEdge> edges) {
-        return new GraphViewPayload(true, graphId, graphName, status, nodes, edges, "Graph loaded successfully");
+                                           List<GraphNode> nodes, List<GraphEdge> edges,
+                                           Map<String, Object> config) {
+        return new GraphViewPayload(true, graphId, graphName, status, nodes, edges,
+                "Graph loaded successfully", config != null ? config : Map.of());
     }
 
     public static GraphViewPayload error(String message) {
-        return new GraphViewPayload(false, null, null, null, List.of(), List.of(), message);
+        return new GraphViewPayload(false, null, null, null, List.of(), List.of(), message, Map.of());
     }
 }

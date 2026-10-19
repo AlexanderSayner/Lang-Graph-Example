@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from typing import Dict, Set, Callable, Awaitable, Any
 
 import grpc
@@ -10,7 +11,7 @@ from langgraph.pregel import Pregel
 from app.config import settings
 from app.generated import langgraph_pb2_grpc, langgraph_pb2
 from app.graph_engine.graph_utils import format_state_context, extract_json_from_response, JsonGenerationError, \
-    GraphState
+    parse_literal, GraphState
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,23 @@ RETRY_HINT = (
     "\n\nПредыдущий ответ не подошёл. Нужен только результат по задаче, без отказов, без "
     "пояснений и без markdown. Ответь строго в том формате, который описан выше, и не отказывайся."
 )
+
+# Same retry instruction for the other providers. The retry hint is appended to the node's
+# system prompt, so a Russian instruction would be an odd (and usually counter-productive)
+# addition to an English prompt sent to OpenAI / Anthropic / Groq / DeepSeek / OpenRouter.
+RETRY_HINT_EN = (
+    "\n\nThe previous answer was not usable. Reply only with the task result: no refusals, "
+    "no apologies and no markdown. Answer strictly in the format described above and do not refuse."
+)
+
+
+def retry_hint_for(llm) -> str:
+    """Provider-appropriate retry instruction.
+
+    Russian for yandex (the historical behaviour) and for any client that does not expose a
+    ``provider`` (the pre-multi-provider Yandex-only path), English for every other provider.
+    """
+    return RETRY_HINT_EN if getattr(llm, "provider", "") not in ("", "yandex") else RETRY_HINT
 
 
 def is_unusable_answer(text: str) -> bool:
@@ -51,12 +69,53 @@ def drop_history_block(user_message: str) -> str:
     return head + VARIABLES_MARKER + tail
 
 
+# A bare answer counts as a value only when it is a single word token: letters of any script,
+# digits, underscore, hyphen, and at most one decimal point. Everything else - truncated JSON,
+# stray punctuation, prose - is not a value, and storing it as a variable would only produce a
+# second silent no-match instead of the parse error that tells the operator what went wrong.
+_WORD_TOKEN = re.compile(r"[\w\-]+(?:\.[\w\-]+)*")
+
+
+def parse_scalar_answer(text: str, keys: Set) -> Dict[str, Any]:
+    """Reads a bare (non-JSON) answer as the value of a single-key router.
+
+    A router expecting exactly one key must not fail because the model replied ``true`` instead of
+    ``{"output": true}`` - that is precisely the prompt micro-management this engine should not
+    require. Quoted text may contain spaces; unquoted text must be a single word token, so
+    truncated JSON, punctuation and prose are rejected instead of being stored as a variable that
+    silently matches nothing. Multi-key routers need the object form and raise.
+    """
+    if len(keys) != 1:
+        raise JsonGenerationError(
+            f"Expected a JSON object with keys {sorted(keys)}, got a bare answer instead: "
+            f"{(text or '')[:100]!r}"
+        )
+
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        cleaned = "\n".join(lines[1:-1]).strip() if len(lines) > 2 else cleaned.strip("`").strip()
+
+    if not cleaned or "\n" in cleaned or is_unusable_answer(cleaned):
+        raise JsonGenerationError(f"Answer is not a usable value: {(text or '')[:100]!r}")
+
+    quoted = len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in ("'", '"')
+    if quoted:
+        value: Any = cleaned[1:-1]
+    elif not _WORD_TOKEN.fullmatch(cleaned) or len(cleaned) > 40:
+        raise JsonGenerationError(f"Bare answer is not a single value: {cleaned[:100]!r}")
+    else:
+        value = parse_literal(cleaned)
+
+    return {next(iter(keys)): value}
+
+
 class NodeHandler:
     # Per-node context size control (metadata "context_mode"). A node usually needs only part of
     # the state, and a smaller prompt is both cheaper and noticeably less likely to be refused:
-    #   "minimal" -> variables only (no conversation history, no raw tool_result)
-    #   "slim"   -> variables incl. tool_result, no conversation history
-    #   "trim"   -> conversation history + variables, no raw tool_result
+    #   "minimal" -> variables only (no conversation history, no raw http_result)
+    #   "slim"   -> variables incl. http_result, no conversation history
+    #   "trim"   -> conversation history + variables, no raw http_result
     #   absent   -> everything (back-compat default)
     CONTEXT_MODES = {
         "minimal": (False, False),
@@ -65,25 +124,44 @@ class NodeHandler:
         "full": (True, True),
     }
 
-    def __init__(self, llm_client, graph_loader: GraphLoader):
-        self.llm = llm_client
+    # Node types this handler knows how to dispatch. Anything else is a corrupt or legacy
+    # definition (for example a node type that was renamed in the API) and must fail loudly,
+    # because the former fall-through turned such a node into a silent LLM ACTION node: the HTTP
+    # call simply never happened and nothing reported it.
+    # START / END / HUMAN are pass-through ACTION nodes here - they carry no prompt of their own.
+    ACTION_NODE_TYPES = frozenset({"START", "END", "ACTION", "HUMAN"})
+    KNOWN_NODE_TYPES = ACTION_NODE_TYPES | {"GRAPH", "HTTP_REQUEST"}
+
+    def __init__(self, graph_loader: GraphLoader, default_llm=None, default_llm_factory=None):
+        # Each node may carry its own provider/model: the servicer resolves a client per
+        # node (node metadata -> graph config -> service default) and passes it into
+        # process(). The service-level fallback below is built lazily so that a missing
+        # API key never prevents the server from starting up - it surfaces on first use.
+        self.default_llm = default_llm
+        self.default_llm_factory = default_llm_factory
         self.graph_loader = graph_loader
 
         try:
-            self.tool_channel = grpc.aio.insecure_channel(
-                f'{settings.TOOL_SERVICE_HOST}:{settings.TOOL_SERVICE_PORT}'
+            self.http_channel = grpc.aio.insecure_channel(
+                f'{settings.HTTP_REQUEST_SERVICE_HOST}:{settings.HTTP_REQUEST_SERVICE_PORT}'
             )
-            self.tool_stub = langgraph_pb2_grpc.ToolServiceStub(self.tool_channel)
-            logger.info(f"Connected to Tool Service at {settings.TOOL_SERVICE_HOST}:{settings.TOOL_SERVICE_PORT}")
+            self.http_stub = langgraph_pb2_grpc.HttpRequestServiceStub(self.http_channel)
+            logger.info(f"Connected to HTTP Request Service at {settings.HTTP_REQUEST_SERVICE_HOST}:{settings.HTTP_REQUEST_SERVICE_PORT}")
         except Exception as e:
-            logger.error(f"Failed to connect to Tool Service: {e}")
-            self.tool_stub = None
+            logger.error(f"Failed to connect to HTTP Request Service: {e}")
+            self.http_stub = None
 
     def _context_flags(self, n_meta: Dict) -> tuple[bool, bool]:
         mode = str((n_meta or {}).get("context_mode", "full")).strip().lower()
         return self.CONTEXT_MODES.get(mode, self.CONTEXT_MODES["full"])
 
-    async def _generate(self, user_message: str, system_message: str):
+    def _default_client(self):
+        """Service-level fallback client, resolved on first use and then memoised."""
+        if self.default_llm is None and self.default_llm_factory is not None:
+            self.default_llm = self.default_llm_factory()
+        return self.default_llm
+
+    async def _generate(self, user_message: str, system_message: str, llm=None):
         """Call the LLM, retrying once when the answer is a refusal or empty text.
 
         On the retry we also shrink the prompt: the conversation history is dropped and a
@@ -92,12 +170,15 @@ class NodeHandler:
 
         Returns the LLM response object unchanged (so `.usage` stays available).
         """
+        client = llm or self._default_client()
+        if client is None:
+            raise RuntimeError("No LLM client resolved for this node (missing provider config).")
         attempts = max(1, settings.LLM_MAX_ATTEMPTS)
         prompt = system_message
         message = user_message
         response = None
         for attempt in range(1, attempts + 1):
-            response = await self.llm.generate(user_message=message, system_message=prompt)
+            response = await client.generate(user_message=message, system_message=prompt)
             text = str(response)
             if not is_unusable_answer(text):
                 return response
@@ -106,23 +187,29 @@ class NodeHandler:
                                attempt, text[:120].replace("\n", " "))
                 return response
             logger.warning("LLM refused or returned an empty answer (attempt %d), retrying", attempt)
-            prompt = system_message + RETRY_HINT
+            prompt = system_message + retry_hint_for(client)
             message = drop_history_block(user_message)
         return response
 
     async def process(self, n_id: str, n_meta: Dict, node_type: str, is_router_node: bool,
-                      router_keys: Set, state: GraphState, config: RunnableConfig) -> Dict:
+                      router_keys: Set, state: GraphState, config: RunnableConfig,
+                      llm=None) -> Dict:
         if is_router_node:
-            return await self._process_router(n_id, n_meta, router_keys, state)
+            return await self._process_router(n_id, n_meta, router_keys, state, llm)
         if node_type == "GRAPH":
             return await self._process_subgraph(n_id, n_meta, state, config)
-        if node_type == "TOOL":
-            return await self._process_tool(n_id, n_meta, state)
+        if node_type == "HTTP_REQUEST":
+            return await self._process_http_request(n_id, n_meta, state)
+        if node_type in self.ACTION_NODE_TYPES:
+            return await self._process_action(n_id, n_meta, state, llm)
 
-        return await self._process_action(n_id, n_meta, state)
+        raise ValueError(
+            f"Node {n_id}: unknown node type '{node_type}'. "
+            f"Known types: {', '.join(sorted(self.KNOWN_NODE_TYPES))}"
+        )
 
-    async def _process_router(self, n_id: str, n_meta: Dict[str, Any], router_keys: Set, state: GraphState) -> Dict[
-        str, Any]:
+    async def _process_router(self, n_id: str, n_meta: Dict[str, Any], router_keys: Set,
+                              state: GraphState, llm=None) -> Dict[str, Any]:
         data_block = format_state_context(state, *self._context_flags(n_meta))
         system_prompt = n_meta.get("system_prompt", "You are a helpful assistant.")
         keys_list = ", ".join(router_keys) if router_keys else "intent"
@@ -136,14 +223,34 @@ class NodeHandler:
         )
 
         try:
-            llm_response = await self._generate(user_message=data_block, system_message=system_prompt)
+            llm_response = await self._generate(user_message=data_block, system_message=system_prompt, llm=llm)
 
             # Safely extract content and tokens regardless of whether llm_response is a string or an object
             output_content = getattr(llm_response, 'content', str(llm_response))
             usage = getattr(llm_response, 'usage', {})
             tokens = usage.get('total_tokens', 0) if isinstance(usage, dict) else 0
 
-            parsed_data = extract_json_from_response(output_content)
+            try:
+                parsed_data = extract_json_from_response(output_content)
+            except JsonGenerationError:
+                # Single-key routers also accept a bare answer ("true", "4", "billing"): forcing
+                # the model to spell {"output": true} is prompt micro-management, and bailing out
+                # here used to leave `variables` untouched, so no outgoing edge could ever match.
+                parsed_data = parse_scalar_answer(output_content, router_keys)
+                logger.info(f"Router {n_id} accepted a bare scalar answer: {parsed_data}")
+
+            # The JSON parsed, but did it answer the keys the edges are conditioned on? A model that
+            # returns {answer: true} while the edges wait on `output` is about to end the run with no
+            # branch taken - naming the gap here puts the cause in the log at the moment it happens,
+            # instead of leaving only "no condition matched" further down the pipeline.
+            missing = {str(key) for key in router_keys} - {str(key) for key in parsed_data}
+            if missing:
+                logger.warning(
+                    f"Router {n_id} answered without the expected key(s) {sorted(missing)}; "
+                    f"got {sorted(str(key) for key in parsed_data)}. Edges conditioned on those "
+                    f"keys cannot match."
+                )
+
             current_vars = state.get("variables", {}) or {}
             merged_vars = {**current_vars, **parsed_data}
 
@@ -162,7 +269,8 @@ class NodeHandler:
             return {"last_node": n_id, "output": f"Error: {str(e)}",
                     "history": [{"node": n_id, "output": f"Error: {str(e)}"}]}
 
-    async def _process_action(self, n_id: str, n_meta: Dict[str, Any], state: GraphState) -> Dict[str, Any]:
+    async def _process_action(self, n_id: str, n_meta: Dict[str, Any], state: GraphState,
+                              llm=None) -> Dict[str, Any]:
         user_input = state.get("input") or ""
         if not user_input.strip():
             return {"last_node": n_id, "output": "No input provided."}
@@ -184,7 +292,7 @@ class NodeHandler:
                 logger.warning(f"Failed to serialize context for node {n_id}: {e}")
 
         try:
-            llm_response = await self._generate(user_message=final_user_input, system_message=system_prompt)
+            llm_response = await self._generate(user_message=final_user_input, system_message=system_prompt, llm=llm)
 
             output_content = getattr(llm_response, 'content', str(llm_response))
             usage = getattr(llm_response, 'usage', {})
@@ -239,25 +347,28 @@ class NodeHandler:
             logger.error(f"Subgraph execution failed in {n_id}: {e}", exc_info=True)
             return {"last_node": n_id, "output": f"Subgraph Error: {str(e)}", "error": str(e)}
 
-    async def _process_tool(self, n_id: str, n_meta: Dict, state: GraphState) -> Dict:
-        if not self.tool_stub:
+    async def _process_http_request(self, n_id: str, n_meta: Dict, state: GraphState) -> Dict:
+        if not self.http_stub:
             return {
                 "last_node": n_id,
-                "output": "Error: Tool Service is not connected.",
-                "error": "Tool Service Unavailable",
-                "variables": {**state.get("variables", {}), "tool_success": False, "tool_error": "Service Unavailable"}
+                "output": "Error: HTTP Request Service is not connected.",
+                "error": "HTTP Request Service Unavailable",
+                "variables": {**state.get("variables", {}), "http_success": False, "http_error": "Service Unavailable"}
             }
 
-        logger.info(f"Node {n_id}: Executing Tool...")
+        logger.info(f"Node {n_id}: Executing HTTP request...")
         try:
             method = n_meta.get("method", "GET").upper()
             url = n_meta.get("url", "")
 
             raw_headers = n_meta.get("headers", "{}")
-            headers_dict = json.loads(raw_headers) if isinstance(raw_headers, str) else raw_headers
             try:
                 headers_dict = json.loads(raw_headers) if isinstance(raw_headers, str) else raw_headers
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(f"Node {n_id}: metadata 'headers' is not valid JSON, sending none")
+                headers_dict = {}
+            if not isinstance(headers_dict, dict):
+                logger.warning(f"Node {n_id}: metadata 'headers' is not a JSON object, sending none")
                 headers_dict = {}
 
             body = n_meta.get("body", "")
@@ -271,7 +382,7 @@ class NodeHandler:
                 state_json=json.dumps(variables, default=str)
             )
 
-            response = await self.tool_stub.ExecuteHttpRequest(request)
+            response = await self.http_stub.ExecuteHttpRequest(request)
 
             if response.success:
                 result_data = {}
@@ -283,42 +394,42 @@ class NodeHandler:
 
                 new_vars = {
                     **variables,
-                    "tool_result": result_data,
-                    "tool_success": True,
-                    "tool_status_code": response.status_code
+                    "http_result": result_data,
+                    "http_success": True,
+                    "http_status_code": response.status_code
                 }
                 return {
                     "last_node": n_id,
-                    "output": f"Tool executed successfully. Status: {response.status_code}",
+                    "output": f"HTTP request executed successfully. Status: {response.status_code}",
                     "variables": new_vars,
                     "total_tokens": 0,
-                    "history": [{"node": n_id, "output": "Tool executed", "tokens_used": 0}]
+                    "history": [{"node": n_id, "output": "HTTP request executed", "tokens_used": 0}]
                 }
             else:
                 new_vars = {
                     **variables,
-                    "tool_success": False,
-                    "tool_error": response.error_message,
-                    "tool_status_code": response.status_code
+                    "http_success": False,
+                    "http_error": response.error_message,
+                    "http_status_code": response.status_code
                 }
                 return {
                     "last_node": n_id,
-                    "output": f"Tool Error: {response.error_message}",
+                    "output": f"HTTP request error: {response.error_message}",
                     "variables": new_vars,
                     "error": response.error_message,
                     "total_tokens": 0,
-                    "history": [{"node": n_id, "output": "Tool Error", "tokens_used": 0}]
+                    "history": [{"node": n_id, "output": "HTTP request error", "tokens_used": 0}]
                 }
 
         except grpc.RpcError as e:
             logger.error(f"Node {n_id}: gRPC Communication Error - {e.code()}: {e.details()}")
-            new_vars = {**state.get("variables", {}), "tool_success": False, "tool_error": f"gRPC Error: {e.code()}"}
+            new_vars = {**state.get("variables", {}), "http_success": False, "http_error": f"gRPC Error: {e.code()}"}
             return {
                 "last_node": n_id,
-                "output": f"System Error: Could not reach Tool Service ({e.code()}).",
+                "output": f"System Error: Could not reach HTTP Request Service ({e.code()}).",
                 "variables": new_vars,
                 "error": str(e.details())
             }
         except Exception as e:
-            logger.error(f"Node {n_id}: Unexpected Tool Error - {e}", exc_info=True)
-            return {"last_node": n_id, "output": "Unexpected error during tool execution.", "error": str(e)}
+            logger.error(f"Node {n_id}: Unexpected HTTP request error - {e}", exc_info=True)
+            return {"last_node": n_id, "output": "Unexpected error during HTTP request execution.", "error": str(e)}

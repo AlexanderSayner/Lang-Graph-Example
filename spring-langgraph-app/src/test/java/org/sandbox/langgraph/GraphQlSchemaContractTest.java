@@ -58,9 +58,9 @@ class GraphQlSchemaContractTest {
         GraphQLSchema schema = buildSchema();
 
         assertThat(enumValues(schema, "NodeType"))
-                .containsExactlyInAnyOrder("START", "END", "ACTION", "HUMAN", "GRAPH", "TOOL");
+                .containsExactlyInAnyOrder("START", "END", "ACTION", "HUMAN", "GRAPH", "HTTP_REQUEST");
         assertThat(enumValues(schema, "ExecutionEventType"))
-                .containsExactlyInAnyOrder("START", "NODE_START", "NODE_END", "END", "WAITING_FOR_INPUT", "ERROR");
+                .containsExactlyInAnyOrder("START", "NODE_START", "NODE_END", "END", "WAITING_FOR_INPUT", "ERROR", "CANCELLED");
         assertThat(enumValues(schema, "HttpMethod"))
                 .containsExactlyInAnyOrder("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS");
         assertThat(enumValues(schema, "GraphStatus"))
@@ -73,7 +73,7 @@ class GraphQlSchemaContractTest {
         GraphQLSchema schema = buildSchema();
 
         assertThat(fieldTypeName(schema, "NodeInput", "nodeType")).isEqualTo("NodeType");
-        assertThat(fieldTypeName(schema, "ToolDebugInput", "method")).isEqualTo("HttpMethod");
+        assertThat(fieldTypeName(schema, "HttpRequestDebugInput", "method")).isEqualTo("HttpMethod");
         assertThat(fieldTypeName(schema, "GraphNode", "nodeType")).isEqualTo("NodeType");
         assertThat(fieldTypeName(schema, "GraphExecutionEventPayload", "eventType")).isEqualTo("ExecutionEventType");
         assertThat(fieldTypeName(schema, "ExecuteGraphPayload", "eventType")).isEqualTo("ExecutionEventType");
@@ -112,6 +112,38 @@ class GraphQlSchemaContractTest {
         // must stay available - they still need the flat nodeId + coordinates pair.
         assertThat(schema.getType("NodePositionInput")).isNotNull();
         assertThat(schema.getMutationType().getField("saveGraphCoordinates")).isNotNull();
+    }
+
+    @Test
+    @DisplayName("The LLM model catalog query and types are exposed for the UI selectors")
+    void llmModelsCatalogIsExposed() throws Exception {
+        GraphQLSchema schema = buildSchema();
+
+        // The UI calls this per selected provider to populate the model <datalist>; it must
+        // stay a query returning the catalog payload with id/label entries.
+        assertThat(schema.getQueryType().getField("llmModels")).isNotNull();
+        assertThat(fieldTypeName(schema, "Query", "llmModels")).isEqualTo("LlmModelsPayload");
+        assertThat(fieldTypeName(schema, "LlmModelsPayload", "models")).isEqualTo("LlmModel");
+        assertThat(fieldTypeName(schema, "LlmModel", "id")).isEqualTo("String");
+        assertThat(fieldTypeName(schema, "LlmModel", "label")).isEqualTo("String");
+        assertThat(fieldTypeName(schema, "LlmModelsPayload", "source")).isEqualTo("String");
+        assertThat(fieldTypeName(schema, "LlmModelsPayload", "errorMessage")).isEqualTo("String");
+    }
+
+    @Test
+    @DisplayName("The execution-cancel mutation and payload are exposed for the UI's Cancel button")
+    void cancelGraphExecutionMutationIsExposed() throws Exception {
+        GraphQLSchema schema = buildSchema();
+
+        // The viewer calls this to stop a runaway run without waiting for the node/LLM call
+        // to finish, so the mutation and its payload must stay available.
+        assertThat(schema.getMutationType().getField("cancelGraphExecution")).isNotNull();
+        assertThat(fieldTypeName(schema, "Mutation", "cancelGraphExecution")).isEqualTo("CancelGraphExecutionPayload");
+
+        // graphId + threadId identify the single logical run to stop.
+        assertThat(fieldTypeName(schema, "CancelGraphExecutionPayload", "success")).isEqualTo("Boolean");
+        assertThat(fieldTypeName(schema, "CancelGraphExecutionPayload", "cancelled")).isEqualTo("Boolean");
+        assertThat(fieldTypeName(schema, "CancelGraphExecutionPayload", "message")).isEqualTo("String");
     }
 
     private static List<String> enumValues(GraphQLSchema schema, String typeName) {

@@ -185,12 +185,24 @@ public interface GraphGrpcMapper {
         return new DeleteGraphPayload(response.getSuccess(), response.getMessage());
     }
 
+    default CancelGraphExecutionPayload toCancelGraphExecutionPayload(
+            org.sandbox.langgraph.grpc.CancelGraphExecutionResponse response) {
+        return new CancelGraphExecutionPayload(true, response.getCancelled(), response.getMessage());
+    }
+
     default RewindGraphPayload toRewindGraphPayload(org.sandbox.langgraph.grpc.RewindGraphPayload response) {
         return new RewindGraphPayload(response.getSuccess(), response.getMessage());
     }
 
     default CopilotGraphPayload toCopilotGraphPayload(org.sandbox.langgraph.grpc.CopilotResponse response) {
         return new CopilotGraphPayload(response.getSuccess(), response.getAiResponse(), response.getTotalTokens(), response.getErrorMessage());
+    }
+
+    default LlmModelsPayload toLlmModelsPayload(org.sandbox.langgraph.grpc.ListLlmModelsResponse response) {
+        List<LlmModelsPayload.LlmModel> models = response.getModelsList().stream()
+                .map(model -> new LlmModelsPayload.LlmModel(model.getId(), model.getLabel()))
+                .toList();
+        return new LlmModelsPayload(response.getSuccess(), models, response.getSource(), response.getErrorMessage());
     }
 
     // ============== Helper Methods ==============

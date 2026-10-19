@@ -142,6 +142,9 @@ mutation BuildGraph {
                     condition: "ticket_type == 'billing'"
                 }
                 { source: "billing", target: "verify_billing" }
+                # A boolean condition may also be written unquoted: `valid == true`.
+                # Quoting only changes how the literal is parsed, not how it is compared, so both
+                # forms match the JSON true/false returned by the model.
                 {
                     source: "verify_billing"
                     target: "resolve"

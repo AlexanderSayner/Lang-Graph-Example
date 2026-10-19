@@ -40,9 +40,10 @@ const renderDiffSummary = (diff) => {
 export default function ChatPanel({
     activeTab, setActiveTab, selected, threadId, copiedThread, copiedGraph,
     copyThreadId, copyGraphId, resetThread, panelHeight, panelRef, startResizing,
-    messages, graphStatus, loading, input, setInput, handleExecute, chatEndRef,
+    messages, graphStatus, loading, input, setInput, handleExecute, handleCancel, chatEndRef,
     historyItems, setModalData, getNodeDisplayName, handleRewind,
     copilotMessages, copilotInput, setCopilotInput, copilotLoading, handleCopilotSend,
+    copilotLLM, setCopilotLLM,
     formatTimestamp
 }) {
     return (
@@ -117,12 +118,18 @@ export default function ChatPanel({
                                 </button>
                             </div>
                         )}
-                        {loading && <div className="msg msg-bot">Thinking...</div>}
+                        {loading && <div className="msg msg-bot">Thinking… <span style={{ color: '#999', fontStyle: 'italic', fontSize: '11px' }}>press Cancel to stop</span></div>}
                         <div ref={chatEndRef} />
                     </div>
                     <div className="chat-input-area">
                         <input className="chat-input" placeholder={ graphStatus === 'finished' ? "💬 Graph finished — send a message to continue, or click 'New' for a fresh thread" : "Send message..." } value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleExecute()} disabled={loading} />
-                        <button className="send-btn" onClick={handleExecute} disabled={loading}>Send</button>
+                        {loading ? (
+                            /* While a run is in flight the Send button becomes a Cancel button, so
+                               a runaway execution can be stopped immediately (mid-node, mid-LLM). */
+                            <button className="cancel-btn" onClick={handleCancel}>Cancel</button>
+                        ) : (
+                            <button className="send-btn" onClick={handleExecute} disabled={!input.trim() || !selected}>Send</button>
+                        )}
                     </div>
                 </>
             ) : activeTab === 'copilot' ? (
@@ -132,6 +139,8 @@ export default function ChatPanel({
                     setCopilotInput={setCopilotInput}
                     copilotLoading={copilotLoading}
                     handleCopilotSend={handleCopilotSend}
+                    copilotLLM={copilotLLM}
+                    setCopilotLLM={setCopilotLLM}
                     chatEndRef={chatEndRef}
                     onClearChat={() => setCopilotMessages([])}
                 />

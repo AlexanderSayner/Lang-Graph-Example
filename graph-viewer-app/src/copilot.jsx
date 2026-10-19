@@ -1,3 +1,7 @@
+import { useEffect, useRef, useState } from 'react';
+import { COPILOT_PROVIDER_OPTIONS } from './constants';
+import ModelDatalist from './components/ModelDatalist';
+
 // Helper: Simple Markdown-like formatter for AI responses
 const formatMessage = (text) => {
     if (!text) return "";
@@ -24,8 +28,28 @@ const copilotSuggestions = [
 
 export default function CopilotTab({
     copilotMessages, copilotInput, setCopilotInput, copilotLoading,
-    handleCopilotSend, chatEndRef, onClearChat
+    handleCopilotSend, chatEndRef, onClearChat,
+    copilotLLM, setCopilotLLM
 }) {
+    // Copilot model settings live in a popover anchored to the ⚙ button left of the input
+    // field, instead of the always-visible top bar they used to occupy. `settingsOpen` toggles
+    // the popover; a mousedown outside the wrapper or an Escape closes it.
+    const [settingsOpen, setSettingsOpen] = useState(false);
+    const settingsRef = useRef(null);
+    useEffect(() => {
+        if (!settingsOpen) return;
+        const onDocClick = (e) => {
+            if (settingsRef.current && !settingsRef.current.contains(e.target)) setSettingsOpen(false);
+        };
+        const onKey = (e) => { if (e.key === 'Escape') setSettingsOpen(false); };
+        document.addEventListener('mousedown', onDocClick);
+        document.addEventListener('keydown', onKey);
+        return () => {
+            document.removeEventListener('mousedown', onDocClick);
+            document.removeEventListener('keydown', onKey);
+        };
+    }, [settingsOpen]);
+
     return (
         <>
             <div className="chat-messages" style={{ paddingBottom: '10px' }}>
@@ -107,6 +131,43 @@ export default function CopilotTab({
 
             {/* Input Area */}
             <div className="chat-input-area" style={{ borderTop: '1px solid #eee', padding: '12px' }}>
+                <div className="copilot-settings" ref={settingsRef}>
+                    <button
+                        type="button"
+                        className={`copilot-settings-btn${(copilotLLM?.provider || copilotLLM?.model) ? ' active' : ''}`}
+                        title="Copilot settings"
+                        aria-label="Copilot settings"
+                        aria-expanded={settingsOpen}
+                        onClick={() => setSettingsOpen(o => !o)}
+                    >⚙</button>
+                    {settingsOpen && (
+                        /* Copilot LLM selector: a per-request override of the service
+                           COPILOT_* / LLM_* default, remembered in this browser. The chosen
+                           provider/model rides along with every question, independent of the
+                           graph being viewed. */
+                        <div className="copilot-settings-popover">
+                            <div className="copilot-settings-title">Copilot model</div>
+                            <span className="copilot-settings-label">Provider</span>
+                            <select
+                                className="form-select"
+                                value={copilotLLM?.provider || ''}
+                                onChange={(e) => setCopilotLLM(prev => ({ ...prev, provider: e.target.value }))}
+                            >
+                                {COPILOT_PROVIDER_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                            </select>
+                            <span className="copilot-settings-label">Model</span>
+                            <input
+                                className="form-input"
+                                placeholder="model (provider default)"
+                                list="llm-models-copilot"
+                                value={copilotLLM?.model || ''}
+                                onChange={(e) => setCopilotLLM(prev => ({ ...prev, model: e.target.value }))}
+                            />
+                            <ModelDatalist id="llm-models-copilot" provider={copilotLLM?.provider} />
+                            <div className="copilot-settings-hint">“Inherit” uses the server default.</div>
+                        </div>
+                    )}
+                </div>
                 <input
                     className="chat-input"
                     placeholder="Ask about your graph, prompts, or errors..."

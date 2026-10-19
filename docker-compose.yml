@@ -18,7 +18,34 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - YC_API_KEY=${YC_API_KEY:-}
       - YC_FOLDER_ID=${YC_FOLDER_ID:-}
-      - TOOL_SERVICE_HOST=spring-service
+      # Multi-provider LLM selection (defaults preserve the old Yandex behaviour)
+      - LLM_PROVIDER=${LLM_PROVIDER:-yandex}
+      - LLM_MODEL=${LLM_MODEL:-}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.6}
+      - LLM_MAX_OUTPUT_TOKENS=${LLM_MAX_OUTPUT_TOKENS:-2000}
+      - LLM_MAX_ATTEMPTS=${LLM_MAX_ATTEMPTS:-2}
+      - COPILOT_PROVIDER=${COPILOT_PROVIDER:-}
+      - COPILOT_MODEL=${COPILOT_MODEL:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Per-provider model / endpoint overrides (documented in python-langgraph-service/README.md).
+      # The image only COPYs `app` and `scripts`, so no .env is baked in: without these the
+      # <PROVIDER>_MODEL / <PROVIDER>_BASE_URL settings were unreachable in this deployment.
+      # Empty values are skipped by resolve_llm_config/_base_url, so the presets still win.
+      - YC_MODEL_NAME=${YC_MODEL_NAME:-yandexgpt}
+      - OPENAI_MODEL=${OPENAI_MODEL:-}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-}
+      - GROQ_MODEL=${GROQ_MODEL:-}
+      - GROQ_BASE_URL=${GROQ_BASE_URL:-}
+      - DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-}
+      - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-}
+      - OPENROUTER_BASE_URL=${OPENROUTER_BASE_URL:-}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-}
+      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}
+      - HTTP_REQUEST_SERVICE_HOST=spring-service
     depends_on:
       spring-service:
         condition: service_started
@@ -48,7 +75,10 @@ services:
       dockerfile: Dockerfile
     container_name: spring-langgraph-app
     ports:
-      - "9191:9191"
+      - "9191:9191"   # HTTP + GraphQL (BFF for the UI)
+      - "9091:9091"   # B2B gRPC facade (external.v1, API-key auth)
+      # NOTE: the internal gRPC server (9090) is deliberately NOT published - the
+      # Python engine reaches it over the docker network only.
     environment:
       - SPRING_REDIS_HOST=redis
       - SPRING_REDIS_PORT=6379
@@ -57,6 +87,18 @@ services:
       - SPRING_JDBC_USERNAME=langgraph
       - SPRING_JDBC_PASSWORD=langgraph_password
       - LANGGRAPH_SERVICE_ADDRESS=langgraph-service:50051
+      # B2B gRPC facade. Secure by default: with no B2B_API_KEY set, the service
+      # account is not registered and EVERY B2B call is rejected with
+      # UNAUTHENTICATED (the app still boots). B2B_ALLOWED_GRAPHS scopes which
+      # graphs an account may build/run/read/cancel/delete - default "*" covers a
+      # single-tenant deployment; use exact ids or "prefix-*" for more than one.
+      - B2B_GRPC_PORT=9091
+      - B2B_GRPC_HOST=${B2B_GRPC_HOST:-*}
+      - B2B_API_KEY=${B2B_API_KEY:-}
+      - B2B_API_KEY_SHA256=${B2B_API_KEY_SHA256:-}
+      - B2B_TENANT_ID=${B2B_TENANT_ID:-orchestra}
+      - B2B_ALLOWED_GRAPHS=${B2B_ALLOWED_GRAPHS:-*}
+      - B2B_GRPC_REFLECTION_ENABLED=${B2B_GRPC_REFLECTION_ENABLED:-false}
       - JAVA_OPTS=-Xmx256m -Xms128m
       - YC_BILLING_ACCOUNT_ID=${YC_BILLING_ACCOUNT_ID:-}
       - YC_SA_KEY_JSON_B64=${YC_SA_KEY_JSON_B64:-}

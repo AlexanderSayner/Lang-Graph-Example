@@ -8,10 +8,10 @@ import 'reactflow/dist/style.css'; // Import ReactFlow CSS directly!
 import './styles.css';
 import {
     fetchGraphQL, LIST_QUERY, VIEW_QUERY, HISTORY_QUERY,
-    BALANCE_QUERY, EXECUTE_MUTATION, SAVE_MUTATION,
+    BALANCE_QUERY, EXECUTE_MUTATION, CANCEL_EXECUTION_MUTATION, SAVE_MUTATION,
     DELETE_MUTATION, REWIND_MUTATION, COPILOT_MUTATION,
     CLAIM_THREADS_MUTATION,
-    layoutGraph, NODE_TYPES, EXECUTION_EVENT_TYPES
+    layoutGraph, NODE_TYPES, EXECUTION_EVENT_TYPES, nodeClassName
 } from './constants';
 import CopilotTab from './copilot';
 import Sidebar from './components/Sidebar';
@@ -56,6 +56,8 @@ function App() {
     const [threadId, setThreadId] = useState(Date.now().toString());
     const [loading, setLoading] = useState(false);
     const chatEndRef = useRef(null);
+    // AbortController of the in-flight ExecuteGraph request, so the Cancel button can stop it.
+    const abortControllerRef = useRef(null);
 
     const [activeTab, setActiveTab] = useState('chat');
     const [historyItems, setHistoryItems] = useState([]);
@@ -68,6 +70,21 @@ function App() {
     const [copilotMessages, setCopilotMessages] = useState([]);
     const [copilotInput, setCopilotInput] = useState("");
     const [copilotLoading, setCopilotLoading] = useState(false);
+    // Copilot LLM selection. A per-request override of the service COPILOT_* / LLM_* default,
+    // remembered in this browser so the choice survives reloads. It is deliberately NOT
+    // graph-scoped: the copilot is a UI-wide assistant, so the chosen model follows you across
+    // every graph instead of being stored in each graph's definition.
+    const [copilotLLM, setCopilotLLM] = useState(() => {
+        try {
+            const stored = JSON.parse(localStorage.getItem('copilotLLM') || '{}');
+            return { provider: stored.provider || '', model: stored.model || '' };
+        } catch {
+            return { provider: '', model: '' };
+        }
+    });
+    useEffect(() => {
+        localStorage.setItem('copilotLLM', JSON.stringify(copilotLLM));
+    }, [copilotLLM]);
 
     const [selectedNodeId, setSelectedNodeId] = useState(null);
     const [selectedEdge, setSelectedEdge] = useState(null);
@@ -240,19 +257,19 @@ function App() {
                     const prompt = n.metadata?.system_prompt || "";
                     const subgraphId = n.metadata?.subgraph_id;
                     const label = n.metadata?.label;
-                    const toolUrl = n.metadata?.url || "";
+                    const httpUrl = n.metadata?.url || "";
                     const subgraphName = graphs.find(g => g.graphId === subgraphId)?.graphName || "Unknown Graph";
 
                     // Raw text of the node body - used by estimateNodeSize() for the automatic layout.
                     const bodyText = n.nodeType === NODE_TYPES.GRAPH
                         ? `Subgraph: ${subgraphName}`
-                        : n.nodeType === NODE_TYPES.TOOL
-                            ? `Tool: ${n.metadata?.method || 'GET'} ${toolUrl}`
+                        : n.nodeType === NODE_TYPES.HTTP_REQUEST
+                            ? `HTTP: ${n.metadata?.method || 'GET'} ${httpUrl}`
                             : prompt;
 
                     return {
                         id: n.nodeId,
-                        className: `node-${n.nodeType.toLowerCase()}`,
+                        className: nodeClassName(n.nodeType),
                         data: {
                             label: (
                                 <div>
@@ -266,10 +283,10 @@ function App() {
                                                 <div style={{marginBottom: '5px'}}><strong>Subgraph:</strong><br/>{subgraphName}</div>
                                                 <div className="subgraph-link" onClick={(e) => { e.stopPropagation(); if(subgraphId) loadGraph(subgraphId); }}>View Subgraph &rarr;</div>
                                             </div>
-                                        ) : n.nodeType === NODE_TYPES.TOOL ? (
+                                        ) : n.nodeType === NODE_TYPES.HTTP_REQUEST ? (
                                             <div>
-                                                <strong>Tool:</strong> {n.metadata?.method || 'GET'}<br/>
-                                                <span className="node-tool-url">{toolUrl}</span>
+                                                <strong>HTTP:</strong> {n.metadata?.method || 'GET'}<br/>
+                                                <span className="node-http-request-url">{httpUrl}</span>
                                             </div>
                                         ) : (
                                             <div className="node-prompt">{prompt}</div>
@@ -428,10 +445,18 @@ function App() {
         setInput("");
         setLoading(true);
 
+        // AbortController for this run, so the Cancel button can tear the request down and
+        // free the connection while the server-side cancel RPC stops the actual work.
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+
         try {
             const data = await fetchGraphQL(EXECUTE_MUTATION, {
                 input: { graphId: selected, threadId: threadId, input: userText }
-            });
+            }, { signal: controller.signal });
+
+            // A newer run started (or a cancel cleared this one) while we were waiting.
+            if (abortControllerRef.current !== controller) return;
 
             const result = data.executeGraph;
             let outputText = "Graph executed successfully.";
@@ -450,8 +475,16 @@ function App() {
                 eventType = result.eventType;
             }
 
-            if (errorText) setMessages(prev => [...prev, { type: 'error', text: errorText }]);
-            else setMessages(prev => [...prev, { type: 'bot', text: outputText, tokens: result.totalTokens || -1  }]);
+            if (eventType === EXECUTION_EVENT_TYPES.CANCELLED) {
+                // The server honoured a cancel and stopped the run early. The graph is
+                // resumable from its last completed node.
+                setMessages(prev => [...prev, { type: 'system', text: 'Execution cancelled. The graph can be resumed by sending another message.' }]);
+                setGraphStatus('idle');
+            } else if (errorText) {
+                setMessages(prev => [...prev, { type: 'error', text: errorText }]);
+            } else {
+                setMessages(prev => [...prev, { type: 'bot', text: outputText, tokens: result.totalTokens || -1  }]);
+            }
 
             if (eventType === EXECUTION_EVENT_TYPES.END) {
                 setGraphStatus('finished');
@@ -468,10 +501,40 @@ function App() {
             await loadHistory();
 
         } catch (err) {
+            if (err && err.name === 'AbortError') {
+                // User pressed Cancel; handleCancel already updated the chat/status, so just
+                // leave this request's cleanup to the finally block below.
+                return;
+            }
             setMessages(prev => [...prev, { type: 'error', text: "Error: " + err.message }]);
             setGraphStatus('idle');
         } finally {
+            if (abortControllerRef.current === controller) {
+                abortControllerRef.current = null;
+            }
             setLoading(false);
+        }
+    };
+
+    // Stop a running execution immediately. Two things happen in order:
+    //  1) the browser stops the execute request and updates the UI, so the user sees one
+    //     clear cancel notice; and
+    //  2) the cancel mutation reaches the Python engine, which aborts the in-flight node and
+    //     its LLM call (stops the token burn), so the work is halted server-side too.
+    const handleCancel = async () => {
+        const controller = abortControllerRef.current;
+        if (!controller) return;
+
+        abortControllerRef.current = null;
+        controller.abort();
+        setMessages(prev => [...prev, { type: 'system', text: 'Execution cancelled by user.' }]);
+        setGraphStatus('idle');
+        setLoading(false);
+
+        try {
+            await fetchGraphQL(CANCEL_EXECUTION_MUTATION, { graphId: selected, threadId });
+        } catch (err) {
+            console.warn('cancel execution request failed', err);
         }
     };
 
@@ -602,7 +665,10 @@ function App() {
                 message: userText,
                 chatHistory: JSON.stringify(updatedHistory),
                 selectedNodeId: selectedNodeId,
-                selectedEdgeJson: selectedEdge ? JSON.stringify(selectedEdge) : null
+                selectedEdgeJson: selectedEdge ? JSON.stringify(selectedEdge) : null,
+                // null means "inherit": the service falls back to COPILOT_* then LLM_*.
+                copilotProvider: copilotLLM.provider || null,
+                copilotModel: copilotLLM.model || null
             });
 
             const result = data.askCopilot;
@@ -719,12 +785,14 @@ function App() {
                     copyThreadId={copyThreadId} copyGraphId={copyGraphId} resetThread={resetThread}
                     panelHeight={panelHeight} panelRef={panelRef} startResizing={startResizing}
                     messages={messages} graphStatus={graphStatus} loading={loading}
-                    input={input} setInput={setInput} handleExecute={handleExecute} chatEndRef={chatEndRef}
+                    input={input} setInput={setInput} handleExecute={handleExecute}
+                    handleCancel={handleCancel} chatEndRef={chatEndRef}
                     historyItems={historyItems} setModalData={setModalData}
                     getNodeDisplayName={getNodeDisplayName} handleRewind={handleRewind}
                     copilotMessages={copilotMessages} copilotInput={copilotInput}
                     setCopilotInput={setCopilotInput} copilotLoading={copilotLoading}
                     handleCopilotSend={handleCopilotSend}
+                    copilotLLM={copilotLLM} setCopilotLLM={setCopilotLLM}
                     formatTimestamp={formatTimestamp}
                 />
             </div>
