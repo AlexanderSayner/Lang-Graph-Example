@@ -126,8 +126,7 @@ jobs:
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
             docker compose --env-file ~/myapp.env pull
-            # --force-recreate on the service whose environment changed: the B2B
-            # credential is only picked up by a freshly created container.
+            # --force-recreate on the service whose environment changed
             docker compose --env-file ~/myapp.env up -d --force-recreate spring-service
 
             docker image prune -f
