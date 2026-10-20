@@ -118,6 +118,10 @@ jobs:
             echo "YC_FOLDER_ID=${{ secrets.YC_FOLDER_ID }}" >> ~/myapp.env
             echo "YC_BILLING_ACCOUNT_ID=${{ secrets.YC_BILLING_ACCOUNT_ID }}" >> ~/myapp.env
             echo "YC_SA_KEY_JSON_B64=${{ steps.prepare-secrets.outputs.SA_KEY_B64 }}" >> ~/myapp.env
+            # B2B gRPC facade credential. Without it the "orchestra" service account is
+            # not registered at startup and EVERY B2B call is rejected with
+            # "Invalid API key" (UNAUTHENTICATED), even though the app boots fine.
+            echo "B2B_API_KEY=${{ secrets.B2B_API_KEY }}" >> ~/myapp.env
             
             chmod 600 ~/myapp.env
             
@@ -125,6 +129,8 @@ jobs:
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
             docker compose --env-file ~/myapp.env pull
-            docker compose --env-file ~/myapp.env up -d
+            # --force-recreate on the service whose environment changed: the B2B
+            # credential is only picked up by a freshly created container.
+            docker compose --env-file ~/myapp.env up -d --force-recreate spring-service
 
             docker image prune -f
