@@ -118,6 +118,7 @@ jobs:
             echo "YC_FOLDER_ID=${{ secrets.YC_FOLDER_ID }}" >> ~/myapp.env
             echo "YC_BILLING_ACCOUNT_ID=${{ secrets.YC_BILLING_ACCOUNT_ID }}" >> ~/myapp.env
             echo "YC_SA_KEY_JSON_B64=${{ steps.prepare-secrets.outputs.SA_KEY_B64 }}" >> ~/myapp.env
+            echo "B2B_API_KEY=${{ secrets.B2B_API_KEY }}" >> ~/myapp.env
             
             chmod 600 ~/myapp.env
             
@@ -125,6 +126,7 @@ jobs:
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
             docker compose --env-file ~/myapp.env pull
-            docker compose --env-file ~/myapp.env up -d
+            # --force-recreate on the service whose environment changed
+            docker compose --env-file ~/myapp.env up -d --force-recreate spring-service
 
             docker image prune -f
