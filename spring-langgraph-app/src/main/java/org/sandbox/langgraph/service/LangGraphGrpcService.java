@@ -20,6 +20,8 @@ import org.sandbox.langgraph.dto.pagination.PageData;
 import org.sandbox.langgraph.exception.LangGraphException;
 import org.sandbox.langgraph.grpc.*;
 import org.sandbox.langgraph.mapper.GraphGrpcMapper;
+import org.sandbox.langgraph.service.llm.LlmRequestCredentials;
+import org.sandbox.langgraph.service.llm.RequestOrigin;
 import org.sandbox.langgraph.util.JsonDiffUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -58,6 +60,7 @@ public class LangGraphGrpcService {
     private final GraphGrpcMapper mapper;
     private final ObjectMapper objectMapper;
     private final GraphPostgresService graphPostgresService;
+    private final LlmRequestCredentials requestCredentials;
 
     public @NonNull BuildGraphPayload buildGraph(BuildGraphInput input) {
         log.debug("Building graph: {}", input.graphId());
@@ -89,11 +92,31 @@ public class LangGraphGrpcService {
     }
 
     public Flux<@NonNull GraphExecutionEventPayload> executeGraphStream(ExecuteGraphInput input, boolean stream) {
-        ExecuteGraphRequest request = stream
-                ? mapper.toStreamExecuteGraphRequest(input)
-                : mapper.toExecuteGraphRequest(input);
+        // The blocking GraphQL mutation runs on the servlet thread, so GRAPHQL is the right
+        // default for every caller that does not say otherwise.
+        return executeGraphStream(input, stream, RequestOrigin.GRAPHQL);
+    }
 
-        log.debug("Executing graph: {} (stream={})", input.graphId(), stream);
+    /**
+     * @param origin decides whose LLM keys (if any) ride along with this run
+     *
+     * <p>The credentials are resolved <b>here, synchronously</b>, before the Flux exists:
+     * they come from the ThreadLocal security context, which is only present on the calling
+     * thread and is not propagated into the subscription that actually drives the gRPC call.
+     * Resolving inside the {@code Flux.create} body would silently drop them and bill the
+     * shared service key instead - the exact surprise this feature exists to prevent.</p>
+     */
+    public Flux<@NonNull GraphExecutionEventPayload> executeGraphStream(ExecuteGraphInput input, boolean stream,
+                                                                        RequestOrigin origin) {
+        Map<String, String> runContext = requestCredentials.forRequest(origin);
+
+        ExecuteGraphRequest request = stream
+                ? mapper.toStreamExecuteGraphRequest(input, runContext)
+                : mapper.toExecuteGraphRequest(input, runContext);
+
+        log.debug("Executing graph: {} (stream={}, origin={}, personalKeys={})",
+                input.graphId(), stream, origin, runContext.containsKey(
+                        LlmRequestCredentials.CREDENTIALS_JSON));
 
         return Flux.create(emitter -> {
             try {

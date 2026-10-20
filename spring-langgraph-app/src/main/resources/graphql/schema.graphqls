@@ -10,6 +10,9 @@ type Query {
     getYandexBalance: YandexBalancePayload!
     getUserThreads: [UserThread!]!
     getCurrentUser: UserPayload!
+    # The signed-in user's personal LLM API keys, masked (provider + "••••xxxx"). Never the
+    # key itself: rendering this list does not decrypt anything.
+    llmCredentials: [LlmCredentialPayload!]!
 }
 
 type Mutation {
@@ -31,6 +34,12 @@ type Mutation {
     claimLocalThreads(threads: [ClaimThreadInput!]!): ClaimThreadsPayload!
     renameUserThread(threadId: String!, title: String!): UserThread!
     deleteUserThread(threadId: String!): Boolean!
+
+    # Personal LLM API keys. saveLlmCredential creates or replaces the key for one provider;
+    # deleting one means the next run falls back to the shared service key (reported as
+    # billing=service) instead of failing.
+    saveLlmCredential(input: SaveLlmCredentialInput!): LlmCredentialPayload!
+    deleteLlmCredential(provider: String!): Boolean!
 
 }
 
@@ -102,6 +111,23 @@ input ClaimThreadInput {
     title: String
 }
 
+# One personal LLM API key as the UI may see it. maskedKey is built from a short hint
+# recorded at save time - answering this never decrypts the stored key.
+type LlmCredentialPayload {
+    provider: String!
+    maskedKey: String!
+    # YandexGPT only; null for every other provider.
+    ycFolderId: String
+    updatedAt: String
+}
+
+input SaveLlmCredentialInput {
+    provider: String!
+    apiKey: String!
+    # YandexGPT only (the user's folder id); ignored for other providers.
+    ycFolderId: String
+}
+
 # ============== HTTP Request Debug Types ==============
 
 input HttpRequestDebugInput {
@@ -147,6 +173,10 @@ type ExecuteGraphPayload {
     state: JSON
     totalTokens: Int
     errorMessage: String
+    # Who paid for the whole run: "user" | "service" | "mixed" (a run spanning both).
+    # null when no node called a model at all. Surfaced in the UI so a run billed to the
+    # shared service key is visible rather than silent.
+    llmBilling: String
 }
 
 type UpdateGraphStatePayload {
@@ -176,6 +206,8 @@ type GraphExecutionEventPayload {
     state: JSON
     timestamp: Long!
     errorMessage: String
+    # Per-node owner: "user" | "service" | "mixed" | "" (the node called no model).
+    llmBilling: String
 }
 
 type GraphHistoryPayload {
@@ -210,6 +242,8 @@ type CopilotPayload {
     aiResponse: String!
     totalTokens: Int
     errorMessage: String
+    # "user" when the answer came from the asker's personal key, "service" from the shared one.
+    llmBilling: String
 }
 
 # ============== LLM Model Catalog (UI model suggestions) ==============

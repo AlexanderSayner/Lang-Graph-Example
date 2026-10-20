@@ -9,7 +9,12 @@ services:
       dockerfile: Dockerfile
     container_name: langgraph-service
     ports:
-      - "50051:50051"
+      # Loopback only: the engine accepts no authentication, so exposing it on every
+      # interface would let anyone who reaches this host call ExecuteGraph WITHOUT
+      # credentials and spend the shared service key (and inject their own keys).
+      # Containers still reach it over the compose network; local grpcurl on the host still
+      # works through 127.0.0.1.
+      - "127.0.0.1:50051:50051"
     environment:
       - SERVER_PORT=50051
       - LOG_LEVEL=INFO
@@ -102,6 +107,13 @@ services:
       - JAVA_OPTS=-Xmx256m -Xms128m
       - YC_BILLING_ACCOUNT_ID=${YC_BILLING_ACCOUNT_ID:-}
       - YC_SA_KEY_JSON_B64=${YC_SA_KEY_JSON_B64:-}
+      # Personal LLM API keys. Blank master key = feature disabled (existing behaviour).
+      # Generate with: openssl rand -base64 32   and back it up: without it stored keys
+      # are unrecoverable.
+      # FALLBACK = a user with no key runs on the shared key but is reported as
+      # llmBilling="service"; REQUIRE = a missing key stops the run instead.
+      - LLM_SECRET_MASTER_KEY=${LLM_SECRET_MASTER_KEY:-}
+      - LLM_CREDENTIALS_POLICY=${LLM_CREDENTIALS_POLICY:-FALLBACK}
     entrypoint: [ "sh", "-c", "if [ -n \"$$YC_SA_KEY_JSON_B64\" ]; then export YC_SA_KEY_JSON=\"$$(echo \"$$YC_SA_KEY_JSON_B64\" | base64 -d)\"; fi && exec java $$JAVA_OPTS -jar /app/app.jar" ]
     depends_on:
       postgres:

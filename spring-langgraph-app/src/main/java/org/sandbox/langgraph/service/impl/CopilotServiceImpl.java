@@ -15,8 +15,11 @@ import org.sandbox.langgraph.mapper.GraphGrpcMapper;
 import org.sandbox.langgraph.service.CopilotService;
 import org.sandbox.langgraph.service.LangGraphGrpcService;
 import org.sandbox.langgraph.service.PostgresGraphViewService;
+import org.sandbox.langgraph.service.llm.LlmRequestCredentials;
+import org.sandbox.langgraph.service.llm.RequestOrigin;
 import org.springframework.stereotype.Service;
 
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 @Service
@@ -29,6 +32,7 @@ public class CopilotServiceImpl implements CopilotService {
     private final PostgresGraphViewService postgresGraphViewService;
     private final GraphGrpcMapper mapper;
     private final ObjectMapper objectMapper;
+    private final LlmRequestCredentials requestCredentials;
 
     @Override
     public @NonNull CopilotGraphPayload askCopilot(String graphId,
@@ -44,6 +48,13 @@ public class CopilotServiceImpl implements CopilotService {
         GraphViewData graphView = postgresGraphViewService.getGraphViewData(graphId);
         GraphHistoryPayload executionHistory = langGraphGrpcService.getExecutionHistory(graphId, threadId);
 
+        // Resolved on THIS thread, before anything reactive (see LlmRequestCredentials).
+        // Only the credential map and the policy flag are forwarded: the copilot's provider is
+        // resolved engine-side, and it picks its own entry from that map. A B2B caller reaches
+        // this method on a gRPC thread with no Spring Security session, so the lookup yields
+        // nothing and the shared key is used - unchanged from before personal keys existed.
+        Map<String, String> runContext = requestCredentials.forRequest(RequestOrigin.GRAPHQL);
+
         try {
             String graphContextJson = objectMapper.writeValueAsString(graphView);
             String executionHistoryJson = objectMapper.writeValueAsString(executionHistory);
@@ -58,6 +69,11 @@ public class CopilotServiceImpl implements CopilotService {
                     // Empty means "inherit": the Python service falls back to COPILOT_* / LLM_*.
                     .setCopilotProvider(copilotProvider != null ? copilotProvider : "")
                     .setCopilotModel(copilotModel != null ? copilotModel : "")
+                    // Empty means "use the service settings" (config-based mode).
+                    .setLlmCredentialsJson(
+                            runContext.getOrDefault(LlmRequestCredentials.CREDENTIALS_JSON, ""))
+                    .setRequireUserKey(
+                            runContext.getOrDefault(LlmRequestCredentials.REQUIRE_USER_KEY, ""))
                     .build();
 
             CopilotResponse response = blockingStub.withDeadlineAfter(30, TimeUnit.SECONDS).askCopilot(request);

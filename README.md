@@ -436,7 +436,33 @@ single-key router, and both warning texts — is in
 - React + ReactFlow UI for building, running and inspecting graphs
 - Copilot chat panel and execution state modal
 
-### 5. Best Practices
+### 5. Personal API keys (per-user, billed to the user)
+
+Users can save their own provider keys so their runs are billed to their own provider
+account instead of the shared service key.
+
+- Saved from the sidebar (**🔑 Keys**) via `llmCredentials` / `saveLlmCredential` /
+  `deleteLlmCredential`.
+- Encrypted at rest with AES-256-GCM (`LLM_SECRET_MASTER_KEY`), bound to `user|provider`, so
+  a row cannot be moved onto another account. Listing returns a masked hint and never
+  decrypts anything.
+- Propagated per execution through `ExecuteGraphInput.context` →
+  `RunnableConfig.configurable`, and popped out of `GraphState` **before** it is
+  checkpointed — because the engine renders `state["context"]` into the model prompt, a key
+  left there would be sent to the LLM provider.
+- A graph resolves its provider **per node** (node metadata > graph config > server default),
+  so the whole credential map rides along and the engine picks the entry each node asks for;
+  subgraphs inherit it.
+- **Policy** (`LLM_CREDENTIALS_POLICY`): `FALLBACK` (default) runs on the shared key when a
+  user has no key for a provider and reports `llmBilling: "service"`; `REQUIRE` refuses the
+  run (and the copilot) with "add your key" instead.
+- Nothing is subsidised silently: every run logs `run … user=… billing=…`, and the UI shows a
+  pre-run banner plus a "served by the shared service key" note on affected answers.
+- No master key configured ⇒ the feature is off and behaviour is identical to before.
+
+Wire contract: `python-langgraph-service/README.md` → *Personal API keys*.
+
+### 6. Best Practices
 - Clean architecture with separation of concerns
 - JPA + Flyway for database migrations, Redis for sessions and caches
 - Proper error handling and configuration externalization
@@ -496,11 +522,11 @@ spring:
           address: ${LANGGRAPH_SERVICE_ADDRESS:localhost:50051}
 ```
 
-Key environment variables: `SPRING_JDBC_URL`, `POSTGRES_FLYWAY_URL`, `SPRING_JDBC_USERNAME`, `SPRING_JDBC_PASSWORD`, `SPRING_REDIS_HOST`, `SPRING_REDIS_PORT`, `LANGGRAPH_SERVICE_ADDRESS`, `YC_BILLING_ACCOUNT_ID`, `YC_SA_KEY_JSON`.
+Key environment variables: `SPRING_JDBC_URL`, `POSTGRES_FLYWAY_URL`, `SPRING_JDBC_USERNAME`, `SPRING_JDBC_PASSWORD`, `SPRING_REDIS_HOST`, `SPRING_REDIS_PORT`, `LANGGRAPH_SERVICE_ADDRESS`, `YC_BILLING_ACCOUNT_ID`, `YC_SA_KEY_JSON`, plus the personal-key settings `LLM_SECRET_MASTER_KEY` (`openssl rand -base64 32`, blank = feature disabled) and `LLM_CREDENTIALS_POLICY` (`FALLBACK` default, or `REQUIRE`).
 
 ### Python Service
 
-Configured via environment variables or a `.env` file in `python-langgraph-service/` (see `python-langgraph-service/README.md` for the full list): `SERVER_PORT`, `LOG_LEVEL`, `DATABASE_URL`, `REDIS_URL`, `OPENAI_API_KEY`, `YC_API_KEY`, `YC_FOLDER_ID`, `YC_MODEL_NAME`, `YC_COMPLETION_MODE`, `HTTP_REQUEST_SERVICE_HOST`, `HTTP_REQUEST_SERVICE_PORT`, and the LLM selection settings `LLM_PROVIDER`, `LLM_MODEL`, `LLM_TEMPERATURE`, `LLM_MAX_OUTPUT_TOKENS`, `COPILOT_PROVIDER`, `COPILOT_MODEL` plus the per-provider `<PROVIDER>_API_KEY` / `<PROVIDER>_MODEL` / `<PROVIDER>_BASE_URL`.
+Configured via environment variables or a `.env` file in `python-langgraph-service/` (see `python-langgraph-service/README.md` for the full list): `SERVER_PORT`, `LOG_LEVEL`, `DATABASE_URL`, `REDIS_URL`, `OPENAI_API_KEY`, `YC_API_KEY`, `YC_FOLDER_ID`, `YC_MODEL_NAME`, `YC_COMPLETION_MODE`, `HTTP_REQUEST_SERVICE_HOST`, `HTTP_REQUEST_SERVICE_PORT`, the LLM selection settings `LLM_PROVIDER`, `LLM_MODEL`, `LLM_TEMPERATURE`, `LLM_MAX_OUTPUT_TOKENS`, `COPILOT_PROVIDER`, `COPILOT_MODEL`, the cache bound `MAX_CACHED_LLM_CLIENTS`, plus the per-provider `<PROVIDER>_API_KEY` / `<PROVIDER>_MODEL` / `<PROVIDER>_BASE_URL`.
 
 ## License
 

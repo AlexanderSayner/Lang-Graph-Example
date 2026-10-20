@@ -5,7 +5,8 @@ import json
 import logging
 import time
 from collections import defaultdict
-from typing import Dict, Any, Callable
+from dataclasses import replace
+from typing import Dict, Any, Callable, Tuple
 
 import grpc
 import redis.asyncio as redis
@@ -15,13 +16,21 @@ from langgraph.constants import END
 from langgraph.graph import StateGraph
 
 from app.clients.java_client import JavaGraphClient
-from app.clients.llm import LLMClientRegistry, resolve_llm_config
+from app.clients.llm import LLMClientRegistry, LLMCredentialSet, \
+    missing_user_key_message, resolve_llm_config
 from app.clients.model_catalog import list_models
 from app.config import settings
 from app.copilot.copilot_agent import CopilotAgent
 from app.generated import langgraph_pb2_grpc, langgraph_pb2
 from app.graph_engine.graph_utils import parse_conditions, resolve_route, GraphState
-from app.graph_engine.node_handlers import NodeHandler
+from app.graph_engine.node_handlers import (
+    BILLING_SERVICE,
+    BILLING_USER,
+    CONFIG_LLM_CREDENTIALS,
+    CONFIG_REQUIRE_USER_KEY,
+    CONFIG_USER_ID,
+    NodeHandler,
+)
 from app.models import GraphDefinition
 from app.services.execution_registry import ExecutionRegistry, run_key
 
@@ -73,6 +82,64 @@ def _serialize_state(state: Dict[str, Any]) -> Dict[str, str]:
         return str(v)
 
     return {str(k): _to_proto_str(v) for k, v in state.items()}
+
+
+# Every key the backend uses to describe the RUN (who is calling, whose key to use) rather
+# than the graph's own input. They are lifted out of the request context before it becomes
+# GraphState: anything left in `state["context"]` gets checkpointed to Postgres, echoed back
+# to the browser in the START event, and - for credentials - rendered into the model prompt
+# by NodeHandler._process_action, which would send a user's API key to their LLM provider.
+RUN_CONTEXT_KEYS = frozenset({
+    CONFIG_LLM_CREDENTIALS, CONFIG_REQUIRE_USER_KEY, CONFIG_USER_ID,
+    # Legacy single-key form. A graph picks its provider per NODE, so a bare key cannot be
+    # attributed to one; it is dropped rather than guessed at, and never kept in the state.
+    "llm_api_key", "yc_folder_id",
+})
+
+
+def _split_run_context(request_context: Any) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Split a gRPC request context into ``(state context, configurable extras)``.
+
+    Credentials and attribution belong to ``RunnableConfig.configurable``, which reaches
+    the nodes without being persisted or displayed; the remainder stays graph input.
+    Never raises - a caller that sends no context at all simply gets two empty dicts, so
+    the service behaves exactly as it did before per-user keys existed.
+    """
+    raw = dict(request_context) if hasattr(request_context, "items") else {}
+
+    state_context = {k: v for k, v in raw.items() if k not in RUN_CONTEXT_KEYS}
+    configurable: Dict[str, Any] = {}
+
+    credentials_json = raw.get(CONFIG_LLM_CREDENTIALS)
+    if credentials_json:
+        configurable[CONFIG_LLM_CREDENTIALS] = str(credentials_json)
+    if str(raw.get(CONFIG_REQUIRE_USER_KEY, "") or "").strip() == "1":
+        configurable[CONFIG_REQUIRE_USER_KEY] = "1"
+    user_id = str(raw.get(CONFIG_USER_ID, "") or "").strip()
+    if user_id:
+        configurable[CONFIG_USER_ID] = user_id
+
+    if "llm_api_key" in raw or "yc_folder_id" in raw:
+        logger.warning(
+            "Dropping legacy single-key context (llm_api_key/yc_folder_id): a graph picks "
+            "its provider per node, so send llm_credentials_json keyed by provider."
+        )
+    return state_context, configurable
+
+
+def _aggregate_billing(seen: Any) -> str:
+    """Fold the per-node billing markers of one run into a single run-level value.
+
+    ``""`` when no node called a model at all (pure routing/HTTP runs), ``"mixed"`` when a
+    run genuinely spanned a personal key and the shared one - a user owning an OpenAI key
+    but not an Anthropic one will hit that, and the UI must not overstate who paid.
+    """
+    values = {value for value in seen if value in (BILLING_USER, BILLING_SERVICE)}
+    if not values:
+        return ""
+    if len(values) == 1:
+        return next(iter(values))
+    return "mixed"
 
 
 def _normalize_graph_definition(raw_graph_dict: Dict[str, Any]) -> Dict[str, Any]:
@@ -363,9 +430,16 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             await context.abort(grpc.StatusCode.INTERNAL, f"Failed to load graph: {e}")
             return
 
+        # Per-user credentials and attribution arrive in the request context and are lifted
+        # into `configurable` - NEVER into GraphState. Doing this before the first
+        # `aget_state` matters: the START event serialises `stream_input`, so a key left in
+        # there would be shipped straight back to the browser.
+        state_context, run_configurable = _split_run_context(getattr(request, "context", None))
+
         config: RunnableConfig = {
             "configurable": {
-                "thread_id": getattr(request, "thread_id", None) or "default_session"
+                "thread_id": getattr(request, "thread_id", None) or "default_session",
+                **run_configurable,
             }
         }
 
@@ -392,7 +466,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             else:
                 stream_input = {
                     "input": request.input,
-                    "context": dict(request.context) if hasattr(request, "context") else {},
+                    "context": state_context,
                     "timestamp": time.time()
                 }
                 start_event = langgraph_pb2.ExecuteGraphResponse(
@@ -409,6 +483,10 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             # the queue and reports a clean CANCELLED event instead of a crash.
             run_id = run_key(graph_id, config["configurable"]["thread_id"])
             queue: asyncio.Queue = asyncio.Queue()
+            # Who paid for each model call this run made. "mixed" is a real outcome: a user
+            # can own an OpenAI key but not an Anthropic one, so one run legitimately spans
+            # both - and the UI must not claim the whole run was billed to them.
+            run_billing: set = set()
 
             async def _produce():
                 """Drive the graph and publish every event to the queue."""
@@ -419,14 +497,19 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                     async for event in compiled_graph.astream(stream_input, config=config, stream_mode="updates"):
                         for node_name, updates in event.items():
                             node_tokens = 0
+                            node_billing = ""
                             if isinstance(updates, dict):
                                 output_content = str(updates.get("output", ""))
                                 serialized_state = _serialize_state(updates)
                                 node_tokens = updates.get("total_tokens", 0)
+                                node_billing = str(updates.get("llm_billing", "") or "")
                             else:
                                 logger.warning(f"Node '{node_name}' returned non-dict update (type: {type(updates).__name__})")
                                 output_content = str(updates)
                                 serialized_state = _serialize_state({"raw_output": updates})
+
+                            if node_billing in (BILLING_USER, BILLING_SERVICE):
+                                run_billing.add(node_billing)
 
                             await queue.put(langgraph_pb2.ExecuteGraphResponse(
                                 event_type="NODE_END",
@@ -434,12 +517,29 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                                 output=output_content,
                                 state=serialized_state,
                                 timestamp=int(time.time() * 1000),
-                                total_tokens=node_tokens
+                                total_tokens=node_tokens,
+                                llm_billing=node_billing
                             ))
 
                     final_snapshot = await compiled_graph.aget_state(config)
                     final_next = getattr(final_snapshot, "next", None) or []
                     final_values = getattr(final_snapshot, "values", {}) or {}
+
+                    # One greppable line per run: the whole point of the FALLBACK policy is
+                    # that a subsidised run must be visible to the operator afterwards.
+                    # x_user_id is what makes the line attributable (metering / support).
+                    run_billing_value = _aggregate_billing(run_billing)
+                    run_owner = config["configurable"].get(CONFIG_USER_ID) or "anonymous"
+                    if run_billing_value == BILLING_SERVICE:
+                        logger.warning(
+                            "run %s user=%s thread=%s tokens=%s billing=service "
+                            "(no personal key used)",
+                            run_id, run_owner, config["configurable"]["thread_id"],
+                            final_values.get("total_tokens", 0))
+                    else:
+                        logger.info("run %s user=%s thread=%s tokens=%s billing=%s",
+                                    run_id, run_owner, config["configurable"]["thread_id"],
+                                    final_values.get("total_tokens", 0), run_billing_value)
 
                     if final_next:
                         waiting_node = final_next[0] if isinstance(final_next, (list, tuple)) and final_next else final_next
@@ -449,7 +549,8 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                             node_id=waiting_node,
                             output="Action required. Waiting for user input.",
                             state=_serialize_state(final_values),
-                            timestamp=int(time.time() * 1000)
+                            timestamp=int(time.time() * 1000),
+                            llm_billing=run_billing_value
                         ))
                     else:
                         await queue.put(langgraph_pb2.ExecuteGraphResponse(
@@ -457,7 +558,8 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                             output=str(final_values.get("output", "")),
                             state=_serialize_state(final_values),
                             timestamp=int(time.time() * 1000),
-                            total_tokens=final_values.get("total_tokens", 0)
+                            total_tokens=final_values.get("total_tokens", 0),
+                            llm_billing=run_billing_value
                         ))
                 except asyncio.CancelledError:
                     logger.info(f"Graph run {run_id} was cancelled")
@@ -623,11 +725,39 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         # service-wide LLM_PROVIDER / LLM_MODEL default - the same chain the constructor used
         # to bake into the startup client. resolve_llm_config is cheap and the registry caches
         # one client per distinct config, so reusing providers across questions stays warm.
-        client = self._llm_registry.lazy(resolve_llm_config(
+        resolved = resolve_llm_config(
             {},
             {"llm_provider": request.copilot_provider or settings.COPILOT_PROVIDER,
              "llm_model": request.copilot_model or settings.COPILOT_MODEL}
-        ))
+        )
+
+        # The copilot has no graph config to inherit from, but the SAME provider chain just
+        # resolved above, so the personal key for that exact provider can be selected here
+        # rather than guessed at by the backend. No entry for the provider leaves the config
+        # credential-free and the service key pays - reported through llm_billing either way.
+        credential_set = LLMCredentialSet.from_json(
+            getattr(request, "llm_credentials_json", "") or "")
+        credential = credential_set.for_provider(resolved.provider)
+
+        # The copilot must not be a hole in policy=REQUIRE: the same instruction the graph
+        # node would give is returned here instead of quietly spending the shared key.
+        # A normal failure response rather than an RPC abort, because the UI renders
+        # CopilotResponse.error_message while a gRPC status becomes a generic "Internal
+        # server error" at the gateway - which would hide the ONE instruction (where to
+        # add the key) that makes policy=REQUIRE actionable.
+        require_user_key = str(getattr(request, "require_user_key", "") or "").strip() == "1"
+        if credential is None and require_user_key:
+            message = missing_user_key_message(resolved.provider)
+            logger.warning("Copilot refused under policy=REQUIRE: %s", message)
+            return langgraph_pb2.CopilotResponse(
+                success=False, error_message=message, llm_billing="")
+
+        if credential is not None and not credential.is_empty():
+            resolved = replace(resolved, credentials=credential)
+
+        client = self._llm_registry.lazy(resolved)
+        billing = resolved.billing_owner
+
         ai_response = await self.copilot.ask(
             user_message=request.user_message,
             graph_context_json=request.graph_context_json,
@@ -638,10 +768,14 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             llm=client
         )
 
+        logger.info("Copilot answered: %s tokens billing=%s",
+                    getattr(ai_response, "usage", {}).get("total_tokens", -1), billing)
+
         return langgraph_pb2.CopilotResponse(
             success=True,
             ai_response=ai_response,
-            total_tokens=ai_response.usage.get('total_tokens', -1) if hasattr(ai_response, 'usage') else -1
+            total_tokens=ai_response.usage.get('total_tokens', -1) if hasattr(ai_response, 'usage') else -1,
+            llm_billing=billing
         )
 
     @handle_grpc_errors

@@ -238,6 +238,54 @@ it, drop the `llm_max_tokens` override for that node/graph.
 
 ---
 
+## Personal API keys
+
+Service-wide keys (`.env` / settings) stay the *fallback*. A caller may additionally supply
+per-user keys, which is what lets a deployment bill a user's own provider account for their
+own runs. Nothing changes when none arrive - that is the pre-migration behaviour.
+
+### What arrives on a run
+
+Three context keys, lifted out of `ExecuteGraphRequest.context` into
+`RunnableConfig.configurable` by `_split_run_context` (`app/services/langgraph_servicer.py`):
+
+| key | value | meaning |
+|---|---|---|
+| `llm_credentials_json` | `{"openai": {"api_key": "…", "folder_id": ""}, …}` | every key the user owns, keyed by provider |
+| `require_user_key` | `"1"` | deployment runs `policy=REQUIRE`: a missing key fails instead of falling back |
+| `x_user_id` | UUID | attribution for the per-run billing log |
+
+A **map, not a single key**, because a graph resolves its provider *per node* (node metadata
+> graph config > server default): one run can legitimately spend on OpenAI and Anthropic.
+
+The legacy single-key shape (`llm_api_key`, `yc_folder_id`) is **dropped** — a bare key
+cannot be attributed to a provider. All of these are removed from `GraphState.context`
+*before* the state is checkpointed and again before `_process_action` renders that context
+into the model prompt (a key left there would be sent to the LLM provider), and the backend
+strips them from client-supplied input as well.
+
+`AskCopilot` carries the same contract as proto fields `llm_credentials_json` (9) and
+`require_user_key` (10), so the copilot cannot bypass the policy.
+
+### Selection, billing and policy
+
+* `_generate` resolves `credential_set.for_provider(<this client's provider>)`; no entry means
+  no personal key for that provider, so the service settings are used.
+* Every node reports `llm_billing` (`"user"` / `"service"` / `""` when no model was called),
+  forwarded on `ExecuteGraphResponse.llm_billing` and folded by the backend into `"user"`,
+  `"service"`, `"mixed"` or `null`. The run summary line is
+  `run <id> user=<x_user_id|anonymous> thread=… tokens=… billing=…` (WARNING when service).
+* `MissingUserApiKeyError` is raised only under `require_user_key=1`; the message names the
+  provider and where to add the key.
+* Compiled graphs stay credential-free (they are cached), subgraphs inherit the parent's
+  keys, and `LLM_MAX_ATTEMPTS` retries pass the same credentials.
+* `MAX_CACHED_LLM_CLIENTS` bounds the client registry so rotated/deleted keys never stay
+  resident.
+
+Tests: `tests/test_llm_credentials.py`.
+
+---
+
 ## Conditional Edges
 
 An edge with a `condition` turns its source node into a **router**. The string is parsed once, when

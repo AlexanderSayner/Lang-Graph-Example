@@ -27,6 +27,11 @@ class GraphState(TypedDict):
     variables: Annotated[Dict[str, Any], merge_dicts]
     history: Annotated[List[Dict[str, Any]], operator.add]
     total_tokens: Annotated[int, operator.add]
+    # Who paid for the model call this node made: "user" | "service" | "" (no model call).
+    # Plain metadata, never a credential, and deliberately NOT rendered into prompts -
+    # format_state_context only reads variables/history/input. It exists so the engine can
+    # report a subsidised run ("billing=service") per node instead of keeping it silent.
+    llm_billing: str
 
 
 class JsonGenerationError(Exception):

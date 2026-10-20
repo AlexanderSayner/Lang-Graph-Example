@@ -96,6 +96,11 @@ message ExecuteGraphResponse {
   int64 timestamp = 5;
   string error_message = 6;
   int32 total_tokens = 7;
+  // Who paid for this node's model call: "user" (a personal key from the account
+  // database), "service" (the shared config-based key) or "" (the node called no model).
+  // Surfaced in the UI as "served by the shared service key" so a subsidised run is
+  // never invisible. Never carries a credential.
+  string llm_billing = 8;
 }
 
 // Message for getting graph state
@@ -218,6 +223,16 @@ message CopilotRequest {
   // COPILOT_MODEL, falling back to the service default (LLM_PROVIDER / LLM_MODEL).
   string copilot_provider = 7;
   string copilot_model = 8;
+  // Per-user credentials resolved server-side by Spring from the account database, as a
+  // JSON object keyed by provider id:
+  //   {"openai": {"api_key": "sk-...", "folder_id": ""}, "yandex": {...}}
+  // One map (rather than a single key) because a graph resolves its provider per NODE:
+  // node metadata beats graph config, so a single run can touch several providers.
+  // Empty means "use the service settings" (the legacy config-based mode).
+  string llm_credentials_json = 9;
+  // "1" when llm.credentials.policy=REQUIRE: refuse the question instead of falling back
+  // to the shared service key. Without it the copilot would be a hole in the policy.
+  string require_user_key = 10;
 }
 
 message CopilotResponse {
@@ -225,6 +240,9 @@ message CopilotResponse {
   string ai_response = 2;
   string error_message = 3;
   int32 total_tokens = 4;
+  // "user" when the answer came from a personal key, "service" from the shared key.
+  // Never carries a credential.
+  string llm_billing = 5;
 }
 
 // ==========================================

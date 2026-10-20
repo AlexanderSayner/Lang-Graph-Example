@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     COPILOT_PROVIDER: str = ""
     COPILOT_MODEL: str = ""
 
+    # Upper bound of the LLM client cache (one entry per distinct config INCLUDING a
+    # user's personal key). Personal keys are resolved per request, so an unbounded map
+    # would keep rotated/deleted keys and their HTTP pools resident for the process'
+    # whole lifetime. Eviction is safe: the next call rebuilds from the request's keys.
+    MAX_CACHED_LLM_CLIENTS: int = 256
+
     # Model catalog (UI model suggestions via ListLlmModels / the llmModels GraphQL query).
     # Live provider lists are cached so the dropdown does not hammer the providers; failures
     # are never cached, so a transient blip recovers on the next attempt.

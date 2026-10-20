@@ -5,8 +5,12 @@ import org.jspecify.annotations.NonNull;
 import org.sandbox.langgraph.dto.graphql.payload.user.AuthPayload;
 import org.sandbox.langgraph.dto.graphql.payload.user.ClaimThreadInput;
 import org.sandbox.langgraph.dto.graphql.payload.user.ClaimThreadsPayload;
+import org.sandbox.langgraph.dto.graphql.payload.user.LlmCredentialPayload;
+import org.sandbox.langgraph.dto.graphql.payload.user.SaveLlmCredentialInput;
 import org.sandbox.langgraph.dto.graphql.payload.user.UserPayload;
 import org.sandbox.langgraph.dto.graphql.payload.user.UserThread;
+import org.sandbox.langgraph.security.CurrentUser;
+import org.sandbox.langgraph.service.user.UserLlmCredentialService;
 import org.sandbox.langgraph.service.user.UserService;
 import org.springframework.graphql.data.method.annotation.Argument;
 import org.springframework.graphql.data.method.annotation.MutationMapping;
@@ -21,6 +25,8 @@ import java.util.List;
 public class UserGraphQLController {
 
     private final UserService userService;
+    private final UserLlmCredentialService llmCredentialService;
+    private final CurrentUser currentUser;
 
     @QueryMapping
     public @NonNull UserPayload getCurrentUser() {
@@ -68,5 +74,31 @@ public class UserGraphQLController {
     @MutationMapping
     public @NonNull Boolean deleteUserThread(@Argument String threadId) {
         return userService.deleteUserThread(threadId);
+    }
+
+    // --- Personal LLM API keys ---
+    //
+    // Masked for display (the key itself is never decrypted to answer any of these).
+    // Requires a session: keys are strictly per-user, and the request path resolves them
+    // from this same principal on every execute/copilot call.
+
+    @PreAuthorize("isAuthenticated()")
+    @QueryMapping
+    public @NonNull List<LlmCredentialPayload> llmCredentials() {
+        return llmCredentialService.listMasked(currentUser.requireId());
+    }
+
+    /** Create or replace the key for one provider. */
+    @PreAuthorize("isAuthenticated()")
+    @MutationMapping
+    public @NonNull LlmCredentialPayload saveLlmCredential(@Argument SaveLlmCredentialInput input) {
+        return llmCredentialService.save(currentUser.requireId(), input);
+    }
+
+    /** Delete one provider's key. Takes effect on the very next run (nothing is cached). */
+    @PreAuthorize("isAuthenticated()")
+    @MutationMapping
+    public @NonNull Boolean deleteLlmCredential(@Argument String provider) {
+        return llmCredentialService.delete(currentUser.requireId(), provider);
     }
 }

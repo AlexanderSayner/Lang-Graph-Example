@@ -36,6 +36,7 @@ import org.sandbox.langgraph.security.b2b.B2BThreadScope;
 import org.sandbox.langgraph.service.CopilotService;
 import org.sandbox.langgraph.service.GraphExecutionAggregator;
 import org.sandbox.langgraph.service.LangGraphGrpcService;
+import org.sandbox.langgraph.service.llm.RequestOrigin;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.grpc.server.service.GrpcService;
@@ -157,7 +158,10 @@ public class LangGraphExternalApiService extends LangGraphExternalApiGrpc.LangGr
             // is an empty success, not an internal error. aggregate() already emits for an empty
             // stream (Flux.reduce with a seed), so orElse is belt-and-braces - and it must describe
             // "nothing happened" the same way the aggregator does, hence emptyPayload().
-            var payload = aggregator.aggregate(langGraphService.executeGraphStream(input, false))
+            // B2B: service accounts have no session and no stored LLM keys, so this run always
+            // bills the shared service key (unchanged from before per-user keys existed).
+            var payload = aggregator.aggregate(
+                            langGraphService.executeGraphStream(input, false, RequestOrigin.B2B))
                     .blockOptional()
                     .orElseGet(GraphExecutionAggregator::emptyPayload);
             return mapper.toExecuteGraphResponse(payload);
@@ -330,7 +334,7 @@ public class LangGraphExternalApiService extends LangGraphExternalApiGrpc.LangGr
 
         try {
             bridge.open(graphId, threadId, visibleThreadId, client,
-                    langGraphService.executeGraphStream(input, true));
+                    langGraphService.executeGraphStream(input, true, RequestOrigin.B2B));
         } catch (RuntimeException e) {
             // Nothing was subscribed yet, so report the failure directly - and if the failure raced
             // the stream's own terminal signal, fail() is a no-op because only the first one wins.

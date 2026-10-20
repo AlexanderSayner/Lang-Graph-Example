@@ -12,6 +12,7 @@ import org.sandbox.langgraph.dto.graphql.payload.*;
 import org.sandbox.langgraph.dto.graphql.payload.RewindGraphPayload;
 import org.sandbox.langgraph.dto.graphql.payload.meta.PageInfo;
 import org.sandbox.langgraph.grpc.*;
+import org.sandbox.langgraph.service.llm.LlmRequestCredentials;
 
 import java.util.HashMap;
 import java.util.List;
@@ -62,21 +63,45 @@ public interface GraphGrpcMapper {
     }
 
     default ExecuteGraphRequest toExecuteGraphRequest(ExecuteGraphInput input) {
-        return toExecuteGraphRequestInternal(input, false);
+        return toExecuteGraphRequestInternal(input, false, Map.of());
+    }
+
+    default ExecuteGraphRequest toExecuteGraphRequest(ExecuteGraphInput input,
+                                                      Map<String, String> runContext) {
+        return toExecuteGraphRequestInternal(input, false, runContext);
     }
 
     default ExecuteGraphRequest toStreamExecuteGraphRequest(ExecuteGraphInput input) {
-        return toExecuteGraphRequestInternal(input, true);
+        return toStreamExecuteGraphRequest(input, Map.of());
     }
 
-    private ExecuteGraphRequest toExecuteGraphRequestInternal(ExecuteGraphInput input, boolean stream) {
+    /**
+     * @param runContext server-resolved run keys (personal LLM keys, attribution). Merged
+     *                   AFTER the client context, so it wins on any overlap by construction.
+     */
+    default ExecuteGraphRequest toStreamExecuteGraphRequest(ExecuteGraphInput input,
+                                                            Map<String, String> runContext) {
+        return toExecuteGraphRequestInternal(input, true, runContext);
+    }
+
+    private ExecuteGraphRequest toExecuteGraphRequestInternal(ExecuteGraphInput input, boolean stream,
+                                                              Map<String, String> runContext) {
         ExecuteGraphRequest.Builder builder = ExecuteGraphRequest.newBuilder()
                 .setGraphId(input.graphId())
                 .setInput(input.input())
                 .setThreadId(input.threadId())
                 .setStreamOutput(stream);
         if (input.context() != null) {
-            builder.putAllContext(convertToStringMap(input.context()));
+            Map<String, String> clientContext = new HashMap<>(convertToStringMap(input.context()));
+            // Whose key this run spends is decided by the server from the authenticated
+            // session, never by the payload: strip every run-context key a client could
+            // otherwise inject (it would reach RunnableConfig and, for a bare llm_api_key,
+            // end up in the model prompt through the state context).
+            LlmRequestCredentials.RUN_KEYS.forEach(clientContext::remove);
+            builder.putAllContext(clientContext);
+        }
+        if (runContext != null) {
+            runContext.forEach(builder::putContext);
         }
         return builder.build();
     }
@@ -169,7 +194,9 @@ public interface GraphGrpcMapper {
                 new HashMap<>(response.getStateMap()),
                 response.getTimestamp(),
                 response.getTotalTokens(),
-                response.getErrorMessage()
+                response.getErrorMessage(),
+                // "user" | "service" | "mixed" | "" - who paid for this node's model call.
+                response.getLlmBilling()
         );
     }
 
@@ -195,7 +222,8 @@ public interface GraphGrpcMapper {
     }
 
     default CopilotGraphPayload toCopilotGraphPayload(org.sandbox.langgraph.grpc.CopilotResponse response) {
-        return new CopilotGraphPayload(response.getSuccess(), response.getAiResponse(), response.getTotalTokens(), response.getErrorMessage());
+        return new CopilotGraphPayload(response.getSuccess(), response.getAiResponse(),
+                response.getTotalTokens(), response.getErrorMessage(), response.getLlmBilling());
     }
 
     default LlmModelsPayload toLlmModelsPayload(org.sandbox.langgraph.grpc.ListLlmModelsResponse response) {

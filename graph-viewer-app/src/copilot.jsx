@@ -110,6 +110,15 @@ export default function CopilotTab({
                                             <span>{m.tokens} tokens</span>
                                         </div>
                                     )}
+
+                                    {/* Who paid for this answer. Only shown when the shared
+                                        service key was involved, so the copilot cannot quietly
+                                        spend the operator's credits. */}
+                                    {m.role === 'ai' && (m.llmBilling === 'service' || m.llmBilling === 'mixed') && (
+                                        <div style={{ marginTop: '4px', fontSize: '10px', color: '#e65100' }}>
+                                            ⚠️ Served by the shared service key
+                                        </div>
+                                    )}
                                 </>
                             )}
                         </div>

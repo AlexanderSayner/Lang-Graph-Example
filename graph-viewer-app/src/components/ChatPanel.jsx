@@ -44,8 +44,13 @@ export default function ChatPanel({
     historyItems, setModalData, getNodeDisplayName, handleRewind,
     copilotMessages, copilotInput, setCopilotInput, copilotLoading, handleCopilotSend,
     copilotLLM, setCopilotLLM,
-    formatTimestamp
+    formatTimestamp,
+    // Providers this graph asks for that the signed-in account holds no key for (empty for
+    // anonymous visitors, who cannot have keys at all).
+    missingKeyProviders = [],
+    onOpenLlmSettings
 }) {
+    const showSharedKeyHint = activeTab === 'chat' && !loading && missingKeyProviders.length > 0;
     return (
         <div className="chat-panel" style={{ height: `${panelHeight}px` }} ref={panelRef}>
 
@@ -79,6 +84,16 @@ export default function ChatPanel({
                                 {m.type === 'bot' && m.tokens > 0 && (
                                     <div style={{ fontSize: '10px', color: '#888', marginTop: '4px', fontStyle: 'italic' }}>
                                         🪙 Tokens used: {m.tokens}
+                                    </div>
+                                )}
+                                {/* Who paid for that run. Only shown when the shared service key
+                                    was involved - a fully personal run needs no footnote - so a
+                                    subsidised answer is never invisible. */}
+                                {m.type === 'bot' && (m.llmBilling === 'service' || m.llmBilling === 'mixed') && (
+                                    <div style={{ fontSize: '10px', color: '#e65100', marginTop: '4px' }}>
+                                        ⚠️ {m.llmBilling === 'mixed'
+                                            ? 'Partly served by the shared service key (you have no key for every provider this graph used).'
+                                            : 'Served by the shared service key — no personal key for this provider.'}
                                     </div>
                                 )}
                             </div>
@@ -121,6 +136,31 @@ export default function ChatPanel({
                         {loading && <div className="msg msg-bot">Thinking… <span style={{ color: '#999', fontStyle: 'italic', fontSize: '11px' }}>press Cancel to stop</span></div>}
                         <div ref={chatEndRef} />
                     </div>
+                    {/* Pre-run warning: this graph is about to spend the shared service key on
+                        providers the account holds no personal key for. Actionable - it opens
+                        the key manager - because under FALLBACK nothing will stop the run. */}
+                    {showSharedKeyHint && (
+                        <div style={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                            gap: '8px', padding: '6px 12px', fontSize: '11px',
+                            background: '#fff8e1', borderTop: '1px solid #ffe0b2', color: '#e65100',
+                        }}>
+                            <span>
+                                ⚠️ No personal key for <b>{missingKeyProviders.join(', ')}</b> —
+                                these nodes will run on the shared service key.
+                            </span>
+                            <button
+                                onClick={onOpenLlmSettings}
+                                style={{
+                                    padding: '4px 9px', fontSize: '11px', cursor: 'pointer', whiteSpace: 'nowrap',
+                                    border: '1px solid #ffb74d', background: '#ffe0b2', color: '#e65100',
+                                    borderRadius: '4px', fontWeight: '600',
+                                }}
+                            >
+                                Add keys
+                            </button>
+                        </div>
+                    )}
                     <div className="chat-input-area">
                         <input className="chat-input" placeholder={ graphStatus === 'finished' ? "💬 Graph finished — send a message to continue, or click 'New' for a fresh thread" : "Send message..." } value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleExecute()} disabled={loading} />
                         {loading ? (

@@ -1,13 +1,16 @@
+import inspect
 import json
 import logging
 import re
-from typing import Dict, Set, Callable, Awaitable, Any
+from typing import Dict, Set, Callable, Awaitable, Any, Optional, Tuple
 
 import grpc
 from langchain_core.runnables import RunnableConfig
 from langgraph.errors import GraphInterrupt
 from langgraph.pregel import Pregel
 
+from app.clients.llm import LLMCredentialSet, LLMCredentials, MissingUserApiKeyError, \
+    missing_user_key_message
 from app.config import settings
 from app.generated import langgraph_pb2_grpc, langgraph_pb2
 from app.graph_engine.graph_utils import format_state_context, extract_json_from_response, JsonGenerationError, \
@@ -16,6 +19,72 @@ from app.graph_engine.graph_utils import format_state_context, extract_json_from
 logger = logging.getLogger(__name__)
 
 GraphLoader = Callable[[str], Awaitable[Pregel]]
+
+# --- Per-user credentials travel through RunnableConfig.configurable ---------------
+# The backend (Spring) puts these keys on the run; they are popped out of the gRPC
+# request context by the servicer BEFORE the context becomes GraphState, so a credential
+# can never be checkpointed, echoed back to the browser, or embedded in a prompt
+# (state["context"] is appended to the prompt by _process_action).
+#
+# Note there is deliberately NO backend-declared "who will pay" flag: billing is DERIVED
+# per node from the credentials that were actually resolved (see llm_billing), because one
+# run can legitimately mix a personal key and the shared one.
+CONFIG_LLM_CREDENTIALS = "llm_credentials_json"   # JSON: provider -> {api_key, folder_id}
+CONFIG_REQUIRE_USER_KEY = "require_user_key"       # "1" = fail instead of using the service key
+CONFIG_USER_ID = "x_user_id"                       # attribution (per-run metering/logs)
+
+# Keys that must be inherited by subgraphs (subgraph nodes run with the parent's user).
+INHERITED_CONFIGURABLE_KEYS = (
+    CONFIG_LLM_CREDENTIALS, CONFIG_REQUIRE_USER_KEY, CONFIG_USER_ID,
+)
+
+# Context keys that would leak a secret if left in GraphState.context. Popped by the
+# servicer, and scrubbed again before that state is rendered into a prompt - belt and
+# braces, because a client can always send its own context map.
+SECRET_CONTEXT_KEYS = frozenset({"llm_api_key", "yc_folder_id", "llm_credentials_json"})
+
+BILLING_USER = "user"
+BILLING_SERVICE = "service"
+
+
+def credentials_from_config(config: Optional[RunnableConfig]) -> LLMCredentialSet:
+    """Personal keys carried by this run. Never raises (see LLMCredentialSet.from_json)."""
+    configurable = (config or {}).get("configurable") or {}
+    return LLMCredentialSet.from_json(configurable.get(CONFIG_LLM_CREDENTIALS))
+
+
+def require_user_key_from_config(config: Optional[RunnableConfig]) -> bool:
+    """True when the caller asked for hard billing (policy=REQUIRE) instead of fallback."""
+    configurable = (config or {}).get("configurable") or {}
+    return str(configurable.get(CONFIG_REQUIRE_USER_KEY, "")).strip() == "1"
+
+
+def scrub_secret_context(context: Any) -> Dict[str, Any]:
+    """Copy of ``context`` with every credential-carrying key removed."""
+    if not isinstance(context, dict):
+        return {}
+    return {k: v for k, v in context.items() if k not in SECRET_CONTEXT_KEYS}
+
+
+# Which clients accept a `credentials=` keyword. LazyLLMClient does; the older
+# YandexGPTClient handed out by NodeHandler.default_llm does not, and passing it anyway
+# would surface as a TypeError inside a running node. Memoised per class - the set of
+# client types is small and fixed.
+_CREDENTIALS_SUPPORTED: Dict[type, bool] = {}
+
+
+def _accepts_credentials(client: Any) -> bool:
+    client_type = type(client)
+    cached = _CREDENTIALS_SUPPORTED.get(client_type)
+    if cached is None:
+        try:
+            signature = inspect.signature(client.generate)
+        except (TypeError, ValueError):
+            cached = False
+        else:
+            cached = "credentials" in signature.parameters
+        _CREDENTIALS_SUPPORTED[client_type] = cached
+    return cached
 
 # YandexGPT occasionally refuses a perfectly benign prompt ("не могу обсуждать эту тему") or
 # answers with prose instead of the requested JSON. Such an answer is unusable for a node, so we
@@ -161,47 +230,89 @@ class NodeHandler:
             self.default_llm = self.default_llm_factory()
         return self.default_llm
 
-    async def _generate(self, user_message: str, system_message: str, llm=None):
+    async def _generate(self, user_message: str, system_message: str, llm=None,
+                        credentials: Optional[LLMCredentialSet] = None,
+                        require_user_key: bool = False) -> Tuple[Any, str]:
         """Call the LLM, retrying once when the answer is a refusal or empty text.
 
         On the retry we also shrink the prompt: the conversation history is dropped and a
         stricter instruction is appended, because a long context is what most often triggers
         the refusal in the first place.
 
-        Returns the LLM response object unchanged (so `.usage` stays available).
+        ``credentials`` are this run's personal keys, indexed by provider; the entry picked
+        is the one matching the provider *this client* resolved to, so a mixed-provider graph
+        spends each user's key only on the providers that user actually owns a key for.
+
+        Returns ``(response, billing_owner)`` so the caller can report who paid:
+        ``"user"`` (a personal key), ``"service"`` (the shared config-based key). Under the
+        default FALLBACK policy a missing personal key is not an error - it is simply a
+        service-billed call; with ``require_user_key`` it raises first instead.
         """
         client = llm or self._default_client()
         if client is None:
             raise RuntimeError("No LLM client resolved for this node (missing provider config).")
+
+        provider = str(getattr(client, "provider", "") or "")
+        supports_credentials = _accepts_credentials(client)
+        credential: Optional[LLMCredentials] = (
+            credentials.for_provider(provider) if credentials is not None else None
+        )
+
+        # A personal key can only be spent through a client that accepts one (a legacy
+        # client with no `credentials` kwarg bills whatever it was built with); a client
+        # already configured with a personal key - billing_owner == "user" - counts too.
+        # Anything else means the SHARED service key would pay, which policy=REQUIRE
+        # forbids, so this fails closed instead of silently subsidising the run.
+        personal_key_available = (
+            (credential is not None and not credential.is_empty() and supports_credentials)
+            or getattr(client, "billing_owner", "") == BILLING_USER
+        )
+        if require_user_key and not personal_key_available:
+            raise MissingUserApiKeyError(missing_user_key_message(provider or "default"))
+
+        billing = BILLING_USER if personal_key_available else BILLING_SERVICE
+
+        generate_kwargs: Dict[str, Any] = {}
+        if supports_credentials:
+            generate_kwargs["credentials"] = credential
+
         attempts = max(1, settings.LLM_MAX_ATTEMPTS)
         prompt = system_message
         message = user_message
         response = None
         for attempt in range(1, attempts + 1):
-            response = await client.generate(user_message=message, system_message=prompt)
+            response = await client.generate(user_message=message, system_message=prompt,
+                                             **generate_kwargs)
             text = str(response)
             if not is_unusable_answer(text):
-                return response
+                return response, billing
             if attempt == attempts:
                 logger.warning("LLM returned an unusable answer after %d attempt(s): %s",
                                attempt, text[:120].replace("\n", " "))
-                return response
+                return response, billing
             logger.warning("LLM refused or returned an empty answer (attempt %d), retrying", attempt)
             prompt = system_message + retry_hint_for(client)
             message = drop_history_block(user_message)
-        return response
+        return response, billing
 
     async def process(self, n_id: str, n_meta: Dict, node_type: str, is_router_node: bool,
                       router_keys: Set, state: GraphState, config: RunnableConfig,
                       llm=None) -> Dict:
+        # Resolved once per node invocation from the run's config: the compiled graph is
+        # shared by every user, so the caller's keys can only arrive per execution.
+        credentials = credentials_from_config(config)
+        require_user_key = require_user_key_from_config(config)
+
         if is_router_node:
-            return await self._process_router(n_id, n_meta, router_keys, state, llm)
+            return await self._process_router(n_id, n_meta, router_keys, state, llm,
+                                              credentials, require_user_key)
         if node_type == "GRAPH":
             return await self._process_subgraph(n_id, n_meta, state, config)
         if node_type == "HTTP_REQUEST":
             return await self._process_http_request(n_id, n_meta, state)
         if node_type in self.ACTION_NODE_TYPES:
-            return await self._process_action(n_id, n_meta, state, llm)
+            return await self._process_action(n_id, n_meta, state, llm,
+                                              credentials, require_user_key)
 
         raise ValueError(
             f"Node {n_id}: unknown node type '{node_type}'. "
@@ -209,7 +320,9 @@ class NodeHandler:
         )
 
     async def _process_router(self, n_id: str, n_meta: Dict[str, Any], router_keys: Set,
-                              state: GraphState, llm=None) -> Dict[str, Any]:
+                              state: GraphState, llm=None,
+                              credentials: Optional[LLMCredentialSet] = None,
+                              require_user_key: bool = False) -> Dict[str, Any]:
         data_block = format_state_context(state, *self._context_flags(n_meta))
         system_prompt = n_meta.get("system_prompt", "You are a helpful assistant.")
         keys_list = ", ".join(router_keys) if router_keys else "intent"
@@ -223,7 +336,9 @@ class NodeHandler:
         )
 
         try:
-            llm_response = await self._generate(user_message=data_block, system_message=system_prompt, llm=llm)
+            llm_response, billing = await self._generate(
+                user_message=data_block, system_message=system_prompt, llm=llm,
+                credentials=credentials, require_user_key=require_user_key)
 
             # Safely extract content and tokens regardless of whether llm_response is a string or an object
             output_content = getattr(llm_response, 'content', str(llm_response))
@@ -259,8 +374,18 @@ class NodeHandler:
                 "output": output_content,
                 "variables": merged_vars,
                 "total_tokens": tokens,
+                "llm_billing": billing,
                 "history": [{"node": n_id, "output": output_content, "tokens_used": tokens}]
             }
+        except MissingUserApiKeyError as e:
+            # An expected, actionable condition under policy=REQUIRE: a warning plus a
+            # readable node output, not a stack dump - the message already says where to
+            # add the key, and the run stops instead of silently billing the service.
+            # llm_billing stays "" on purpose: NO model was called, so nothing was billed -
+            # reporting "service" here would imply a spend that never happened.
+            logger.warning("Router %s stopped: %s", n_id, e)
+            return {"last_node": n_id, "output": str(e), "error": str(e),
+                    "llm_billing": ""}
         except JsonGenerationError as e:
             logger.error(f"Router {n_id} failed to parse JSON: {e}")
             return {"last_node": n_id, "output": str(llm_response), "error": str(e)}
@@ -270,7 +395,8 @@ class NodeHandler:
                     "history": [{"node": n_id, "output": f"Error: {str(e)}"}]}
 
     async def _process_action(self, n_id: str, n_meta: Dict[str, Any], state: GraphState,
-                              llm=None) -> Dict[str, Any]:
+                              llm=None, credentials: Optional[LLMCredentialSet] = None,
+                              require_user_key: bool = False) -> Dict[str, Any]:
         user_input = state.get("input") or ""
         if not user_input.strip():
             return {"last_node": n_id, "output": "No input provided."}
@@ -283,7 +409,10 @@ class NodeHandler:
         data_block = format_state_context(state, *self._context_flags(n_meta))
         final_user_input = data_block
 
-        context_data = state.get("context")
+        # state["context"] is rendered straight into the prompt, so anything credential-like
+        # is dropped here as well (the servicer already popped the keys the backend sent; this
+        # covers a client that put its own llm_api_key into the context map).
+        context_data = scrub_secret_context(state.get("context"))
         if context_data:
             try:
                 context_str = json.dumps(context_data, indent=2, default=str)
@@ -292,7 +421,9 @@ class NodeHandler:
                 logger.warning(f"Failed to serialize context for node {n_id}: {e}")
 
         try:
-            llm_response = await self._generate(user_message=final_user_input, system_message=system_prompt, llm=llm)
+            llm_response, billing = await self._generate(
+                user_message=final_user_input, system_message=system_prompt, llm=llm,
+                credentials=credentials, require_user_key=require_user_key)
 
             output_content = getattr(llm_response, 'content', str(llm_response))
             usage = getattr(llm_response, 'usage', {})
@@ -302,8 +433,16 @@ class NodeHandler:
                 "last_node": n_id,
                 "output": output_content,
                 "history": [{"node": n_id, "output": output_content, "tokens_used": tokens}],
-                "total_tokens": tokens
+                "total_tokens": tokens,
+                "llm_billing": billing
             }
+        except MissingUserApiKeyError as e:
+            # Refused, so no model call and no tokens: llm_billing must stay "" (see the
+            # router branch) rather than claim the service paid for a run that never spent.
+            logger.warning("Node %s stopped: %s", n_id, e)
+            return {"last_node": n_id, "output": str(e), "error": str(e),
+                    "llm_billing": "",
+                    "history": [{"node": n_id, "output": str(e)}]}
         except Exception as e:
             logger.error(f"Node execution failed: {e}", exc_info=True)
             return {"last_node": n_id, "output": f"Error: {str(e)}",
@@ -318,9 +457,20 @@ class NodeHandler:
         logger.info(f"Node {n_id}: Loading subgraph {subgraph_id}")
         subgraph_runnable = await self.graph_loader(subgraph_id)
 
-        parent_thread_id = config.get("configurable", {}).get("thread_id", "default")
+        parent_configurable = config.get("configurable") or {}
+        parent_thread_id = parent_configurable.get("thread_id", "default")
         sub_thread_id = f"{parent_thread_id}__{subgraph_id}"
-        sub_config: RunnableConfig = {"configurable": {"thread_id": sub_thread_id}}
+
+        # A subgraph's nodes resolve their OWN clients from *their* config, so the caller's
+        # credentials have to be forwarded here. Dropping them (as a bare thread_id would)
+        # means every node inside the subgraph silently bills the shared service key while
+        # the rest of the run bills the user - the exact leak this feature exists to stop.
+        sub_configurable: Dict[str, Any] = {"thread_id": sub_thread_id}
+        for key in INHERITED_CONFIGURABLE_KEYS:
+            value = parent_configurable.get(key)
+            if value not in (None, ""):
+                sub_configurable[key] = value
+        sub_config: RunnableConfig = {"configurable": sub_configurable}
 
         sub_snapshot = await subgraph_runnable.aget_state(sub_config)
 
@@ -333,12 +483,18 @@ class NodeHandler:
                 logger.info(f"Subgraph {subgraph_id} starting fresh.")
                 result_state = await subgraph_runnable.ainvoke(state, config=sub_config)
 
+            # The subgraph's last node already recorded who paid; forwarding it keeps the
+            # parent's per-node event honest about what that node's subtree cost.
+            sub_billing = result_state.get("llm_billing", "") \
+                if isinstance(result_state, dict) else ""
+
             return {
                 "last_node": n_id,
                 "output": result_state.get("output", "Subgraph completed."),
                 "variables": result_state.get("variables", {}),
                 "history": result_state.get("history", []),
-                "total_tokens": result_state.get("total_tokens", -1)
+                "total_tokens": result_state.get("total_tokens", -1),
+                "llm_billing": sub_billing
             }
         except GraphInterrupt:
             logger.info(f"Node {n_id}: Subgraph '{subgraph_id}' requested a pause. Propagating interrupt...")

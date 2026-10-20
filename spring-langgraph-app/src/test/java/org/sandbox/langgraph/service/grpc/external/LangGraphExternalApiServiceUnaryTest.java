@@ -1,5 +1,6 @@
 package org.sandbox.langgraph.service.grpc.external;
 
+import org.sandbox.langgraph.service.llm.RequestOrigin;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -100,7 +101,7 @@ class LangGraphExternalApiServiceUnaryTest {
     @Test
     @DisplayName("an ExecuteGraph run with no events is an empty success, not an error")
     void executeGraphWithEmptyRun() {
-        when(langGraphService.executeGraphStream(any(), anyBoolean())).thenReturn(Flux.empty());
+        when(langGraphService.executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class))).thenReturn(Flux.empty());
         var observer = new RecordingObserver<ExecuteGraphResponse>();
 
         call(() -> service.executeGraph(ExecuteGraphRequest.newBuilder()
@@ -115,9 +116,9 @@ class LangGraphExternalApiServiceUnaryTest {
     @Test
     @DisplayName("a blocking run is folded into one response")
     void executeGraphAggregatesTheRun() {
-        when(langGraphService.executeGraphStream(any(), anyBoolean())).thenReturn(Flux.just(
-                new GraphExecutionEventPayload(ExecutionEventType.NODE_END, "n", "answer", null, 1L, 5, null),
-                new GraphExecutionEventPayload(ExecutionEventType.END, "n", "", null, 2L, 5, null)));
+        when(langGraphService.executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class))).thenReturn(Flux.just(
+                new GraphExecutionEventPayload(ExecutionEventType.NODE_END, "n", "answer", null, 1L, 5, null, null),
+                new GraphExecutionEventPayload(ExecutionEventType.END, "n", "", null, 2L, 5, null, null)));
         var observer = new RecordingObserver<ExecuteGraphResponse>();
 
         call(() -> service.executeGraph(ExecuteGraphRequest.newBuilder()
@@ -164,7 +165,7 @@ class LangGraphExternalApiServiceUnaryTest {
     @DisplayName("an empty copilot chat history reaches the copilot service as null, not \"\"")
     void normalisesBlankCopilotFields() {
         when(copilotService.askCopilot(any(), any(), any(), any(), any(), any(), any(), any()))
-                .thenReturn(new CopilotGraphPayload(true, "hi", 1, null));
+                .thenReturn(new CopilotGraphPayload(true, "hi", 1, null, null));
         var observer = new RecordingObserver<AskCopilotResponse>();
 
         call(() -> service.askCopilot(AskCopilotRequest.newBuilder()
@@ -307,7 +308,7 @@ class LangGraphExternalApiServiceUnaryTest {
             assertThat(error.getTrailers().get(GrpcErrors.ERROR_CODE)).isEqualTo("VALIDATION_ERROR");
             assertThat(error.getStatus().getDescription()).contains("Validation failed");
         });
-        verify(langGraphService, never()).executeGraphStream(any(), anyBoolean());
+        verify(langGraphService, never()).executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class));
     }
 
     /** A real Hibernate Validator, for the one test that is about bean validation. */
@@ -334,7 +335,7 @@ class LangGraphExternalApiServiceUnaryTest {
             // The caller is told nothing about the internal reason; only the log has it.
             assertThat(error.getStatus().getDescription()).isEqualTo("internal error");
         });
-        verify(langGraphService, never()).executeGraphStream(any(), anyBoolean());
+        verify(langGraphService, never()).executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class));
     }
 
     /**

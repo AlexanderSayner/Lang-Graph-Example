@@ -68,3 +68,28 @@ list that could drift away from the nodes. The same `saveGraphCoordinates` mutat
 afterwards as a redundant confirmation write - it takes the flat `positions: [{ nodeId, x, y }]` pair, is
 idempotent on the server, and remains the path used by the canvas buttons above, which save a layout
 without rebuilding the graph.
+
+## Personal AI keys
+
+The signed-in user can save their own provider keys so their runs bill their own account
+(`components/LlmSettings.jsx`, opened from the **🔑 Keys** button in the sidebar footer or from
+the chat's warning banner):
+
+- the key goes browser -> server once, is encrypted there (AES-256-GCM, bound to user+provider)
+  and is **never returned**; the list shows `maskedKey` (`••••xxxx`), which the server builds from a
+  short hint stored at save time and can render without decrypting anything;
+- `llmCredentials` is fetched into `app.jsx` so the UI knows *which* providers the account holds
+  a key for. The browser never sees a key, so nothing about the CSP/session story changes.
+
+Two warnings keep a subsidised run visible instead of silent (policy is FALLBACK by default, so
+nothing is ever blocked):
+
+1. **before a run** - `collectGraphProviders(getGraphView)` gives the providers the graph explicitly
+   asks for (node metadata beats graph config, aliases normalised like the engine), and any of them
+   the account has no key for produces *"⚠ No personal key for … these nodes will run on the shared
+   service key"* above the composer, with an **Add keys** button;
+2. **after a run / per answer** - `llmBilling` on `executeGraph` and `askCopilot` (`"user"` /
+   `"service"` / `"mixed"`) renders *"⚠ Served by the shared service key"* under the message, so a
+   run is never attributed to the wrong payer.
+
+Anonymous visitors never see the first warning: they have no account to hold a key in.

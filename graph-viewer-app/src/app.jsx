@@ -10,12 +10,13 @@ import {
     fetchGraphQL, LIST_QUERY, VIEW_QUERY, HISTORY_QUERY,
     BALANCE_QUERY, EXECUTE_MUTATION, CANCEL_EXECUTION_MUTATION, SAVE_MUTATION,
     DELETE_MUTATION, REWIND_MUTATION, COPILOT_MUTATION,
-    CLAIM_THREADS_MUTATION,
+    CLAIM_THREADS_MUTATION, LLM_CREDENTIALS_QUERY, collectGraphProviders,
     layoutGraph, NODE_TYPES, EXECUTION_EVENT_TYPES, nodeClassName
 } from './constants';
 import CopilotTab from './copilot';
 import Sidebar from './components/Sidebar';
 import ChatPanel from './components/ChatPanel';
+import LlmSettings from './components/LlmSettings';
 import StateModal from './components/StateModal';
 import { Toast, useToast } from './components/Toast';
 
@@ -65,6 +66,38 @@ function App() {
     const [modalViewMode, setModalViewMode] = useState('diff'); // 'diff' | 'full'
 
     const [graphStatus, setGraphStatus] = useState('idle'); // Values: 'idle' | 'running' | 'waiting' | 'finished'
+
+    // --- Personal LLM keys -----------------------------------------------------------
+    // The browser never sees a key (it is encrypted server-side on save and only a masked
+    // hint comes back); it only needs to know WHICH providers the account holds a key for,
+    // so a run that is about to bill the shared service key can say so before it happens.
+    const [isLoggedIn, setIsLoggedIn] = useState(false);
+    const [savedKeyProviders, setSavedKeyProviders] = useState([]);
+    const [graphProviders, setGraphProviders] = useState([]);
+    const [showLlmSettings, setShowLlmSettings] = useState(false);
+
+    const loadSavedKeys = async () => {
+        try {
+            const data = await fetchGraphQL(LLM_CREDENTIALS_QUERY);
+            setSavedKeyProviders((data?.llmCredentials || []).map(c => c.provider));
+        } catch (err) {
+            // Anonymous, feature disabled, or a transient failure: an empty list just means
+            // "no personal keys", which is the pre-migration behaviour.
+            setSavedKeyProviders([]);
+        }
+    };
+
+    // Loaded only once the session is known: for an anonymous visitor the query is refused,
+    // which would write an AccessDenied stack trace to the server log on every page load.
+    // Signing out clears the list, so one account's provider names are never shown - even
+    // briefly - to the next visitor of this tab.
+    useEffect(() => {
+        if (isLoggedIn) loadSavedKeys();
+        else setSavedKeyProviders([]);
+    }, [isLoggedIn]);
+
+    // Providers this graph explicitly asks for; only meaningful once we know the account's keys.
+    const missingKeyProviders = graphProviders.filter(p => !savedKeyProviders.includes(p));
 
     // --- Copilot State ---
     const [copilotMessages, setCopilotMessages] = useState([]);
@@ -233,6 +266,9 @@ function App() {
         setSelectedEdge(null);
         setNodes([]);
         setEdges([]);
+        // Cleared before the fetch: otherwise a failed load (or a fast switch) would keep
+        // showing the PREVIOUS graph's providers in the "no personal key" banner.
+        setGraphProviders([]);
         setRenderState({ graphId: id, seq, status: 'loading', error: null, fitMode: 'all' });
 
         fetchGraphQL(VIEW_QUERY, { graphId: id })
@@ -246,6 +282,10 @@ function App() {
 
                 const view = d.getGraphView;
 
+                // Which providers this graph will ask for (node metadata > graph config),
+                // captured here because the raw view - not the React Flow projection - is
+                // what carries `config` and each node's `metadata`.
+                setGraphProviders(collectGraphProviders(view));
                 // Create Label Map
                 const labels = {};
                 view.nodes.forEach(n => { if(n.metadata?.label) labels[n.nodeId] = n.metadata.label; });
@@ -483,7 +523,14 @@ function App() {
             } else if (errorText) {
                 setMessages(prev => [...prev, { type: 'error', text: errorText }]);
             } else {
-                setMessages(prev => [...prev, { type: 'bot', text: outputText, tokens: result.totalTokens || -1  }]);
+                // llmBilling says who paid for this run: "user" (a personal key), "service"
+                // (the shared key) or "mixed". Recorded on the message so the chat can say so.
+                setMessages(prev => [...prev, {
+                    type: 'bot',
+                    text: outputText,
+                    tokens: result.totalTokens || -1,
+                    llmBilling: result.llmBilling || ''
+                }]);
             }
 
             if (eventType === EXECUTION_EVENT_TYPES.END) {
@@ -673,8 +720,13 @@ function App() {
 
             const result = data.askCopilot;
             if (result.success) {
-                // Add AI response to local state
-                setCopilotMessages(prev => [...prev, { role: 'ai', text: result.aiResponse, tokens: result.totalTokens || -1 }]);
+                // llmBilling records who paid: "user" (their personal key) or "service".
+                setCopilotMessages(prev => [...prev, {
+                    role: 'ai',
+                    text: result.aiResponse,
+                    tokens: result.totalTokens || -1,
+                    llmBilling: result.llmBilling || ''
+                }]);
             } else {
                 setCopilotMessages(prev => [...prev, { role: 'error', text: result.errorMessage }]);
             }
@@ -705,6 +757,17 @@ function App() {
                 copyGraphId={copyGraphId} copiedGraph={copiedGraph} handleDelete={handleDelete}
                 realBalance={realBalance}
                 onUserLoggedIn={handleUserLoggedIn}
+                onAuthStateChange={setIsLoggedIn}
+                onOpenLlmSettings={() => setShowLlmSettings(true)}
+                hasPersonalKeys={savedKeyProviders.length > 0}
+            />
+
+            {/* Personal LLM key manager - one modal, opened from the sidebar and from the
+                chat's "you are about to bill the shared key" hint. */}
+            <LlmSettings
+                open={showLlmSettings}
+                onClose={() => setShowLlmSettings(false)}
+                onChanged={loadSavedKeys}
             />
 
             {/* Main Content */}
@@ -794,6 +857,8 @@ function App() {
                     handleCopilotSend={handleCopilotSend}
                     copilotLLM={copilotLLM} setCopilotLLM={setCopilotLLM}
                     formatTimestamp={formatTimestamp}
+                    missingKeyProviders={isLoggedIn ? missingKeyProviders : []}
+                    onOpenLlmSettings={() => setShowLlmSettings(true)}
                 />
             </div>
         </React.Fragment>

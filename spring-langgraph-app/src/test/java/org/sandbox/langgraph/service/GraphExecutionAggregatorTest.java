@@ -77,6 +77,57 @@ class GraphExecutionAggregatorTest {
                 .isEqualTo(aggregator.aggregate(Flux.empty()).block());
     }
 
+    // --- billing -------------------------------------------------------------------
+
+    private static GraphExecutionEventPayload billed(ExecutionEventType type, String billing) {
+        return new GraphExecutionEventPayload(type, "node", "out", Map.of(), 1L, 3, null, billing);
+    }
+
+    @Test
+    @DisplayName("a run paid for entirely with personal keys reports user")
+    void reportsUserBilling() {
+        ExecuteGraphPayload payload = aggregator.aggregate(Flux.just(
+                billed(ExecutionEventType.NODE_END, "user"),
+                billed(ExecutionEventType.END, "user"))).block();
+
+        assertThat(payload.llmBilling()).isEqualTo("user");
+    }
+
+    @Test
+    @DisplayName("a run that touched no personal key reports service - visibly subsidised")
+    void reportsServiceBilling() {
+        ExecuteGraphPayload payload = aggregator.aggregate(Flux.just(
+                billed(ExecutionEventType.NODE_END, "service"),
+                billed(ExecutionEventType.END, "service"))).block();
+
+        assertThat(payload.llmBilling()).isEqualTo("service");
+    }
+
+    @Test
+    @DisplayName("a run spanning both a personal and the shared key reports mixed")
+    void reportsMixedBilling() {
+        // A user owning an OpenAI key but not an Anthropic one hits this; claiming either
+        // side outright would overstate who paid.
+        ExecuteGraphPayload payload = aggregator.aggregate(Flux.just(
+                billed(ExecutionEventType.NODE_END, "user"),
+                billed(ExecutionEventType.NODE_END, "service"),
+                billed(ExecutionEventType.END, "mixed"))).block();
+
+        assertThat(payload.llmBilling()).isEqualTo("mixed");
+    }
+
+    @Test
+    @DisplayName("a run whose nodes called no model reports no owner at all")
+    void reportsNoBillingWhenNothingWasSpent() {
+        ExecuteGraphPayload payload = aggregator.aggregate(Flux.just(
+                new GraphExecutionEventPayload(ExecutionEventType.NODE_END, "node", "http ok",
+                        Map.of(), 1L, 0, null, ""),
+                new GraphExecutionEventPayload(ExecutionEventType.END, "node", "http ok",
+                        Map.of(), 2L, 0, null, null))).block();
+
+        assertThat(payload.llmBilling()).isNull();
+    }
+
     private static GraphExecutionEventPayload event(ExecutionEventType type,
                                                     String output,
                                                     Map<String, Object> state,
@@ -89,6 +140,6 @@ class GraphExecutionAggregatorTest {
                                                     Map<String, Object> state,
                                                     int tokens,
                                                     String errorMessage) {
-        return new GraphExecutionEventPayload(type, "node", output, state, 1L, tokens, errorMessage);
+        return new GraphExecutionEventPayload(type, "node", output, state, 1L, tokens, errorMessage, null);
     }
 }

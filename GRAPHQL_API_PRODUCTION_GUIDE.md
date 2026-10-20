@@ -694,6 +694,10 @@ export SPRING_GRPC_CLIENT_CHANNELS_LANGGRAPH-SERVICE_NEGOTIATION-TYPE=TLS
 
 # Feature flags
 export SPRING_GRAPHQL_GRAPHIQL_ENABLED=false
+
+# Personal LLM API keys (app.user_llm_credentials). Blank master key = feature disabled.
+export LLM_SECRET_MASTER_KEY=$(openssl rand -base64 32)   # back this up: keys are unrecoverable without it
+export LLM_CREDENTIALS_POLICY=FALLBACK                     # or REQUIRE to refuse a run with no user key
 ```
 
 ### GraphQL Configuration Bean
@@ -1092,6 +1096,43 @@ mutation DeleteGraph {
   }
 }
 ```
+
+### 9. Personal LLM API keys (bring your own key)
+
+Per-user provider keys, stored AES-256-GCM encrypted and attached to every run the user
+makes. **All three fields require a session** (`@PreAuthorize("isAuthenticated()")`); they
+return a *masked* hint and never the key itself, because rendering the list decrypts nothing.
+
+```graphql
+# List (masked)
+query MyKeys {
+  llmCredentials { provider maskedKey ycFolderId updatedAt }
+}
+
+# Create or replace the key for one provider
+mutation SaveKey {
+  saveLlmCredential(input: {
+    provider: "openai"
+    apiKey: "sk-..."
+    ycFolderId: ""        # YandexGPT only
+  }) { provider maskedKey updatedAt }
+}
+
+# Delete one provider's key - the very next run falls back to the shared service key
+# (and is reported as llmBilling: "service"), it does not fail under FALLBACK.
+mutation DeleteKey {
+  deleteLlmCredential(provider: "openai")
+}
+```
+
+Response fields that report who paid for a run are `ExecuteGraphPayload.llmBilling`,
+`GraphExecutionEventPayload.llmBilling` (per node) and `CopilotPayload.llmBilling` - one of
+`"user"`, `"service"`, `"mixed"` (a run spanning both) or `null` (no model was called).
+
+> **Security note.** `ExecuteGraphInput.context` is client-supplied, and `llm_credentials_json`,
+> `require_user_key`, `x_user_id`, `llm_api_key` and `yc_folder_id` are stripped from it by
+> `GraphGrpcMapper` before the engine call, then re-added server-side from the session. A
+> caller therefore cannot spend somebody else's key or inject one into the model prompt.
 
 ---
 

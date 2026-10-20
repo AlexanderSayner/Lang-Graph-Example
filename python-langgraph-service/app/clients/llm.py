@@ -26,10 +26,12 @@ A graph picks a provider in three steps, from most to least specific:
 3. service default - ``LLM_PROVIDER`` / ``LLM_MODEL`` / ... settings
 """
 
+import json
 import logging
-from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from dataclasses import dataclass, field, replace
+from typing import Any, Dict, Optional, Tuple
 
+from cachetools import LRUCache
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.config import settings
@@ -60,6 +62,27 @@ class MissingApiKeyError(LLMConfigError):
     missing key never blocks a graph from being built or saved - it surfaces as a
     node error at run time, exactly like it did before the multi-provider layer.
     """
+
+
+class MissingUserApiKeyError(MissingApiKeyError):
+    """The request required a personal key and the user has none for this provider.
+
+    Only raised when the caller explicitly asked for it (``require_user_key`` in the
+    run's ``configurable``, set by the backend under ``llm.credentials.policy=REQUIRE``).
+    Under the default FALLBACK policy a missing personal key is not an error: the
+    service key is used and the run is reported as ``billing=service`` instead.
+    """
+
+
+def missing_user_key_message(provider: str) -> str:
+    """The one wording a user sees when policy=REQUIRE and they have no key yet.
+
+    Shared by the graph-node path and the copilot so the instruction is identical
+    wherever the run happens to stop.
+    """
+    return (f"No personal API key saved for provider '{provider}', and this request "
+            f"requires one (llm.credentials.policy=REQUIRE). Add it with the "
+            f"'🔑 Keys' button in the sidebar.")
 
 
 class LLMResponse(str):
@@ -191,15 +214,128 @@ def _to_int(value: Optional[str], default: int) -> int:
 
 
 @dataclass(frozen=True)
+class LLMCredentials:
+    """Per-request credentials supplied by the caller (a user's own token).
+
+    Empty fields mean "inherit from service settings" - this is what makes the
+    migration additive: an all-empty LLMCredentials behaves exactly like None.
+
+    Frozen and hashable so it can participate in ``LLMConfig`` equality, which is what
+    lets :class:`LLMClientRegistry` cache one client per (config, credentials) pair.
+    ``repr=False`` because a dataclass repr would otherwise print the API key into logs
+    and tracebacks.
+    """
+    api_key: str = ""
+    folder_id: str = ""      # YandexGPT only: YC_FOLDER_ID equivalent
+
+    def is_empty(self) -> bool:
+        return not (self.api_key.strip() or self.folder_id.strip())
+
+
+# One entry: (normalised provider id, credentials for that provider).
+_CredentialEntry = Tuple[str, "LLMCredentials"]
+
+
+@dataclass(frozen=True)
+class LLMCredentialSet:
+    """Every personal key the caller supplied, keyed by provider id.
+
+    A single request carries *all* of a user's keys rather than one, because a graph
+    resolves its provider per NODE (node metadata > graph config > service default): the
+    same run can spend tokens on OpenAI and Anthropic, and Spring cannot know which nodes
+    will ask which provider. The engine picks the entry matching the provider it resolved
+    (``for_provider``), so a missing entry simply means "no personal key for this provider"
+    and the service key is used.
+
+    Frozen with a tuple of pairs so it is hashable and immutable; it never leaves the
+    engine unencrypted, and it is never logged.
+    """
+    by_provider: Tuple[_CredentialEntry, ...] = ()
+
+    @classmethod
+    def empty(cls) -> "LLMCredentialSet":
+        return cls()
+
+    @classmethod
+    def from_json(cls, raw: Any) -> "LLMCredentialSet":
+        """Parse the ``llm_credentials_json`` context value. Never raises.
+
+        Tolerant by design: the caller may be an older backend that sends nothing, a
+        malformed string, or an object with unknown providers. Anything unusable
+        degrades to "no personal keys" rather than failing the run.
+        """
+        if not raw or not str(raw).strip():
+            return cls()
+        try:
+            data = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
+        except (ValueError, TypeError):
+            logger.warning("llm_credentials_json is not valid JSON; ignoring personal keys")
+            return cls()
+        if not isinstance(data, dict):
+            return cls()
+        return cls.from_mapping(data)
+
+    @classmethod
+    def from_mapping(cls, data: Any) -> "LLMCredentialSet":
+        """Build a set from ``{provider: {api_key, folder_id}}``; malformed entries are dropped."""
+        if not isinstance(data, dict):
+            return cls()
+        entries = []
+        for provider, value in data.items():
+            provider_id = _normalize_provider(provider)
+            if not provider_id:
+                continue
+            if not isinstance(value, dict):
+                continue
+            credentials = LLMCredentials(
+                api_key=str(value.get("api_key") or "").strip(),
+                folder_id=str(value.get("folder_id") or "").strip(),
+            )
+            if credentials.is_empty():
+                continue
+            entries.append((provider_id, credentials))
+        return cls(by_provider=tuple(entries))
+
+    def for_provider(self, provider: Any) -> Optional[LLMCredentials]:
+        """Credentials for ``provider`` (alias-aware) or None when the user has none."""
+        wanted = _normalize_provider(provider)
+        if not wanted:
+            return None
+        for provider_id, credentials in self.by_provider:
+            if provider_id == wanted:
+                return credentials
+        return None
+
+    def is_empty(self) -> bool:
+        return not self.by_provider
+
+    def providers(self) -> Tuple[str, ...]:
+        return tuple(provider_id for provider_id, _ in self.by_provider)
+
+
+@dataclass(frozen=True)
 class LLMConfig:
     provider: str
     model: str
     temperature: float
     max_tokens: int
+    # Per-request credentials for THIS config's provider. None/empty = inherit the
+    # service settings. Excluded from repr: it carries an API key, and a config is
+    # routinely passed to loggers and wrapped in exceptions.
+    credentials: Optional[LLMCredentials] = field(default=None, repr=False)
+
+    @property
+    def billing_owner(self) -> str:
+        """Who pays for this config's calls: "user" (a personal key) or "service"."""
+        if self.credentials is None or self.credentials.is_empty():
+            return "service"
+        return "user"
 
 
 def resolve_llm_config(node_metadata: Optional[Dict[str, Any]] = None,
-                       graph_config: Optional[Dict[str, Any]] = None) -> LLMConfig:
+                       graph_config: Optional[Dict[str, Any]] = None,
+                       *,
+                       credentials: Optional[LLMCredentials] = None) -> LLMConfig:
     """Combine node metadata, graph config and service defaults into one config.
 
     Values arriving over gRPC/JSON are strings, so temperature/max_tokens are parsed
@@ -211,6 +347,10 @@ def resolve_llm_config(node_metadata: Optional[Dict[str, Any]] = None,
     IS that default. Otherwise a graph/node that switches provider would inherit a model
     name belonging to another provider (e.g. ``LLM_MODEL=yandexgpt-lite`` sent to Groq).
     The per-provider setting (``YC_MODEL_NAME`` / ``<PROVIDER>_MODEL``) comes next.
+
+    ``credentials`` is keyword-only and optional: every pre-existing call site keeps
+    working and produces a credential-free config, which the registry serves with the
+    service settings (the original behaviour).
     """
     node_metadata = node_metadata or {}
     graph_config = graph_config or {}
@@ -252,8 +392,14 @@ def resolve_llm_config(node_metadata: Optional[Dict[str, Any]] = None,
         settings.LLM_MAX_OUTPUT_TOKENS,
     ), settings.LLM_MAX_OUTPUT_TOKENS)
 
+    # An all-empty credential is the same as none, so the registry never builds a
+    # second client for a caller that supplied nothing.
+    if credentials is not None and credentials.is_empty():
+        credentials = None
+
     return LLMConfig(provider=provider, model=model or preset.default_model,
-                     temperature=temperature, max_tokens=max_tokens)
+                     temperature=temperature, max_tokens=max_tokens,
+                     credentials=credentials)
 
 
 class LLMClient:
@@ -263,11 +409,30 @@ class LLMClient:
         self.config = config
         self.provider = config.provider
         self.model = config.model
+        # Per-request credentials for this provider (None/empty = the shared service key).
+        # Holding them on the client is what makes `billing_owner` loggable per call.
+        self._credentials: LLMCredentials = config.credentials or LLMCredentials()
         self._yandex = None
         self._runnable = self._build_runnable()
 
+    @property
+    def billing_owner(self) -> str:
+        """"user" when this client spends a personal key, "service" otherwise."""
+        return "user" if not self._credentials.is_empty() else "service"
+
     def _api_key(self, preset: ProviderPreset) -> str:
+        """Personal key first, then the shared service key from the settings."""
+        personal = self._credentials.api_key.strip()
+        if personal:
+            return personal
         return str(getattr(settings, preset.api_key_setting, "") or "").strip()
+
+    def _folder_id(self) -> str:
+        """YandexGPT folder: the caller's folder, else the service-wide ``YC_FOLDER_ID``."""
+        personal = self._credentials.folder_id.strip()
+        if personal:
+            return personal
+        return str(getattr(settings, "YC_FOLDER_ID", "") or "").strip()
 
     def _base_url(self, preset: ProviderPreset) -> str:
         override = getattr(settings, f"{self.provider.upper()}_BASE_URL", "") or ""
@@ -280,12 +445,14 @@ class LLMClient:
         if preset.kind == "yandex":
             if not api_key:
                 raise MissingApiKeyError(f"No API key for LLM provider 'yandex'. Set {preset.api_key_env}.")
+            folder_id = self._folder_id()
             # Imported lazily: the Yandex client imports this module's response type.
             from app.clients.yandex_client import YandexGPTClient
-            logger.info("LLM client: yandex model=%s folder=%s", self.config.model, settings.YC_FOLDER_ID)
+            logger.info("LLM client: yandex model=%s folder=%s owner=%s",
+                        self.config.model, folder_id, self.billing_owner)
             self._yandex = YandexGPTClient(
                 api_key=api_key,
-                folder_id=settings.YC_FOLDER_ID,
+                folder_id=folder_id,
                 model_name=self.config.model,
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
@@ -301,7 +468,8 @@ class LLMClient:
 
         if preset.kind == "anthropic":
             from langchain_anthropic import ChatAnthropic
-            logger.info("LLM client: anthropic model=%s base_url=%s", self.config.model, base_url)
+            logger.info("LLM client: anthropic model=%s base_url=%s owner=%s",
+                        self.config.model, base_url, self.billing_owner)
             return ChatAnthropic(
                 model=self.config.model,
                 anthropic_api_key=api_key,
@@ -311,8 +479,8 @@ class LLMClient:
             )
 
         from langchain_openai import ChatOpenAI
-        logger.info("LLM client: %s (openai-compatible) model=%s base_url=%s",
-                    self.provider, self.config.model, base_url)
+        logger.info("LLM client: %s (openai-compatible) model=%s base_url=%s owner=%s",
+                    self.provider, self.config.model, base_url, self.billing_owner)
         return ChatOpenAI(
             model=self.config.model,
             api_key=api_key,
@@ -324,7 +492,13 @@ class LLMClient:
     async def generate(self, user_message: str, system_message: str = "") -> LLMResponse:
         """Send one chat turn and return the answer text plus normalised token usage."""
         if self._yandex is not None:
-            return await self._yandex.generate(user_message=user_message, system_message=system_message)
+            response = await self._yandex.generate(user_message=user_message,
+                                                   system_message=system_message)
+            # YandexGPT answers through its own client, which knows nothing about billing.
+            logger.info("LLM %s/%s answered: %d tokens billing=%s",
+                        self.provider, self.model,
+                        response.usage.get("total_tokens", 0), self.billing_owner)
+            return response
 
         messages = []
         if system_message:
@@ -334,7 +508,8 @@ class LLMClient:
         message = await self._runnable.ainvoke(messages)
         text = _flatten_content(getattr(message, "content", message))
         usage = _usage_from_metadata(getattr(message, "usage_metadata", None))
-        logger.info("LLM %s/%s answered: %d tokens", self.provider, self.model, usage["total_tokens"])
+        logger.info("LLM %s/%s answered: %d tokens billing=%s",
+                    self.provider, self.model, usage["total_tokens"], self.billing_owner)
         return LLMResponse(text, usage, self.provider, self.model)
 
 
@@ -345,6 +520,11 @@ class LazyLLMClient:
     without an API key, and the error surfaces when the node actually calls the model -
     the same timing the pre-multi-provider code had. A key added later is also picked up
     without restarting the service.
+
+    Compiled graphs are CACHED, so a compile-time config can never carry a user's key -
+    callers pass their credentials per call instead (``generate(credentials=...)``) and
+    they are folded into the config only for that call, which is what makes the registry
+    cache per-user clients.
     """
 
     def __init__(self, registry: "LLMClientRegistry", config: LLMConfig):
@@ -364,27 +544,55 @@ class LazyLLMClient:
     def model(self) -> str:
         return self._config.model
 
-    def _resolve(self) -> LLMClient:
+    @property
+    def billing_owner(self) -> str:
+        """Who the *configured* (compile-time) credentials say pays: the service by default."""
+        if self._config.credentials is None or self._config.credentials.is_empty():
+            return "service"
+        return "user"
+
+    def _resolve(self, credentials: Optional[LLMCredentials] = None) -> LLMClient:
+        """Return a client for ``credentials``; the credential-free config stays the cached default.
+
+        Passing credentials does NOT disturb the shared compile-time client: it resolves a
+        *different* config (one that includes the key) through the same bounded registry, so
+        two users of the same graph never see each other's key.
+        """
+        if credentials is not None and not credentials.is_empty():
+            return self._registry.get(replace(self._config, credentials=credentials))
         if self._client is None:
             self._client = self._registry.get(self._config)
         return self._client
 
-    async def generate(self, user_message: str, system_message: str = "") -> LLMResponse:
-        return await self._resolve().generate(user_message=user_message,
-                                              system_message=system_message)
+    async def generate(self, user_message: str, system_message: str = "",
+                       credentials: Optional[LLMCredentials] = None) -> LLMResponse:
+        return await self._resolve(credentials).generate(user_message=user_message,
+                                                         system_message=system_message)
 
 
 class LLMClientRegistry:
-    """Builds one client per distinct config and reuses it (keeps HTTP pools warm)."""
+    """Builds one client per distinct config and reuses it (keeps HTTP pools warm).
 
-    def __init__(self):
-        self._clients: Dict[LLMConfig, LLMClient] = {}
+    Deliberately BOUNDED: every user key creates a config of its own, and an unbounded
+    map would keep decrypted keys and their connection pools resident forever (including
+    after the key was rotated or deleted). Eviction is safe - the next call rebuilds the
+    client from the credentials the request still carries.
+    """
+
+    def __init__(self, maxsize: Optional[int] = None):
+        size = maxsize or getattr(settings, "MAX_CACHED_LLM_CLIENTS", 256)
+        self._clients: "LRUCache[LLMConfig, LLMClient]" = LRUCache(maxsize=max(int(size), 1))
+
+    @property
+    def cached_client_count(self) -> int:
+        """Number of live clients - for tests and cache-bound assertions."""
+        return len(self._clients)
 
     def lazy(self, config: LLMConfig) -> LazyLLMClient:
         """Deferred client: the underlying provider client is built on first use.
 
-        Use this anywhere a graph definition is being compiled, so that a missing API
-        key cannot fail a build.
+        Use this anywhere a graph definition is being compiled, so that a missing API key
+        cannot fail a build.
         """
         return LazyLLMClient(self, config)
 
@@ -393,6 +601,7 @@ class LLMClientRegistry:
         if client is None:
             client = LLMClient(config)
             self._clients[config] = client
-            logger.info("Registered LLM client %s/%s (temp=%s, max_tokens=%s)",
-                        config.provider, config.model, config.temperature, config.max_tokens)
+            logger.info("Registered LLM client %s/%s (temp=%s, max_tokens=%s) owner=%s cached=%d/%d",
+                        config.provider, config.model, config.temperature, config.max_tokens,
+                        config.billing_owner, len(self._clients), self._clients.maxsize)
         return client
