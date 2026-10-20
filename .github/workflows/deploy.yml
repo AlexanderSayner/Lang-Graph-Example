@@ -118,9 +118,6 @@ jobs:
             echo "YC_FOLDER_ID=${{ secrets.YC_FOLDER_ID }}" >> ~/myapp.env
             echo "YC_BILLING_ACCOUNT_ID=${{ secrets.YC_BILLING_ACCOUNT_ID }}" >> ~/myapp.env
             echo "YC_SA_KEY_JSON_B64=${{ steps.prepare-secrets.outputs.SA_KEY_B64 }}" >> ~/myapp.env
-            # B2B gRPC facade credential. Without it the "orchestra" service account is
-            # not registered at startup and EVERY B2B call is rejected with
-            # "Invalid API key" (UNAUTHENTICATED), even though the app boots fine.
             echo "B2B_API_KEY=${{ secrets.B2B_API_KEY }}" >> ~/myapp.env
             
             chmod 600 ~/myapp.env
