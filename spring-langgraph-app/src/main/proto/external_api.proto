@@ -128,6 +128,17 @@ message ExecuteGraphRequest {
   string thread_id = 2;
   string input = 3;
   google.protobuf.Struct context = 4;
+  // The caller's own LLM keys, as one JSON object keyed by provider id:
+  //   {"openai": {"api_key": "sk-...", "folder_id": ""}, "yandex": {...}}
+  // Optional. When present the run spends THOSE keys (per provider, per node;
+  // llm_billing reports "user"); when absent the run resolves through the
+  // deployment's own rules and a deployment that does not run on its shared
+  // key rejects the call with x-error-code LLM_KEY_REQUIRED instead.
+  // Never logged, never persisted, never echoed back - it travels as
+  // server-built run context (a key smuggled through `context` is stripped).
+  // A key here is the SAME secret as any API key: enable b2b.grpc.ssl.* on
+  // any port reachable beyond the cluster before sending one.
+  string llm_credentials_json = 5;
 }
 
 message ExecuteGraphResponse {
@@ -261,6 +272,10 @@ message AskCopilotRequest {
   string selected_edge_json = 6;
   string copilot_provider = 7;
   string copilot_model = 8;
+  // The caller's own LLM keys, same shape and same rules as
+  // ExecuteGraphRequest.llm_credentials_json (the copilot must not be a way
+  // around a deployment that will not spend its shared key).
+  string llm_credentials_json = 9;
 }
 
 message AskCopilotResponse {

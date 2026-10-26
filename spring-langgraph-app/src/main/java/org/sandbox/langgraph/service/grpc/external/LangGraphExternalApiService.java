@@ -158,10 +158,12 @@ public class LangGraphExternalApiService extends LangGraphExternalApiGrpc.LangGr
             // is an empty success, not an internal error. aggregate() already emits for an empty
             // stream (Flux.reduce with a seed), so orElse is belt-and-braces - and it must describe
             // "nothing happened" the same way the aggregator does, hence emptyPayload().
-            // B2B: service accounts have no session and no stored LLM keys, so this run always
-            // bills the shared service key (unchanged from before per-user keys existed).
+            // B2B: a service account has no session, so its keys are the ones it sent on THIS
+            // request (llm_credentials_json); with none, and depending on the deployment, the
+            // call may run on the shared service key or be refused with LLM_KEY_REQUIRED.
             var payload = aggregator.aggregate(
-                            langGraphService.executeGraphStream(input, false, RequestOrigin.B2B))
+                            langGraphService.executeGraphStream(input, false, RequestOrigin.B2B,
+                                    blankToNull(request.getLlmCredentialsJson())))
                     .blockOptional()
                     .orElseGet(GraphExecutionAggregator::emptyPayload);
             return mapper.toExecuteGraphResponse(payload);
@@ -279,7 +281,11 @@ public class LangGraphExternalApiService extends LangGraphExternalApiGrpc.LangGr
                     blankToNull(request.getSelectedNodeId()),
                     blankToNull(request.getSelectedEdgeJson()),
                     blankToNull(request.getCopilotProvider()),
-                    blankToNull(request.getCopilotModel())));
+                    blankToNull(request.getCopilotModel()),
+                    // B2B origin + the keys sent on this call: the copilot must answer under
+                    // the same conditions as a run, not quietly fall back to the shared key.
+                    RequestOrigin.B2B,
+                    blankToNull(request.getLlmCredentialsJson())));
         });
     }
 
@@ -334,7 +340,8 @@ public class LangGraphExternalApiService extends LangGraphExternalApiGrpc.LangGr
 
         try {
             bridge.open(graphId, threadId, visibleThreadId, client,
-                    langGraphService.executeGraphStream(input, true, RequestOrigin.B2B));
+                    langGraphService.executeGraphStream(input, true, RequestOrigin.B2B,
+                            blankToNull(request.getLlmCredentialsJson())));
         } catch (RuntimeException e) {
             // Nothing was subscribed yet, so report the failure directly - and if the failure raced
             // the stream's own terminal signal, fail() is a no-op because only the first one wins.

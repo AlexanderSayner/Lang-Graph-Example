@@ -57,6 +57,17 @@ public class GraphQlExceptionHandler extends DataFetcherExceptionResolverAdapter
                     .extensions(java.util.Map.of("code", e.getErrorCode()))
                     .build();
 
+            // The one refusal a caller can fix by bringing a key (personal keys only, or an
+            // unsigned-in visitor asked to sign in). Kept separate from the generic
+            // IllegalArgumentException below so the code says WHAT is missing: BAD_REQUEST
+            // carries this message verbatim, the same LLM_KEY_REQUIRED the B2B facade uses.
+            case LangGraphException.LlmKeyRequiredException e -> GraphqlErrorBuilder.newError()
+                    .message(e.getMessage())
+                    .errorType(ErrorType.BAD_REQUEST)
+                    .path(env.getExecutionStepInfo().getPath())
+                    .extensions(java.util.Map.of("code", e.getErrorCode()))
+                    .build();
+
             // Both the @PreAuthorize guards and CurrentUser.requireId() refuse an anonymous
             // caller; without these cases the catch-all below would report that as a server error.
             case AccessDeniedException e -> GraphqlErrorBuilder.newError()

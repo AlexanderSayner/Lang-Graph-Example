@@ -58,7 +58,7 @@ class LangGraphExternalApiServiceStreamingTest {
     @Test
     @DisplayName("events are forwarded in order and the stream completes once")
     void forwardsEventsInOrder() {
-        when(langGraphService.executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class))).thenReturn(Flux.just(
+        when(langGraphService.executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class), any())).thenReturn(Flux.just(
                 event(ExecutionEventType.START),
                 event(ExecutionEventType.NODE_END),
                 event(ExecutionEventType.END)));
@@ -78,19 +78,19 @@ class LangGraphExternalApiServiceStreamingTest {
     @Test
     @DisplayName("the caller's bare thread id is scoped to its tenant before it leaves Java")
     void scopesThreadIdForTheEngine() {
-        when(langGraphService.executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class))).thenReturn(Flux.empty());
+        when(langGraphService.executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class), any())).thenReturn(Flux.empty());
 
         call(new RecordingServerCallStreamObserver());
 
         Mockito.verify(langGraphService).executeGraphStream(
                 argumentThat(input -> assertThat(input.threadId()).isEqualTo("orchestra:abc")),
-                anyBoolean(), any(RequestOrigin.class));
+                anyBoolean(), any(RequestOrigin.class), any());
     }
 
     @Test
     @DisplayName("a graph-not-found failure becomes NOT_FOUND with the GraphQL-parity code")
     void mapsFailuresToStatus() {
-        when(langGraphService.executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class)))
+        when(langGraphService.executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class), any()))
                 .thenReturn(Flux.error(new LangGraphException.GraphNotFoundException("graph-1")));
         RecordingServerCallStreamObserver observer = new RecordingServerCallStreamObserver();
 
@@ -107,7 +107,7 @@ class LangGraphExternalApiServiceStreamingTest {
     @DisplayName("a cancelled stream disposes the subscription and stops the run in the engine")
     void cancellingTheStreamStopsTheEngineRun() {
         Sinks.Many<GraphExecutionEventPayload> sink = Sinks.many().unicast().onBackpressureBuffer();
-        when(langGraphService.executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class))).thenReturn(sink.asFlux());
+        when(langGraphService.executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class), any())).thenReturn(sink.asFlux());
         RecordingServerCallStreamObserver observer = new RecordingServerCallStreamObserver();
 
         call(observer);
@@ -131,7 +131,7 @@ class LangGraphExternalApiServiceStreamingTest {
     @DisplayName("nothing is pushed after the client cancelled")
     void stopsEmittingAfterCancel() {
         Sinks.Many<GraphExecutionEventPayload> sink = Sinks.many().unicast().onBackpressureBuffer();
-        when(langGraphService.executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class))).thenReturn(sink.asFlux());
+        when(langGraphService.executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class), any())).thenReturn(sink.asFlux());
         RecordingServerCallStreamObserver observer = new RecordingServerCallStreamObserver();
 
         call(observer);
@@ -158,7 +158,7 @@ class LangGraphExternalApiServiceStreamingTest {
                 .satisfies(error -> assertThat(error.getStatus().getCode())
                         .isEqualTo(Status.Code.UNAUTHENTICATED));
         assertThat(observer.cancelHandler).isNull();
-        verify(langGraphService, never()).executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class));
+        verify(langGraphService, never()).executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class), any());
     }
 
     @Test
@@ -175,7 +175,7 @@ class LangGraphExternalApiServiceStreamingTest {
             assertThat(error.getTrailers().get(GrpcErrors.ERROR_CODE)).isEqualTo("INVALID_ARGUMENT");
         });
         assertThat(observer.cancelHandler).as("nothing is registered once the call failed").isNull();
-        verify(langGraphService, never()).executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class));
+        verify(langGraphService, never()).executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class), any());
     }
 
     @Test
@@ -195,7 +195,7 @@ class LangGraphExternalApiServiceStreamingTest {
             assertThat(error.getStatus().getCode()).isEqualTo(Status.Code.PERMISSION_DENIED);
             assertThat(error.getTrailers().get(GrpcErrors.ERROR_CODE)).isEqualTo("GRAPH_ACCESS_DENIED");
         });
-        verify(langGraphService, never()).executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class));
+        verify(langGraphService, never()).executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class), any());
         verify(langGraphService, never()).cancelGraphExecution(any(), any());
     }
 

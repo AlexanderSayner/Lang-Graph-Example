@@ -237,6 +237,11 @@ message CopilotRequest {
   // "1" when llm.credentials.policy=REQUIRE: refuse the question instead of falling back
   // to the shared service key. Without it the copilot would be a hole in the policy.
   string require_user_key = 10;
+  // Who is asking: ""/"user" for an interactive GraphQL session, "b2b" for the B2B facade.
+  // It only picks the wording of the "no key for this provider" failure - an integrator
+  // must be told to send llm_credentials_json, not to click the 🔑 Keys button in a UI it
+  // never sees. Never billed, never persisted, never rendered into a prompt.
+  string caller_kind = 11;
 }
 
 message CopilotResponse {

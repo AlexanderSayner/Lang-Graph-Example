@@ -102,8 +102,17 @@ public class LangGraphGrpcService {
         return executeGraphStream(input, stream, RequestOrigin.GRAPHQL);
     }
 
+    public Flux<@NonNull GraphExecutionEventPayload> executeGraphStream(ExecuteGraphInput input, boolean stream,
+                                                                        RequestOrigin origin) {
+        return executeGraphStream(input, stream, origin, null);
+    }
+
     /**
      * @param origin decides whose LLM keys (if any) ride along with this run
+     * @param suppliedCredentialsJson the keys a B2B caller attached to THIS request (its own
+     *                                {@code llm_credentials_json} field), or null. Only ever
+     *                                non-null on the B2B path - the GraphQL path never lets a
+     *                                client pick a credential channel
      *
      * <p>The credentials are resolved <b>here, synchronously</b>, before the Flux exists:
      * they come from the ThreadLocal security context, which is only present on the calling
@@ -112,8 +121,9 @@ public class LangGraphGrpcService {
      * shared service key instead - the exact surprise this feature exists to prevent.</p>
      */
     public Flux<@NonNull GraphExecutionEventPayload> executeGraphStream(ExecuteGraphInput input, boolean stream,
-                                                                        RequestOrigin origin) {
-        Map<String, String> runContext = requestCredentials.forRequest(origin);
+                                                                        RequestOrigin origin,
+                                                                        String suppliedCredentialsJson) {
+        Map<String, String> runContext = requestCredentials.forRequest(origin, suppliedCredentialsJson);
 
         ExecuteGraphRequest request = stream
                 ? mapper.toStreamExecuteGraphRequest(input, runContext)

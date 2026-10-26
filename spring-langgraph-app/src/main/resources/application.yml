@@ -171,9 +171,10 @@ llm:
     #   engine as `billing=service`, so a subsidised run is visible but never fatal.
     # REQUIRE - the run (and the copilot) stops with "add your key" instead of spending the
     #   operator's credits. Switch for the future subscription tier.
-    # PERSONAL_ONLY - REQUIRE for a signed-in user, plus callers that can own no key at all
-    #   (anonymous GraphQL, the B2B gRPC facade) are REFUSED here at the API edge instead of
-    #   being served from the shared key. Pair it with LLM_SERVICE_KEY_ENABLED=false on the
+    # PERSONAL_ONLY - REQUIRE for a signed-in user, plus a caller without a key is REFUSED at
+    #   the API edge instead of being served from the shared one: an anonymous GraphQL request,
+    #   or a B2B call that sent no llm_credentials_json (an integrator brings its own keys on
+    #   the call - see B2B_INTEGRATION.md). Pair it with LLM_SERVICE_KEY_ENABLED=false on the
     #   Python service, which is the hard guarantee that no path can read the shared key.
     #   Inert while master-key is blank - fail open, like REQUIRE.
     policy: ${LLM_CREDENTIALS_POLICY:FALLBACK}

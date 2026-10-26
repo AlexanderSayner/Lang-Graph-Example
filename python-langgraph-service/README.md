@@ -290,6 +290,11 @@ strips them from client-supplied input as well.
   so it is exactly what an inheriting node will build) and `LLM_SERVICE_KEY_ENABLED`, so the
   backend's `llmBillingSettings` query can name the provider in its pre-run hint instead of
   promising a shared-key run that may not be possible.
+* `caller_kind` (a run key the backend owns, like `require_user_key`) picks *who* the
+  "no key for this provider" failure is addressed to: `"b2b"` gets "add it to
+  llm_credentials_json on the call" instead of the UI instruction an integrator could never
+  act on. It is lifted into `configurable` (never into `GraphState`), inherited by subgraphs,
+  and stripped from anything a client sends.
 * Compiled graphs stay credential-free (they are cached), subgraphs inherit the parent's
   keys, and `LLM_MAX_ATTEMPTS` retries pass the same credentials.
 * `MAX_CACHED_LLM_CLIENTS` bounds the client registry so rotated/deleted keys never stay

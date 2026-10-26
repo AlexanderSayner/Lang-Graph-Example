@@ -37,6 +37,7 @@ from app.graph_engine.node_handlers import (
     CONFIG_USER_ID,
     NodeHandler,
     _accepts_credentials,
+    caller_kind_from_config,
     credentials_from_config,
     require_user_key_from_config,
     scrub_secret_context,
@@ -831,3 +832,67 @@ def test_copilot_runs_on_a_personal_key_when_the_kill_switch_is_off(monkeypatch)
 
     assert response.success is True
     assert response.llm_billing == "user"
+
+
+# --- caller_kind: one failure, two audiences ---------------------------------------
+
+
+def test_a_b2b_refusal_is_worded_for_an_integrator():
+    """An integrator never sees the UI, so the failure must name the field it controls."""
+    handler = NodeHandler(graph_loader=None)
+    state = {"input": "hi", "context": {}}
+    credentials = LLMCredentialSet.empty()
+
+    b2b = asyncio.run(handler._process_action(
+        "n1", {"system_prompt": "answer"}, state, _RecordingLLM(provider="anthropic"),
+        credentials=credentials, require_user_key=True, caller_kind="b2b"))
+    browser = asyncio.run(handler._process_action(
+        "n1", {"system_prompt": "answer"}, state, _RecordingLLM(provider="anthropic"),
+        credentials=credentials, require_user_key=True))
+
+    assert "llm_credentials_json" in b2b["output"]
+    assert "anthropic" in b2b["output"]
+    assert "🔑" not in b2b["output"]
+    # The interactive wording is untouched: same key, other audience.
+    assert "🔑 Keys" in browser["output"]
+    # Neither called a model, so neither may claim a payer.
+    assert b2b["llm_billing"] == browser["llm_billing"] == ""
+
+
+def test_copilot_refusal_is_worded_for_the_audience(monkeypatch):
+    monkeypatch.setattr(settings, "LLM_SERVICE_KEY_ENABLED", False)
+    servicer = LangGraphServiceServicer.__new__(LangGraphServiceServicer)
+    servicer._llm_registry = LLMClientRegistry()
+
+    async def _must_not_be_called(**kwargs):
+        raise AssertionError("the copilot must not spend the shared service key")
+
+    servicer.copilot = types.SimpleNamespace(ask=_must_not_be_called)
+    request = types.SimpleNamespace(
+        copilot_provider="openai", copilot_model="",
+        llm_credentials_json="", require_user_key="", caller_kind="b2b",
+        user_message="hi", graph_context_json="{}", execution_history_json="{}",
+        copilot_chat_history_json="[]", selected_node_id="", selected_edge_json="")
+
+    response = asyncio.run(servicer.AskCopilot(request, _grpc_context()))
+
+    assert response.success is False
+    assert "llm_credentials_json" in response.error_message
+    assert "🔑" not in response.error_message
+    assert response.llm_billing == ""
+
+
+def test_caller_kind_travels_through_config_and_never_into_the_state():
+    state_context, configurable = _split_run_context({
+        "tenant": "acme",                 # real graph input, stays
+        "caller_kind": "b2b",             # run key: lifted, never stored
+        "llm_credentials_json": json.dumps({"openai": {"api_key": "sk"}}),
+    })
+
+    assert configurable["caller_kind"] == "b2b"
+    assert "caller_kind" not in state_context
+    assert "tenant" in state_context
+    # Defaults to the interactive audience, and subgraphs inherit it (INHERITED_CONFIGURABLE_KEYS).
+    assert caller_kind_from_config(None) == ""
+    assert caller_kind_from_config({"configurable": {}}) == ""
+    assert caller_kind_from_config({"configurable": {"caller_kind": "b2b"}}) == "b2b"

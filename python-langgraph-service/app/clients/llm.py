@@ -74,12 +74,19 @@ class MissingUserApiKeyError(MissingApiKeyError):
     """
 
 
-def missing_user_key_message(provider: str) -> str:
-    """The one wording a user sees when policy=REQUIRE and they have no key yet.
+def missing_user_key_message(provider: str, caller_kind: str = "") -> str:
+    """The one wording a caller sees when a personal key for ``provider`` is required.
 
-    Shared by the graph-node path and the copilot so the instruction is identical
-    wherever the run happens to stop.
+    Two audiences, two instructions, one source of truth: an interactive user is told where
+    the key manager lives, while an integrator on the B2B facade (``caller_kind="b2b"``) is
+    told which field of which message to fill - it never sees the UI this message otherwise
+    points at, and a node failure that named a sidebar would be a dead end.
     """
+    if caller_kind == "b2b":
+        return (f"No personal API key was sent for provider '{provider}', and this request "
+                f"cannot run on the shared service key. Add the provider to "
+                f"llm_credentials_json on the call: "
+                f'{{"{provider}": {{"api_key": "…", "folder_id": ""}}}}.')
     return (f"No personal API key saved for provider '{provider}', and this request "
             f"requires one (llm.credentials.policy=REQUIRE). Add it with the "
             f"'🔑 Keys' button in the sidebar.")

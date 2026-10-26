@@ -116,9 +116,10 @@ services:
       # are unrecoverable.
       # FALLBACK = a user with no key runs on the shared key but is reported as
       # llmBilling="service"; REQUIRE = a missing key stops the run instead;
-      # PERSONAL_ONLY = REQUIRE plus anonymous GraphQL and B2B gRPC calls are refused at the
-      # API edge - pair it with LLM_SERVICE_KEY_ENABLED=false on the langgraph-service (above),
-      # which is the hard guarantee that no path can read the shared key.
+      # PERSONAL_ONLY = REQUIRE plus anonymous GraphQL and B2B calls without their own
+      # llm_credentials_json are refused at the API edge - pair it with
+      # LLM_SERVICE_KEY_ENABLED=false on the langgraph-service (above), which is the hard
+      # guarantee that no path can read the shared key.
       - LLM_SECRET_MASTER_KEY=${LLM_SECRET_MASTER_KEY:-}
       - LLM_CREDENTIALS_POLICY=${LLM_CREDENTIALS_POLICY:-FALLBACK}
     entrypoint: [ "sh", "-c", "if [ -n \"$$YC_SA_KEY_JSON_B64\" ]; then export YC_SA_KEY_JSON=\"$$(echo \"$$YC_SA_KEY_JSON_B64\" | base64 -d)\"; fi && exec java $$JAVA_OPTS -jar /app/app.jar" ]

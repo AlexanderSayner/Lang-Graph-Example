@@ -701,7 +701,8 @@ export SPRING_GRAPHQL_GRAPHIQL_ENABLED=false
 export LLM_SECRET_MASTER_KEY=$(openssl rand -base64 32)   # back this up: keys are unrecoverable without it
 export LLM_CREDENTIALS_POLICY=FALLBACK                     # or REQUIRE (stop instead of billing the
                                                            # shared key) / PERSONAL_ONLY (also refuse
-                                                           # anonymous GraphQL and B2B gRPC callers)
+                                                           # an anonymous GraphQL caller and a B2B call
+                                                           # that sent no llm_credentials_json)
 # Python engine's kill switch - the hard guarantee behind PERSONAL_ONLY: false = no path can
 # read YC_API_KEY / OPENAI_API_KEY / … (set it on the python service, not on Spring).
 export LLM_SERVICE_KEY_ENABLED=true

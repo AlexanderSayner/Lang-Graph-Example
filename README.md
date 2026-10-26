@@ -389,6 +389,9 @@ mutation {
 - Python → Java: HTTP request execution callbacks (`HttpRequestGrpcService` on port `9090`)
 - Efficient binary protocol with strong typing via Protocol Buffers
 - Server-side streaming for real-time graph execution events
+- **External B2B facade** (`external.v1.LangGraphExternalApi`, port `9091`, API-key auth,
+  tenant/graph scoping) — integrators run graphs on **their own LLM keys** via
+  `llm_credentials_json`: see [B2B_INTEGRATION.md](B2B_INTEGRATION.md)
 
 ### 2. GraphQL API
 - Queries, mutations and WebSocket subscriptions
@@ -598,7 +601,7 @@ into `~/myapp.env` on every deploy; unset values fall back to `FALLBACK` / `true
 | signed-in user, **has** a key for the node's provider | shared key | their key, `llmBilling: "user"` | their key | their key |
 | signed-in user, **has none** | shared key, `"service"` | shared key, `"service"` | refused: *No personal API key saved for provider 'x' …* | refused |
 | anonymous `/graphql` run | shared key | shared key | shared key | **refused at the API edge** |
-| B2B gRPC call | shared key | shared key | shared key | **refused at the API edge** |
+| B2B gRPC call | shared key, or its own `llm_credentials_json` if sent | same | its own keys, **refused without them** | its own keys, **refused without them** |
 | someone reaching the Python gRPC port directly | shared key | shared key | shared key | **refused inside the engine** |
 
 A run that mixes providers reports `llmBilling: "mixed"`; a run whose nodes called no model
@@ -615,10 +618,12 @@ for callers that reach *it*. Three settings together close every path:
 1. **`LLM_SECRET_MASTER_KEY=<value>`** — without it `PERSONAL_ONLY` fails open, because no
    user could store a key in the first place.
 2. **`LLM_CREDENTIALS_POLICY=PERSONAL_ONLY`** (Spring) — a signed-in user without a key is
-   refused (the `require_user_key=1` flag also goes to the engine), and callers that can never
-   own one — anonymous GraphQL (`executeGraph`, `executeGraphStream`, `askCopilot`) and the
-   whole B2B gRPC facade — are refused *before* the engine is contacted, with the policy named
-   in the message (`BAD_REQUEST` / `INVALID_ARGUMENT`). The rule lives in
+   refused (the `require_user_key=1` flag also goes to the engine), and a caller that cannot
+   reach the key manager is refused *before* the engine is contacted: an anonymous GraphQL
+   request (`executeGraph`, `executeGraphStream`, `askCopilot`) with `BAD_REQUEST` +
+   `LLM_KEY_REQUIRED`, and a B2B call **that sent no `llm_credentials_json`** with
+   `FAILED_PRECONDITION` + `LLM_KEY_REQUIRED` — a B2B call that *does* bring its own keys runs
+   (see [B2B_INTEGRATION.md](B2B_INTEGRATION.md)). The rule lives in
    `LlmRequestCredentials.forRequest`, the one choke point every run passes through.
 3. **`LLM_SERVICE_KEY_ENABLED=false`** (Python service) — the hard guarantee. `LLMClient`
    never reads `YC_API_KEY` / `OPENAI_API_KEY` / … when the caller brought no personal key, so
@@ -634,8 +639,11 @@ What changes in practice:
 - A user needs a key for **every provider the graph touches**: a graph using two providers
   needs two keys, otherwise that node stops with the instruction above (`mixed` is then
   impossible by definition).
-- **B2B can no longer run LLM graphs at all** — a service account has no user and therefore
-  no key. Deliberate; per-tenant credentials are not implemented (a follow-up if B2B matters).
+- **B2B brings its keys on the call** — `ExecuteGraphRequest` / `AskCopilotRequest` carry
+  `llm_credentials_json`, validated at the edge and forwarded as server-built run context; the
+  call is attributed as `b2b:<client-id>` instead of `anonymous`. Without them a deployment
+  that will not spend its shared key refuses the call (`LLM_KEY_REQUIRED`) rather than running
+  the graph. Contract and examples: [B2B_INTEGRATION.md](B2B_INTEGRATION.md).
 - The model dropdown (`llmModels`) asks providers with the *service* key; with it disabled it
   falls back to the built-in `curated` list — never an error, and a hand-typed model id still
   works.
@@ -669,7 +677,7 @@ What changes in practice:
 | `llm.credentials.master-key must decode to exactly 32 bytes, got N` | Spring startup failure | The value is not `openssl rand -base64 32` output (wrapped/truncated): fix the variable and restart |
 | `No personal API key saved for provider 'x', and this request requires one (llm.credentials.policy=REQUIRE). Add it with the '🔑 Keys' button in the sidebar.` | node output / copilot answer | Policy is `REQUIRE` or `PERSONAL_ONLY` and you have no key for that provider |
 | `Sign in and add a personal LLM key … this deployment never spends the shared service key` | GraphQL `BAD_REQUEST` | `PERSONAL_ONLY` refused an anonymous caller — sign in and add a key |
-| `A B2B service account has no personal LLM key to run with …` | gRPC `INVALID_ARGUMENT` on the B2B execute paths | `PERSONAL_ONLY` does not serve service accounts: run as a user, or switch to `FALLBACK`. A B2B **copilot** call is refused too, but with the "sign in" message above (it arrives through the anonymous path) |
+| `This request carries no llm_credentials_json and this deployment does not run B2B calls on its shared service key …` | gRPC `FAILED_PRECONDITION` + `x-error-code: LLM_KEY_REQUIRED` on the B2B execute/copilot paths | The deployment will not spend its shared key and the call brought none: send your provider keys in `llm_credentials_json` (see [B2B_INTEGRATION.md](B2B_INTEGRATION.md)). A malformed payload is `INVALID_ARGUMENT` instead, naming the offending provider |
 | `No API key for LLM provider 'x'. Set X_API_KEY.` | node error | Neither a personal nor a service key exists for that provider (service keys removed, none saved) |
 | `⚠️ Served by the shared service key — no personal key for this provider` after a key **was** saved | under the answer | Your key is fine; the *resolved* provider is not yours. A graph with no `llm_provider` in its config or nodes runs on the server default (`LLM_PROVIDER`, `yandex` unless you set it), so `openrouter` (etc.) keys are never consulted. The pre-run ℹ️ note names that provider (`GetLlmSettings` on the engine), and the fix is the builder (graph settings or the node) — or `LLM_PROVIDER` on the Python service |
 | `Skipping unreadable LLM credential (user … provider …)` | Spring log warning | Master key changed or the row was tampered with: that provider falls back to the shared key and the user must re-save it |

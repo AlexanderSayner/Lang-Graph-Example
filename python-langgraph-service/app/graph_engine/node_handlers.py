@@ -32,10 +32,11 @@ GraphLoader = Callable[[str], Awaitable[Pregel]]
 CONFIG_LLM_CREDENTIALS = "llm_credentials_json"   # JSON: provider -> {api_key, folder_id}
 CONFIG_REQUIRE_USER_KEY = "require_user_key"       # "1" = fail instead of using the service key
 CONFIG_USER_ID = "x_user_id"                       # attribution (per-run metering/logs)
+CONFIG_CALLER_KIND = "caller_kind"                 # "b2b" = word the refusal for an integrator
 
 # Keys that must be inherited by subgraphs (subgraph nodes run with the parent's user).
 INHERITED_CONFIGURABLE_KEYS = (
-    CONFIG_LLM_CREDENTIALS, CONFIG_REQUIRE_USER_KEY, CONFIG_USER_ID,
+    CONFIG_LLM_CREDENTIALS, CONFIG_REQUIRE_USER_KEY, CONFIG_USER_ID, CONFIG_CALLER_KIND,
 )
 
 # Context keys that would leak a secret if left in GraphState.context. Popped by the
@@ -57,6 +58,18 @@ def require_user_key_from_config(config: Optional[RunnableConfig]) -> bool:
     """True when the caller asked for hard billing (policy=REQUIRE) instead of fallback."""
     configurable = (config or {}).get("configurable") or {}
     return str(configurable.get(CONFIG_REQUIRE_USER_KEY, "")).strip() == "1"
+
+
+def caller_kind_from_config(config: Optional[RunnableConfig]) -> str:
+    """Who is asking: "" (an interactive session - the default wording) or ``"b2b"``.
+
+    Only ever used to pick the phrasing of the "no key for this provider" failure: an
+    integrator on the B2B facade must be told to send ``llm_credentials_json``, not to click
+    a keys button in a UI it never sees. Set by the backend; a client cannot forge it (the
+    run key is stripped from anything they send).
+    """
+    configurable = (config or {}).get("configurable") or {}
+    return str(configurable.get(CONFIG_CALLER_KIND, "")).strip()
 
 
 def scrub_secret_context(context: Any) -> Dict[str, Any]:
@@ -232,7 +245,8 @@ class NodeHandler:
 
     async def _generate(self, user_message: str, system_message: str, llm=None,
                         credentials: Optional[LLMCredentialSet] = None,
-                        require_user_key: bool = False) -> Tuple[Any, str]:
+                        require_user_key: bool = False,
+                        caller_kind: str = "") -> Tuple[Any, str]:
         """Call the LLM, retrying once when the answer is a refusal or empty text.
 
         On the retry we also shrink the prompt: the conversation history is dropped and a
@@ -246,7 +260,10 @@ class NodeHandler:
         Returns ``(response, billing_owner)`` so the caller can report who paid:
         ``"user"`` (a personal key), ``"service"`` (the shared config-based key). Under the
         default FALLBACK policy a missing personal key is not an error - it is simply a
-        service-billed call; with ``require_user_key`` it raises first instead.
+        service-billed call; with ``require_user_key`` - or when the shared key is switched
+        off entirely (``LLM_SERVICE_KEY_ENABLED=false``) - it raises first instead, and
+        ``caller_kind`` words that failure for whoever will read it (an integrator on the
+        B2B facade is told to send ``llm_credentials_json``, not to click a UI button).
         """
         client = llm or self._default_client()
         if client is None:
@@ -268,7 +285,14 @@ class NodeHandler:
             or getattr(client, "billing_owner", "") == BILLING_USER
         )
         if require_user_key and not personal_key_available:
-            raise MissingUserApiKeyError(missing_user_key_message(provider or "default"))
+            raise MissingUserApiKeyError(
+                missing_user_key_message(provider or "default", caller_kind))
+        if not settings.LLM_SERVICE_KEY_ENABLED and not personal_key_available:
+            # The kill switch is checked HERE as well as in LLMClient._api_key: raising here
+            # gives the same failure the audience-appropriate wording (the hard gate inside
+            # the client stays as the guarantee for any path that reaches a client directly).
+            raise MissingUserApiKeyError(
+                missing_user_key_message(provider or "default", caller_kind))
 
         billing = BILLING_USER if personal_key_available else BILLING_SERVICE
 
@@ -302,17 +326,18 @@ class NodeHandler:
         # shared by every user, so the caller's keys can only arrive per execution.
         credentials = credentials_from_config(config)
         require_user_key = require_user_key_from_config(config)
+        caller_kind = caller_kind_from_config(config)
 
         if is_router_node:
             return await self._process_router(n_id, n_meta, router_keys, state, llm,
-                                              credentials, require_user_key)
+                                              credentials, require_user_key, caller_kind)
         if node_type == "GRAPH":
             return await self._process_subgraph(n_id, n_meta, state, config)
         if node_type == "HTTP_REQUEST":
             return await self._process_http_request(n_id, n_meta, state)
         if node_type in self.ACTION_NODE_TYPES:
             return await self._process_action(n_id, n_meta, state, llm,
-                                              credentials, require_user_key)
+                                              credentials, require_user_key, caller_kind)
 
         raise ValueError(
             f"Node {n_id}: unknown node type '{node_type}'. "
@@ -322,7 +347,8 @@ class NodeHandler:
     async def _process_router(self, n_id: str, n_meta: Dict[str, Any], router_keys: Set,
                               state: GraphState, llm=None,
                               credentials: Optional[LLMCredentialSet] = None,
-                              require_user_key: bool = False) -> Dict[str, Any]:
+                              require_user_key: bool = False,
+                              caller_kind: str = "") -> Dict[str, Any]:
         data_block = format_state_context(state, *self._context_flags(n_meta))
         system_prompt = n_meta.get("system_prompt", "You are a helpful assistant.")
         keys_list = ", ".join(router_keys) if router_keys else "intent"
@@ -338,7 +364,8 @@ class NodeHandler:
         try:
             llm_response, billing = await self._generate(
                 user_message=data_block, system_message=system_prompt, llm=llm,
-                credentials=credentials, require_user_key=require_user_key)
+                credentials=credentials, require_user_key=require_user_key,
+                caller_kind=caller_kind)
 
             # Safely extract content and tokens regardless of whether llm_response is a string or an object
             output_content = getattr(llm_response, 'content', str(llm_response))
@@ -396,7 +423,8 @@ class NodeHandler:
 
     async def _process_action(self, n_id: str, n_meta: Dict[str, Any], state: GraphState,
                               llm=None, credentials: Optional[LLMCredentialSet] = None,
-                              require_user_key: bool = False) -> Dict[str, Any]:
+                              require_user_key: bool = False,
+                              caller_kind: str = "") -> Dict[str, Any]:
         user_input = state.get("input") or ""
         if not user_input.strip():
             return {"last_node": n_id, "output": "No input provided."}
@@ -423,7 +451,8 @@ class NodeHandler:
         try:
             llm_response, billing = await self._generate(
                 user_message=final_user_input, system_message=system_prompt, llm=llm,
-                credentials=credentials, require_user_key=require_user_key)
+                credentials=credentials, require_user_key=require_user_key,
+                caller_kind=caller_kind)
 
             output_content = getattr(llm_response, 'content', str(llm_response))
             usage = getattr(llm_response, 'usage', {})

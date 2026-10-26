@@ -24,7 +24,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GrpcErrorsTest {
 
     @Test
-    @DisplayName("a not-found maps like the GraphQL NOT_FOUND case")
+    @DisplayName("a graph-not-found maps like the GraphQL NOT_FOUND case")
     void mapsGraphNotFound() {
         StatusRuntimeException status = GrpcErrors.toStatus(new LangGraphException.GraphNotFoundException("g1"));
 
@@ -48,6 +48,19 @@ class GrpcErrorsTest {
 
         assertThat(status.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
         assertThat(status.getTrailers().get(GrpcErrors.ERROR_CODE)).isEqualTo("GRAPH_STATE_ERROR");
+    }
+
+    @Test
+    @DisplayName("a missing LLM key is a precondition the caller can fix, detail intact")
+    void mapsLlmKeyRequired() {
+        StatusRuntimeException status = GrpcErrors.toStatus(
+                new LangGraphException.LlmKeyRequiredException("send llm_credentials_json"));
+
+        // FAILED_PRECONDITION, not INVALID_ARGUMENT: nothing about the request SHAPE is wrong,
+        // and the whole point of the code is that an integrator reads the remedy.
+        assertThat(status.getStatus().getCode()).isEqualTo(Status.Code.FAILED_PRECONDITION);
+        assertThat(status.getTrailers().get(GrpcErrors.ERROR_CODE)).isEqualTo("LLM_KEY_REQUIRED");
+        assertThat(status.getStatus().getDescription()).isEqualTo("send llm_credentials_json");
     }
 
     @Test

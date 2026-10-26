@@ -161,7 +161,7 @@ class B2bGrpcServerIntegrationTest {
     @Test
     @DisplayName("a streaming call reaches the service and completes over the wire")
     void streamsOverTheWire() {
-        when(langGraphService.executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class))).thenReturn(Flux.just(
+        when(langGraphService.executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class), any())).thenReturn(Flux.just(
                 new GraphExecutionEventPayload(ExecutionEventType.START, "node", "out",
                         Map.of("k", "v"), 1L, 1, null, null)));
 
@@ -185,7 +185,7 @@ class B2bGrpcServerIntegrationTest {
         org.mockito.Mockito.verify(langGraphService).executeGraphStream(
                 org.mockito.ArgumentMatchers.argThat(input ->
                         "orchestra:abc".equals(input.threadId())),
-                anyBoolean(), any(RequestOrigin.class));
+                anyBoolean(), any(RequestOrigin.class), any());
     }
 
     private LangGraphExternalApiGrpc.LangGraphExternalApiBlockingStub blockingStub(Metadata headers) {

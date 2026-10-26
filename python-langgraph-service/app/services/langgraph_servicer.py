@@ -26,6 +26,7 @@ from app.graph_engine.graph_utils import parse_conditions, resolve_route, GraphS
 from app.graph_engine.node_handlers import (
     BILLING_SERVICE,
     BILLING_USER,
+    CONFIG_CALLER_KIND,
     CONFIG_LLM_CREDENTIALS,
     CONFIG_REQUIRE_USER_KEY,
     CONFIG_USER_ID,
@@ -90,7 +91,7 @@ def _serialize_state(state: Dict[str, Any]) -> Dict[str, str]:
 # to the browser in the START event, and - for credentials - rendered into the model prompt
 # by NodeHandler._process_action, which would send a user's API key to their LLM provider.
 RUN_CONTEXT_KEYS = frozenset({
-    CONFIG_LLM_CREDENTIALS, CONFIG_REQUIRE_USER_KEY, CONFIG_USER_ID,
+    CONFIG_LLM_CREDENTIALS, CONFIG_REQUIRE_USER_KEY, CONFIG_USER_ID, CONFIG_CALLER_KIND,
     # Legacy single-key form. A graph picks its provider per NODE, so a bare key cannot be
     # attributed to one; it is dropped rather than guessed at, and never kept in the state.
     "llm_api_key", "yc_folder_id",
@@ -118,6 +119,11 @@ def _split_run_context(request_context: Any) -> Tuple[Dict[str, Any], Dict[str, 
     user_id = str(raw.get(CONFIG_USER_ID, "") or "").strip()
     if user_id:
         configurable[CONFIG_USER_ID] = user_id
+    # Who is asking, so a later refusal addresses the right audience. Set by the backend
+    # (B2B facade) and stripped from anything a client sends, like every run key above.
+    caller_kind = str(raw.get(CONFIG_CALLER_KIND, "") or "").strip()
+    if caller_kind:
+        configurable[CONFIG_CALLER_KIND] = caller_kind
 
     if "llm_api_key" in raw or "yc_folder_id" in raw:
         logger.warning(
@@ -752,7 +758,10 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         require_user_key = str(getattr(request, "require_user_key", "") or "").strip() == "1"
         service_key_disabled = not settings.LLM_SERVICE_KEY_ENABLED
         if credential is None and (require_user_key or service_key_disabled):
-            message = missing_user_key_message(resolved.provider)
+            # caller_kind makes the wording match the audience: an integrator is told which
+            # field to fill, a browser user where the key manager lives.
+            caller_kind = str(getattr(request, "caller_kind", "") or "").strip()
+            message = missing_user_key_message(resolved.provider, caller_kind)
             logger.warning("Copilot refused (%s): %s",
                            "service key disabled" if service_key_disabled else "policy=REQUIRE",
                            message)

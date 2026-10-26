@@ -68,6 +68,18 @@ class GraphQlExceptionHandlerTest {
     }
 
     @Test
+    @DisplayName("a missing LLM key keeps its message and says WHAT is missing")
+    void llmKeyRequiredKeepsItsMessageAndCode() {
+        GraphQLError error = resolve(new LangGraphException.LlmKeyRequiredException(
+                "Sign in and add a personal LLM key ..."));
+
+        assertThat(error.getMessage()).isEqualTo("Sign in and add a personal LLM key ...");
+        assertThat(error.getErrorType()).isEqualTo(ErrorType.BAD_REQUEST);
+        // The same vocabulary the B2B facade answers with (FAILED_PRECONDITION + this code).
+        assertThat(error.getExtensions()).containsEntry("code", "LLM_KEY_REQUIRED");
+    }
+
+    @Test
     @DisplayName("domain failures keep their existing mapping")
     void domainExceptionsAreUnchanged() {
         GraphQLError error = resolve(new LangGraphException.GraphNotFoundException("g1"));
