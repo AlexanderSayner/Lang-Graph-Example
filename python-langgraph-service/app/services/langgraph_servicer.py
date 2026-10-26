@@ -801,6 +801,26 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             error_message=result.error_message,
         )
 
+    @handle_grpc_errors
+    async def GetLlmSettings(self, request, context):
+        """The service-wide settings a UI needs before it can describe a run honestly.
+
+        The backend asks this once per page load so its chat panel can say *which* provider a
+        graph that selects none actually runs on (``LLM_PROVIDER``), and whether the shared
+        key may be spent at all (``LLM_SERVICE_KEY_ENABLED``).
+
+        The provider goes through :func:`resolve_llm_config` instead of being read from
+        ``settings.LLM_PROVIDER`` directly, so the answer is EXACTLY what a node that
+        inherits will build - same alias normalisation, same ``yandex`` fallback - rather
+        than a second copy of that rule which could drift away from it.
+        """
+        resolved = resolve_llm_config({}, {})
+        return langgraph_pb2.GetLlmSettingsResponse(
+            default_provider=resolved.provider,
+            default_model=resolved.model,
+            service_key_enabled=settings.LLM_SERVICE_KEY_ENABLED,
+        )
+
     @property
     def compiled_graphs(self):
         return self._compiled_graphs

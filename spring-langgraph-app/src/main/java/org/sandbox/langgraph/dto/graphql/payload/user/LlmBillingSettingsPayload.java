@@ -15,10 +15,19 @@ package org.sandbox.langgraph.dto.graphql.payload.user;
  * @param serviceKeyForbidden true when a run without a personal key will be refused instead
  *                            of billed to the shared service key - what the UI should say
  *                            instead of "these nodes will run on the shared service key"
+ * @param defaultProvider     the engine's resolved {@code LLM_PROVIDER}: what a graph that
+ *                            selects no provider of its own actually runs on. Empty when the
+ *                            engine could not be reached, so the UI names no provider rather
+ *                            than guessing one
+ * @param serviceKeyEnabled   false when the engine's {@code LLM_SERVICE_KEY_ENABLED} makes the
+ *                            shared key unspendable - a run without a matching personal key
+ *                            then fails instead of billing the operator
  */
 public record LlmBillingSettingsPayload(
         String policy,
         Boolean personalKeysEnabled,
-        Boolean serviceKeyForbidden
+        Boolean serviceKeyForbidden,
+        String defaultProvider,
+        Boolean serviceKeyEnabled
 ) {
 }

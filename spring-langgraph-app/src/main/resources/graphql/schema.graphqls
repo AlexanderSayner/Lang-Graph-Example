@@ -145,6 +145,13 @@ type LlmBillingSettingsPayload {
     # true when a call without a personal key for the resolved provider will be REFUSED
     # instead of billed to the shared service key (PERSONAL_ONLY with keys enabled).
     serviceKeyForbidden: Boolean!
+    # The engine's resolved LLM_PROVIDER: what a graph that selects no provider of its own
+    # actually runs on (its nodes fall back to this). Empty when the engine could not be
+    # reached - then the UI names no provider rather than guessing one.
+    defaultProvider: String
+    # false when the engine's LLM_SERVICE_KEY_ENABLED is off: no path may read the shared
+    # key, so a run without a matching personal key fails instead of billing the operator.
+    serviceKeyEnabled: Boolean!
 }
 
 # ============== HTTP Request Debug Types ==============

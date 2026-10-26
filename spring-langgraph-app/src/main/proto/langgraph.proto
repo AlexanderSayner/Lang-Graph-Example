@@ -32,6 +32,10 @@ service LangGraphService {
   // List the models a provider offers (drives the UI's model suggestions)
   rpc ListLlmModels (ListLlmModelsRequest) returns (ListLlmModelsResponse);
 
+  // Service-wide LLM settings the backend exposes to the UI: which provider a graph that
+  // selects none actually runs on, and whether the shared service key may be spent at all.
+  rpc GetLlmSettings (GetLlmSettingsRequest) returns (GetLlmSettingsResponse);
+
   // Cancel a graph execution that is currently running (mid-node, mid-LLM call).
   rpc CancelGraphExecution (CancelGraphExecutionRequest) returns (CancelGraphExecutionResponse);
 }
@@ -263,6 +267,18 @@ message ListLlmModelsResponse {
   repeated LlmModel models = 2;
   string source = 3;         // "live" when fetched from the provider, "curated" as a fallback
   string error_message = 4;  // Set when the live list failed and we fell back to curated
+}
+
+// ==========================================
+// Service-wide LLM settings (UI honesty)
+// ==========================================
+
+message GetLlmSettingsRequest {}
+
+message GetLlmSettingsResponse {
+  string default_provider = 1;  // LLM_PROVIDER: what a node/graph without a provider resolves to
+  string default_model = 2;     // the model that same default provider will use
+  bool service_key_enabled = 3; // LLM_SERVICE_KEY_ENABLED: false = no path may spend the shared key
 }
 
 // ==========================================

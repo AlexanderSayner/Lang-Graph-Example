@@ -97,11 +97,17 @@ nothing is ever blocked):
    `"service"` / `"mixed"`) renders *"⚠ Served by the shared service key"* under the message, so a
    run is never attributed to the wrong payer.
 
-There is also an informational note (blue, no button): when the loaded graph names **no**
-provider anywhere and the account does hold keys, the two warnings above cannot fire - a graph
-that declares nothing has no "missing provider" to name - so the panel says *"This graph selects
-no LLM provider — it runs on the server default; your saved keys (…) are used only if that
-default matches"* before the run, instead of leaving the after-the-fact billing note as the only
-explanation.
+There are also two informational notes (blue and green, no button), for the case the two
+warnings above cannot reach: a graph that names **no** provider anywhere. The engine is asked
+for its default (`GetLlmSettings`) so the panel can say the provider out loud instead of
+guessing it:
+
+- **blue** when the default is *not* among the account's saved keys - *"This graph runs on the
+  server default provider **yandex**; your saved keys (openrouter) don't cover it — the shared
+  service key pays"* (or *"the run will be refused"* when neither the policy nor
+  `LLM_SERVICE_KEY_ENABLED` allows the shared key). With an unreachable engine the provider is
+  simply not named, and the wording stays conditional rather than promising something unknown;
+- **green** when it *is* among them - *"runs on the server default provider **yandex**, and you
+  hold a personal key for it — expect llmBilling: user below."*
 
 Anonymous visitors never see the first warning: they have no account to hold a key in.

@@ -146,6 +146,8 @@ export const LLM_BILLING_SETTINGS_QUERY = `
             policy
             personalKeysEnabled
             serviceKeyForbidden
+            defaultProvider
+            serviceKeyEnabled
         }
     }
 `;

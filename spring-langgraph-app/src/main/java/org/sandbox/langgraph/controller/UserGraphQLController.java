@@ -15,6 +15,7 @@ import org.sandbox.langgraph.dto.graphql.payload.user.UserThread;
 import org.sandbox.langgraph.security.CurrentUser;
 import org.sandbox.langgraph.security.SessionSecurityContext;
 import org.sandbox.langgraph.security.ServletRequestGraphQlInterceptor;
+import org.sandbox.langgraph.service.LangGraphGrpcService;
 import org.sandbox.langgraph.service.user.UserLlmCredentialService;
 import org.sandbox.langgraph.service.user.UserService;
 import org.springframework.graphql.data.method.annotation.Argument;
@@ -34,6 +35,7 @@ public class UserGraphQLController {
     private final UserLlmCredentialService llmCredentialService;
     private final CurrentUser currentUser;
     private final SessionSecurityContext sessionSecurityContext;
+    private final LangGraphGrpcService langGraphService;
 
     @QueryMapping
     public @NonNull UserPayload getCurrentUser() {
@@ -140,13 +142,22 @@ public class UserGraphQLController {
      * them before it can word its pre-run hint, and an anonymous visitor is exactly the
      * caller PERSONAL_ONLY refuses - so hiding them behind login would hide them from the
      * person who most needs to read them. Nothing here is user data or a secret.
+     *
+     * <p>Two sources merged: Spring's own policy (what it refuses) and the engine's settings
+     * (what a graph that inherits a provider will actually run on). The engine half fails soft
+     * inside {@code getLlmSettings} - an unreachable engine yields an empty provider rather
+     * than a broken query, and the UI then states its hint without naming a provider it does
+     * not know.</p>
      */
     @QueryMapping
     public @NonNull LlmBillingSettingsPayload llmBillingSettings() {
+        LangGraphGrpcService.LlmEngineSettings engine = langGraphService.getLlmSettings();
         return new LlmBillingSettingsPayload(
                 llmCredentialService.policyName(),
                 llmCredentialService.personalKeysEnabled(),
-                llmCredentialService.serviceKeyForbidden());
+                llmCredentialService.serviceKeyForbidden(),
+                engine.defaultProvider(),
+                engine.serviceKeyEnabled());
     }
 
     /** Create or replace the key for one provider. */

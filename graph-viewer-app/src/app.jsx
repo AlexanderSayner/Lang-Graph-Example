@@ -104,22 +104,29 @@ function App() {
     // Providers this graph explicitly asks for; only meaningful once we know the account's keys.
     const missingKeyProviders = graphProviders.filter(p => !savedKeyProviders.includes(p));
 
-    // How a run with no personal key resolves: false = it bills the shared service key
-    // (FALLBACK / REQUIRE), true = it is refused instead (PERSONAL_ONLY with a master key).
-    // Read once, without a session, because it decides what the chat's pre-run hint has to
-    // promise - it is a deployment fact, not user data.
-    const [serviceKeyForbidden, setServiceKeyForbidden] = useState(false);
+    // How a run with no personal key resolves, and what a graph that selects no provider of
+    // its own runs on: `serviceKeyForbidden` (policy refuses it), `serviceKeyEnabled` (the
+    // engine's kill switch - false means no path may read the shared key) and
+    // `defaultProvider` (the engine's LLM_PROVIDER, named so the hint can say it out loud).
+    // Read once, without a session - deployment facts, not user data.
+    const [billingSettings, setBillingSettings] = useState({
+        policy: 'FALLBACK',
+        personalKeysEnabled: true,
+        serviceKeyForbidden: false,
+        defaultProvider: '',
+        serviceKeyEnabled: true,
+    });
     useEffect(() => {
         let alive = true;
         (async () => {
             try {
                 const data = await fetchGraphQL(LLM_BILLING_SETTINGS_QUERY);
-                if (alive) {
-                    setServiceKeyForbidden(!!data?.llmBillingSettings?.serviceKeyForbidden);
+                if (alive && data?.llmBillingSettings) {
+                    setBillingSettings(prev => ({ ...prev, ...data.llmBillingSettings }));
                 }
             } catch {
-                // Unknown policy (old backend / no proxy): keep false, which is FALLBACK -
-                // the default wording and the default behaviour.
+                // Unknown backend (older version / no proxy): keep the FALLBACK defaults,
+                // which are also the deployment defaults.
             }
         })();
         return () => { alive = false; };
@@ -944,7 +951,9 @@ function App() {
                     copilotLLM={copilotLLM} setCopilotLLM={setCopilotLLM}
                     formatTimestamp={formatTimestamp}
                     missingKeyProviders={isLoggedIn ? missingKeyProviders : []}
-                    serviceKeyForbidden={serviceKeyForbidden}
+                    serviceKeyForbidden={billingSettings.serviceKeyForbidden}
+                    serviceKeyEnabled={billingSettings.serviceKeyEnabled}
+                    defaultProvider={billingSettings.defaultProvider}
                     savedKeyProviders={isLoggedIn ? savedKeyProviders : []}
                     graphUsesServerDefault={renderState.status === 'ready' && graphProviders.length === 0}
                     onOpenLlmSettings={() => setShowLlmSettings(true)}

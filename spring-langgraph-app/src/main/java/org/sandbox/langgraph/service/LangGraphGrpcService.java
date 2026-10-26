@@ -54,6 +54,11 @@ public class LangGraphGrpcService {
 
     private static final Logger log = LoggerFactory.getLogger(LangGraphGrpcService.class);
     private static final int TIMEOUT = 30;
+    /**
+     * Deadline for the settings probe: it runs on every page load, so a hung engine may cost the
+     * UI its banner, never thirty seconds of spinner.
+     */
+    private static final int SETTINGS_TIMEOUT = 3;
     private static final TimeUnit TIMEOUT_UNIT = TimeUnit.SECONDS;
 
     private final LangGraphServiceGrpc.LangGraphServiceBlockingStub blockingStub;
@@ -268,6 +273,48 @@ public class LangGraphGrpcService {
         } catch (StatusRuntimeException e) {
             // The catalog itself never fails; this is only for a transport/service outage.
             throw wrapGrpcError(e);
+        }
+    }
+
+    /**
+     * The engine's own LLM settings, so the UI can describe a run honestly <em>before</em> it
+     * happens - which provider a graph that selects none will use, and whether the shared key
+     * may be spent at all.
+     *
+     * <p>Deliberately fail-soft on a short deadline: this is fetched once per page load, so an
+     * engine that is down or hung must not break the whole query. {@link LlmEngineSettings#unknown()}
+     * means "nothing is known about the default", which the UI renders as a vaguer note - never
+     * as a promise it cannot keep.</p>
+     */
+    public @NonNull LlmEngineSettings getLlmSettings() {
+        try {
+            GetLlmSettingsResponse response = blockingStub
+                    .withDeadlineAfter(SETTINGS_TIMEOUT, TIMEOUT_UNIT)
+                    .getLlmSettings(GetLlmSettingsRequest.getDefaultInstance());
+            return new LlmEngineSettings(response.getDefaultProvider(), response.getDefaultModel(),
+                    response.getServiceKeyEnabled());
+        } catch (StatusRuntimeException e) {
+            log.warn("Cannot read LLM settings from the engine ({}); reporting them as unknown",
+                    e.getStatus());
+            return LlmEngineSettings.unknown();
+        }
+    }
+
+    /**
+     * Engine-side facts the UI must not overstate: what an inheriting node actually resolves to
+     * and whether the operator's shared key may still be spent.
+     *
+     * @param defaultProvider   the engine's resolved default ({@code LLM_PROVIDER}); empty = unknown
+     * @param defaultModel      the model that default provider will use; empty = its preset
+     * @param serviceKeyEnabled {@code false} when {@code LLM_SERVICE_KEY_ENABLED} makes the shared
+     *                          key unspendable, so a run without a personal key fails instead of
+     *                          billing the operator
+     */
+    public record LlmEngineSettings(String defaultProvider, String defaultModel, boolean serviceKeyEnabled) {
+
+        /** What an unreachable engine reports: default unknown, shared key assumed spendable. */
+        public static LlmEngineSettings unknown() {
+            return new LlmEngineSettings("", "", true);
         }
     }
 

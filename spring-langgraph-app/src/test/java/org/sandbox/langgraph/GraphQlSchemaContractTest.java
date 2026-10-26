@@ -147,6 +147,13 @@ class GraphQlSchemaContractTest {
                 .isEqualTo("Boolean");
         assertThat(fieldTypeName(schema, "LlmBillingSettingsPayload", "serviceKeyForbidden"))
                 .isEqualTo("Boolean");
+        // The engine's half: which provider an inheriting graph resolves (named in the hint,
+        // nullable because an unreachable engine reports nothing rather than a guess) and
+        // whether the shared key may be spent at all.
+        assertThat(fieldTypeName(schema, "LlmBillingSettingsPayload", "defaultProvider"))
+                .isEqualTo("String");
+        assertThat(fieldTypeName(schema, "LlmBillingSettingsPayload", "serviceKeyEnabled"))
+                .isEqualTo("Boolean");
     }
 
     @Test

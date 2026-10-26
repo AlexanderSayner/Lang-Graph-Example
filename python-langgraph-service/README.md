@@ -286,6 +286,10 @@ strips them from client-supplied input as well.
   `run <id> user=<x_user_id|anonymous> thread=… tokens=… billing=…` (WARNING when service).
 * `MissingUserApiKeyError` is raised under `require_user_key=1` (policy `REQUIRE` /
   `PERSONAL_ONLY`) and whenever the kill switch above leaves no key to spend.
+* `GetLlmSettings` reports the *resolved* default provider/model (through `resolve_llm_config`,
+  so it is exactly what an inheriting node will build) and `LLM_SERVICE_KEY_ENABLED`, so the
+  backend's `llmBillingSettings` query can name the provider in its pre-run hint instead of
+  promising a shared-key run that may not be possible.
 * Compiled graphs stay credential-free (they are cached), subgraphs inherit the parent's
   keys, and `LLM_MAX_ATTEMPTS` retries pass the same credentials.
 * `MAX_CACHED_LLM_CLIENTS` bounds the client registry so rotated/deleted keys never stay
