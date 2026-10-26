@@ -52,9 +52,24 @@ export default function ChatPanel({
     // of billing the shared service key - so the hint below must promise a refusal, not a
     // shared-key run that will never happen.
     serviceKeyForbidden = false,
+    // The account's own providers (for the "server default" note below).
+    savedKeyProviders = [],
+    // True when the LOADED graph names no provider anywhere (config and every node inherit):
+    // the engine's server default then decides, and nothing here can tell whether it matches
+    // a saved key.
+    graphUsesServerDefault = false,
     onOpenLlmSettings
 }) {
     const showSharedKeyHint = activeTab === 'chat' && !loading && missingKeyProviders.length > 0;
+    // The trap this note exists for: an account saves a key, the graph declares no provider,
+    // so `missingKeyProviders` is empty, the "no personal key for X" hint can never fire - and
+    // the run still bills the shared service key because the server default is a provider the
+    // account has no key for. Say so BEFORE the run instead of leaving only the after-the-fact
+    // billing note to explain it.
+    const showServerDefaultHint = activeTab === 'chat' && !loading
+        && graphUsesServerDefault
+        && savedKeyProviders.length > 0
+        && missingKeyProviders.length === 0;
     return (
         <div className="chat-panel" style={{ height: `${panelHeight}px` }} ref={panelRef}>
 
@@ -171,6 +186,28 @@ export default function ChatPanel({
                             >
                                 Add keys
                             </button>
+                        </div>
+                    )}
+                    {/* Informational, not a warning: the graph selects no provider, so the
+                        engine's server default decides whether a saved key applies at all.
+                        Amber/red notes above cannot fire here (a graph that names no provider
+                        has no missing provider to name), so without this the first honest
+                        signal is the "served by the shared service key" note under the answer. */}
+                    {showServerDefaultHint && (
+                        <div style={{
+                            display: 'flex', alignItems: 'center', gap: '8px',
+                            padding: '6px 12px', fontSize: '11px',
+                            background: '#e3f2fd', borderTop: '1px solid #bbdefb', color: '#0d47a1',
+                        }}>
+                            <span>
+                                ℹ️ This graph selects no LLM provider — it runs on the server
+                                default. Your saved keys (<b>{savedKeyProviders.join(', ')}</b>)
+                                are used only if that default matches; otherwise {serviceKeyForbidden
+                                    ? 'the run is refused'
+                                    : 'the shared service key pays'}. Pick a provider in the
+                                builder (graph settings or the node) to be sure — the note under
+                                the answer says who actually paid.
+                            </span>
                         </div>
                     )}
                     <div className="chat-input-area">

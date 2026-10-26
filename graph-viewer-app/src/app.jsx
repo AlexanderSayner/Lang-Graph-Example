@@ -945,6 +945,8 @@ function App() {
                     formatTimestamp={formatTimestamp}
                     missingKeyProviders={isLoggedIn ? missingKeyProviders : []}
                     serviceKeyForbidden={serviceKeyForbidden}
+                    savedKeyProviders={isLoggedIn ? savedKeyProviders : []}
+                    graphUsesServerDefault={renderState.status === 'ready' && graphProviders.length === 0}
                     onOpenLlmSettings={() => setShowLlmSettings(true)}
                 />
             </div>

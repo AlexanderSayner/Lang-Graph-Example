@@ -654,6 +654,11 @@ What changes in practice:
 - Before a run the chat warns which providers the account has no key for; answers paid for by
   the shared key carry *"Served by the shared service key"* (or *"Partly served…"* for a mixed
   run).
+- **A key only applies to the provider the graph actually resolves** (node metadata → graph
+  settings → server `LLM_PROVIDER`, default `yandex`). A graph that selects nothing runs on the
+  server default, so a key for another provider changes nothing for it — the chat shows an
+  ℹ️ note in exactly that case, and picking a provider in the builder is what makes a saved key
+  apply.
 
 ### Troubleshooting
 
@@ -665,6 +670,7 @@ What changes in practice:
 | `Sign in and add a personal LLM key … this deployment never spends the shared service key` | GraphQL `BAD_REQUEST` | `PERSONAL_ONLY` refused an anonymous caller — sign in and add a key |
 | `A B2B service account has no personal LLM key to run with …` | gRPC `INVALID_ARGUMENT` on the B2B execute paths | `PERSONAL_ONLY` does not serve service accounts: run as a user, or switch to `FALLBACK`. A B2B **copilot** call is refused too, but with the "sign in" message above (it arrives through the anonymous path) |
 | `No API key for LLM provider 'x'. Set X_API_KEY.` | node error | Neither a personal nor a service key exists for that provider (service keys removed, none saved) |
+| `⚠️ Served by the shared service key — no personal key for this provider` after a key **was** saved | under the answer | Your key is fine; the *resolved* provider is not yours. A graph with no `llm_provider` in its config or nodes runs on the server default (`LLM_PROVIDER`, `yandex` unless you set it), so `openrouter` (etc.) keys are never consulted. Set the provider in the builder (graph settings or the node), or set `LLM_PROVIDER` on the Python service. The pre-run ℹ️ note warns about this before the run |
 | `Skipping unreadable LLM credential (user … provider …)` | Spring log warning | Master key changed or the row was tampered with: that provider falls back to the shared key and the user must re-save it |
 
 ## License

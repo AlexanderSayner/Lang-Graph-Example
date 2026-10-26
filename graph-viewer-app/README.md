@@ -97,4 +97,11 @@ nothing is ever blocked):
    `"service"` / `"mixed"`) renders *"⚠ Served by the shared service key"* under the message, so a
    run is never attributed to the wrong payer.
 
+There is also an informational note (blue, no button): when the loaded graph names **no**
+provider anywhere and the account does hold keys, the two warnings above cannot fire - a graph
+that declares nothing has no "missing provider" to name - so the panel says *"This graph selects
+no LLM provider — it runs on the server default; your saved keys (…) are used only if that
+default matches"* before the run, instead of leaving the after-the-fact billing note as the only
+explanation.
+
 Anonymous visitors never see the first warning: they have no account to hold a key in.
