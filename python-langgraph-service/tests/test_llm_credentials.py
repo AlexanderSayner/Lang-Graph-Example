@@ -6,7 +6,10 @@ Three properties are load-bearing and easy to regress:
   browser and - because ``_process_action`` renders ``state["context"]`` into the prompt -
   sent to the LLM provider itself);
 * a graph resolves its provider PER NODE, so one run can need several users' keys at once;
-* the default policy FALLBACK must keep the run alive while still reporting who paid.
+* the default policy FALLBACK must keep the run alive while still reporting who paid;
+* ``LLM_SERVICE_KEY_ENABLED=false`` must make the shared key unspendable for every
+  caller - a personal key (or a refusal) is the only outcome, and billing must never
+  claim "service" for a run that could not have touched the shared key.
 
 Nothing here talks to a provider: clients are built offline and every model call is a fake.
 """
@@ -23,6 +26,7 @@ from app.clients.llm import (
     LLMClientRegistry,
     LLMCredentialSet,
     LLMCredentials,
+    LLMResponse,
     MissingUserApiKeyError,
     resolve_llm_config,
 )
@@ -226,6 +230,49 @@ def test_service_key_is_used_when_the_user_has_none():
 
     assert client._api_key(PROVIDER_PRESETS["openai"]) == "service-openai-key"
     assert client.billing_owner == "service"
+
+
+def test_service_key_is_never_read_when_the_kill_switch_is_off(monkeypatch):
+    """``LLM_SERVICE_KEY_ENABLED=false`` is the hard guarantee behind policy=PERSONAL_ONLY:
+    with no personal key for the provider the shared settings are not even looked at, so no
+    caller (signed-in, anonymous, direct to this port, B2B) can spend them."""
+    monkeypatch.setattr(settings, "LLM_SERVICE_KEY_ENABLED", False)
+    client = _bare_client()
+    client.provider = "openai"   # the message must name the provider that has no key
+
+    with pytest.raises(MissingUserApiKeyError) as excinfo:
+        client._api_key(PROVIDER_PRESETS["openai"])
+
+    assert "openai" in str(excinfo.value)
+    assert "service-openai-key" not in str(excinfo.value)
+
+
+def test_a_personal_key_still_works_when_the_kill_switch_is_off(monkeypatch):
+    monkeypatch.setattr(settings, "LLM_SERVICE_KEY_ENABLED", False)
+    client = _bare_client(LLMCredentials(api_key="sk-personal"))
+
+    assert client._api_key(PROVIDER_PRESETS["openai"]) == "sk-personal"
+    assert client.billing_owner == "user"
+
+
+def test_a_client_is_refused_at_build_time_without_a_personal_key_when_switched_off(
+        monkeypatch):
+    """The gate lives in `_api_key`, which `_build_runnable` calls while the client is
+    still being built - no request ever leaves the process, and building does not need
+    network access, so this stays an offline test."""
+    monkeypatch.setattr(settings, "LLM_SERVICE_KEY_ENABLED", False)
+
+    with pytest.raises(MissingUserApiKeyError):
+        LLMClient(resolve_llm_config({"llm_provider": "openai"}, {}))
+
+
+def test_with_a_personal_key_the_client_builds_normally_when_switched_off(monkeypatch):
+    monkeypatch.setattr(settings, "LLM_SERVICE_KEY_ENABLED", False)
+
+    client = LLMClient(resolve_llm_config(
+        {"llm_provider": "openai"}, {}, credentials=LLMCredentials(api_key="sk-user")))
+
+    assert client.billing_owner == "user"
 
 
 def test_yandex_folder_prefers_the_users_own_folder():
@@ -687,3 +734,100 @@ def test_copilot_reports_require_instead_of_abort_or_spend():
     assert "openai" in response.error_message
     # Nothing was called, so nothing was billed.
     assert response.llm_billing == ""
+
+
+# --- LLM_SERVICE_KEY_ENABLED: the shared key must become unspendable ---------------
+
+
+def test_node_stops_with_the_key_instruction_when_the_kill_switch_is_off(monkeypatch):
+    """End to end through the real client: no personal key -> the client cannot even be
+    built, the node handler turns that into the actionable message and reports llm_billing
+    as empty, because no model was called and therefore nothing was billed."""
+    monkeypatch.setattr(settings, "LLM_SERVICE_KEY_ENABLED", False)
+    handler = NodeHandler(graph_loader=None)
+    lazy = LLMClientRegistry().lazy(resolve_llm_config({"llm_provider": "openai"}, {}))
+    state = {"input": "hi", "context": {}}
+
+    result = asyncio.run(handler._process_action(
+        "n1", {"system_prompt": "answer"}, state, lazy,
+        credentials=LLMCredentialSet.empty()))
+
+    assert "personal API key" in result["output"]
+    assert "openai" in result["output"]
+    assert result["llm_billing"] == ""
+
+
+def test_router_stops_with_the_key_instruction_when_the_kill_switch_is_off(monkeypatch):
+    monkeypatch.setattr(settings, "LLM_SERVICE_KEY_ENABLED", False)
+    handler = NodeHandler(graph_loader=None)
+    lazy = LLMClientRegistry().lazy(resolve_llm_config({"llm_provider": "openai"}, {}))
+    state = {"input": "hi", "variables": {}}
+
+    result = asyncio.run(handler._process_router(
+        "r1", {"system_prompt": "route"}, {"output"}, state, lazy,
+        credentials=LLMCredentialSet.empty(), require_user_key=False))
+
+    assert "personal API key" in result["output"]
+    assert result["llm_billing"] == ""
+
+
+def test_a_personal_key_lets_the_node_build_its_client_when_switched_off(monkeypatch):
+    """The kill switch must not punish a user who did add a key: the same config builds
+    and bills them."""
+    monkeypatch.setattr(settings, "LLM_SERVICE_KEY_ENABLED", False)
+
+    config = resolve_llm_config({"llm_provider": "openai"}, {},
+                                credentials=LLMCredentials(api_key="sk-user"))
+    client = LLMClient(config)
+
+    assert client.billing_owner == "user"
+
+
+def test_copilot_reports_a_disabled_service_key_instead_of_abort_or_spend(monkeypatch):
+    """Same contract as policy=REQUIRE: the instruction is returned as a readable
+    CopilotResponse instead of an RPC error the gateway would turn into a generic
+    "Internal server error"."""
+    monkeypatch.setattr(settings, "LLM_SERVICE_KEY_ENABLED", False)
+    servicer = LangGraphServiceServicer.__new__(LangGraphServiceServicer)
+    servicer._llm_registry = LLMClientRegistry()
+
+    async def _must_not_be_called(**kwargs):
+        raise AssertionError("the copilot must not spend the shared service key")
+
+    servicer.copilot = types.SimpleNamespace(ask=_must_not_be_called)
+    request = types.SimpleNamespace(
+        copilot_provider="openai", copilot_model="",
+        llm_credentials_json="", require_user_key="",
+        user_message="hi", graph_context_json="{}", execution_history_json="{}",
+        copilot_chat_history_json="[]", selected_node_id="", selected_edge_json="")
+
+    response = asyncio.run(servicer.AskCopilot(request, _grpc_context()))
+
+    assert response.success is False
+    assert "personal API key" in response.error_message
+    assert "openai" in response.error_message
+    assert response.llm_billing == ""
+
+
+def test_copilot_runs_on_a_personal_key_when_the_kill_switch_is_off(monkeypatch):
+    monkeypatch.setattr(settings, "LLM_SERVICE_KEY_ENABLED", False)
+    servicer = LangGraphServiceServicer.__new__(LangGraphServiceServicer)
+    servicer._llm_registry = LLMClientRegistry()
+
+    async def _answer(**kwargs):
+        # The real CopilotAgent.ask returns the LLMResponse the client produced (a str
+        # subclass carrying usage) - a bare SimpleNamespace is not a valid proto string.
+        return LLMResponse("ok", usage={"total_tokens": 3})
+
+    servicer.copilot = types.SimpleNamespace(ask=_answer)
+    request = types.SimpleNamespace(
+        copilot_provider="openai", copilot_model="",
+        llm_credentials_json=json.dumps({"openai": {"api_key": "sk-u", "folder_id": ""}}),
+        require_user_key="1",
+        user_message="hi", graph_context_json="{}", execution_history_json="{}",
+        copilot_chat_history_json="[]", selected_node_id="", selected_edge_json="")
+
+    response = asyncio.run(servicer.AskCopilot(request, _grpc_context()))
+
+    assert response.success is True
+    assert response.llm_billing == "user"

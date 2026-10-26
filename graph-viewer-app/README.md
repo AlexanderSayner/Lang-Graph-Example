@@ -89,7 +89,10 @@ nothing is ever blocked):
 1. **before a run** - `collectGraphProviders(getGraphView)` gives the providers the graph explicitly
    asks for (node metadata beats graph config, aliases normalised like the engine), and any of them
    the account has no key for produces *"⚠ No personal key for … these nodes will run on the shared
-   service key"* above the composer, with an **Add keys** button;
+   service key"* above the composer, with an **Add keys** button. On a deployment running
+   `PERSONAL_ONLY` the same banner turns red and says *"this run will be refused (the deployment
+   spends personal keys only)"* instead: the wording comes from the session-free
+   `llmBillingSettings` query (`serviceKeyForbidden`), because there the shared key would never pay;
 2. **after a run / per answer** - `llmBilling` on `executeGraph` and `askCopilot` (`"user"` /
    `"service"` / `"mixed"`) renders *"⚠ Served by the shared service key"* under the message, so a
    run is never attributed to the wrong payer.

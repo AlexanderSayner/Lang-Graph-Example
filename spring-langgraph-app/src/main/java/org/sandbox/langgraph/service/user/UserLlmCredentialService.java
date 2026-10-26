@@ -143,6 +143,30 @@ public class UserLlmCredentialService {
     }
 
     /**
+     * True when a run that could never carry a personal key (anonymous GraphQL, a B2B service
+     * account) must be refused instead of billed to the shared service key - i.e. policy is
+     * {@code PERSONAL_ONLY} and personal keys are actually usable.
+     *
+     * <p>Same two-part rule as {@link #personalKeysRequired()}, for the same reason: without a
+     * master key nobody can own a key, so refusing those runs would leave a deployment where
+     * the feature is off unable to serve anyone at all. Fail open there, exactly like
+     * {@code policy=REQUIRE} does.</p>
+     */
+    public boolean serviceKeyForbidden() {
+        return secretCipher.isEnabled() && properties.personalKeysOnly();
+    }
+
+    /** Whether personal keys can be stored at all (a master key is configured). */
+    public boolean personalKeysEnabled() {
+        return secretCipher.isEnabled();
+    }
+
+    /** The configured policy as the UI spells it: {@code FALLBACK} / {@code REQUIRE} / {@code PERSONAL_ONLY}. */
+    public String policyName() {
+        return properties.policy().name();
+    }
+
+    /**
      * The provider-keyed JSON the engine reads from the run's context:
      * {@code {"openai": {"api_key": "...", "folder_id": ""}, ...}}.
      *

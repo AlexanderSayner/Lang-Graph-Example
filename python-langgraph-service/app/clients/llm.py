@@ -421,10 +421,23 @@ class LLMClient:
         return "user" if not self._credentials.is_empty() else "service"
 
     def _api_key(self, preset: ProviderPreset) -> str:
-        """Personal key first, then the shared service key from the settings."""
+        """Personal key first, then the shared service key from the settings.
+
+        ``LLM_SERVICE_KEY_ENABLED=false`` is the hard kill switch for the shared key:
+        with no personal key for this provider the service settings are NOT read, so no
+        path through this engine (graph node, copilot, a direct call to this gRPC port, a
+        B2B run through the backend) can spend them. The refusal is a
+        :class:`MissingUserApiKeyError` carrying the same actionable instruction
+        policy=REQUIRE gives, raised while the client is built - before any call leaves
+        the process - so it reaches the node handler's existing ``except
+        MissingUserApiKeyError`` and the run stops with ``llm_billing=""`` (a model was
+        never called, therefore nothing was billed).
+        """
         personal = self._credentials.api_key.strip()
         if personal:
             return personal
+        if not settings.LLM_SERVICE_KEY_ENABLED:
+            raise MissingUserApiKeyError(missing_user_key_message(self.provider))
         return str(getattr(settings, preset.api_key_setting, "") or "").strip()
 
     def _folder_id(self) -> str:

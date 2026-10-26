@@ -215,6 +215,36 @@ class UserLlmCredentialServiceTest {
     }
 
     @Test
+    @DisplayName("policy=PERSONAL_ONLY forbids the shared key, and is inert without a master key")
+    void personalOnlyForbidsTheServiceKey() {
+        assertThat(new UserLlmCredentialService(repository, cipher,
+                new LlmCredentialsProperties("", LlmCredentialsProperties.Policy.PERSONAL_ONLY),
+                new ObjectMapper()).serviceKeyForbidden()).isTrue();
+        // PERSONAL_ONLY is REQUIRE plus the refusal: a signed-in user without a key must be
+        // stopped too, so the require flag has to be on as well.
+        assertThat(new UserLlmCredentialService(repository, cipher,
+                new LlmCredentialsProperties("", LlmCredentialsProperties.Policy.PERSONAL_ONLY),
+                new ObjectMapper()).personalKeysRequired()).isTrue();
+
+        // FALLBACK and REQUIRE both still allow the shared key where their contract says so.
+        assertThat(new UserLlmCredentialService(repository, cipher,
+                new LlmCredentialsProperties("", LlmCredentialsProperties.Policy.FALLBACK),
+                new ObjectMapper()).serviceKeyForbidden()).isFalse();
+        assertThat(new UserLlmCredentialService(repository, cipher,
+                new LlmCredentialsProperties("", LlmCredentialsProperties.Policy.REQUIRE),
+                new ObjectMapper()).serviceKeyForbidden()).isFalse();
+
+        // No master key -> nobody can own a personal key, so the policy must fail open
+        // exactly like REQUIRE does: otherwise the deployment could serve nobody at all.
+        assertThat(new UserLlmCredentialService(repository, new SecretCipher(""),
+                new LlmCredentialsProperties("", LlmCredentialsProperties.Policy.PERSONAL_ONLY),
+                new ObjectMapper()).serviceKeyForbidden()).isFalse();
+        assertThat(new UserLlmCredentialService(repository, new SecretCipher(""),
+                new LlmCredentialsProperties("", LlmCredentialsProperties.Policy.PERSONAL_ONLY),
+                new ObjectMapper()).personalKeysRequired()).isFalse();
+    }
+
+    @Test
     @DisplayName("deleting normalises the provider before it reaches the repository")
     void deleteNormalisesProvider() {
         assertThat(service.delete(USER, "CLAUDE")).isTrue();

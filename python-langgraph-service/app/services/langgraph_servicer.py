@@ -744,11 +744,18 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         # A normal failure response rather than an RPC abort, because the UI renders
         # CopilotResponse.error_message while a gRPC status becomes a generic "Internal
         # server error" at the gateway - which would hide the ONE instruction (where to
-        # add the key) that makes policy=REQUIRE actionable.
+        # add the key) that makes policy=REQUIRE actionable. The same reasoning applies
+        # when the shared key itself is switched off (LLM_SERVICE_KEY_ENABLED=false): the
+        # engine would refuse at client build time anyway (see LLMClient._api_key), but
+        # that raise happens deep inside copilot.ask and would surface as that generic
+        # gateway error instead of the instruction.
         require_user_key = str(getattr(request, "require_user_key", "") or "").strip() == "1"
-        if credential is None and require_user_key:
+        service_key_disabled = not settings.LLM_SERVICE_KEY_ENABLED
+        if credential is None and (require_user_key or service_key_disabled):
             message = missing_user_key_message(resolved.provider)
-            logger.warning("Copilot refused under policy=REQUIRE: %s", message)
+            logger.warning("Copilot refused (%s): %s",
+                           "service key disabled" if service_key_disabled else "policy=REQUIRE",
+                           message)
             return langgraph_pb2.CopilotResponse(
                 success=False, error_message=message, llm_billing="")
 

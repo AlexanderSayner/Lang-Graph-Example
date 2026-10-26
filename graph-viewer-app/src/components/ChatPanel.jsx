@@ -48,6 +48,10 @@ export default function ChatPanel({
     // Providers this graph asks for that the signed-in account holds no key for (empty for
     // anonymous visitors, who cannot have keys at all).
     missingKeyProviders = [],
+    // The deployment refuses a run that has no personal key (policy=PERSONAL_ONLY) instead
+    // of billing the shared service key - so the hint below must promise a refusal, not a
+    // shared-key run that will never happen.
+    serviceKeyForbidden = false,
     onOpenLlmSettings
 }) {
     const showSharedKeyHint = activeTab === 'chat' && !loading && missingKeyProviders.length > 0;
@@ -136,18 +140,26 @@ export default function ChatPanel({
                         {loading && <div className="msg msg-bot">Thinking… <span style={{ color: '#999', fontStyle: 'italic', fontSize: '11px' }}>press Cancel to stop</span></div>}
                         <div ref={chatEndRef} />
                     </div>
-                    {/* Pre-run warning: this graph is about to spend the shared service key on
-                        providers the account holds no personal key for. Actionable - it opens
-                        the key manager - because under FALLBACK nothing will stop the run. */}
+                    {/* Pre-run warning about providers the account holds no key for. Under
+                        FALLBACK/REQUIRE nothing stops the run, so it says the shared service
+                        key will pay; under PERSONAL_ONLY (serviceKeyForbidden) the run is
+                        refused instead, and saying "will run on the shared key" there would
+                        promise something that cannot happen. Either way it opens the key
+                        manager, which is the one action that fixes both. */}
                     {showSharedKeyHint && (
                         <div style={{
                             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                             gap: '8px', padding: '6px 12px', fontSize: '11px',
-                            background: '#fff8e1', borderTop: '1px solid #ffe0b2', color: '#e65100',
+                            background: serviceKeyForbidden ? '#ffebee' : '#fff8e1',
+                            borderTop: '1px solid', borderColor: serviceKeyForbidden ? '#ffcdd2' : '#ffe0b2',
+                            color: serviceKeyForbidden ? '#b71c1c' : '#e65100',
                         }}>
                             <span>
-                                ⚠️ No personal key for <b>{missingKeyProviders.join(', ')}</b> —
-                                these nodes will run on the shared service key.
+                                {serviceKeyForbidden
+                                    ? <>🚫 No personal key for <b>{missingKeyProviders.join(', ')}</b> —
+                                        this run will be refused (the deployment spends personal keys only).</>
+                                    : <>⚠️ No personal key for <b>{missingKeyProviders.join(', ')}</b> —
+                                        these nodes will run on the shared service key.</>}
                             </span>
                             <button
                                 onClick={onOpenLlmSettings}

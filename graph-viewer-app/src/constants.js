@@ -137,6 +137,19 @@ export const LLM_CREDENTIALS_QUERY = `
     }
 `;
 
+// Deployment-level billing facts: decides whether the chat's pre-run hint may promise "these
+// nodes will run on the shared service key" (FALLBACK / REQUIRE) or must warn that the run
+// will be REFUSED instead (PERSONAL_ONLY). Needs no session - it is not user data.
+export const LLM_BILLING_SETTINGS_QUERY = `
+    query {
+        llmBillingSettings {
+            policy
+            personalKeysEnabled
+            serviceKeyForbidden
+        }
+    }
+`;
+
 export const SAVE_LLM_CREDENTIAL_MUTATION = `
     mutation SaveLlmCredential($input: SaveLlmCredentialInput!) {
         saveLlmCredential(input: $input) {

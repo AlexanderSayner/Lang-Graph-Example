@@ -13,8 +13,8 @@ import java.util.UUID;
 
 /**
  * Builds the run context the engine needs in order to bill the right account: the caller's
- * provider-keyed personal keys, who they are, and (under policy=REQUIRE) that the shared key
- * must not be used.
+ * provider-keyed personal keys, who they are, and (under policy=REQUIRE / PERSONAL_ONLY) that
+ * the shared key must not be used.
  *
  * <p><b>Resolved synchronously on the request thread.</b> Both the execute and copilot paths
  * read {@link CurrentUser} (a ThreadLocal {@code SecurityContextHolder}) and must therefore
@@ -22,6 +22,14 @@ import java.util.UUID;
  * a different thread where the security context is simply absent, which would silently drop
  * the keys and bill the operator instead. That silence is exactly what this feature exists
  * to prevent, so the resolution never happens downstream of a thread hop.</p>
+ *
+ * <p><b>It is also the one choke point deciding whether a caller may reach the engine at
+ * all.</b> Under policy=PERSONAL_ONLY a caller that can never own a key - an anonymous
+ * GraphQL request, or the whole B2B gRPC facade, which has no session by construction - is
+ * refused here, before a single engine call is made. That is the readable half of what the
+ * engine's {@code LLM_SERVICE_KEY_ENABLED=false} hard-gates underneath: that flag makes the
+ * shared key unspendable, this refusal says why, at the API edge, with the operator's own
+ * wording. Centralised here on purpose - a future resolver cannot forget the rule.</p>
  *
  * <p>Every value here is also <em>stripped</em> from the client-supplied context by the
  * mapper, so a caller cannot override any of them (see {@link #RUN_KEYS}).</p>
@@ -34,7 +42,8 @@ public class LlmRequestCredentials {
     /** Provider-keyed personal keys: {@code {"openai": {"api_key": ..., "folder_id": ...}}}. */
     public static final String CREDENTIALS_JSON = "llm_credentials_json";
 
-    /** "1" - the deployment's policy=REQUIRE, forwarded so the engine can fail closed. */
+    /** "1" - the deployment's policy=REQUIRE / PERSONAL_ONLY, forwarded so the engine can
+     * fail closed instead of spending the shared service key. */
     public static final String REQUIRE_USER_KEY = "require_user_key";
 
     /** Attribution for the engine's per-run billing log (and future metering). */
@@ -52,10 +61,20 @@ public class LlmRequestCredentials {
     private final CurrentUser currentUser;
     private final UserLlmCredentialService credentialService;
 
-    /** The context to merge into the engine request. Empty for anonymous and B2B callers. */
+    /** The context to merge into the engine request. Empty for anonymous and B2B callers.
+     *
+     * @throws IllegalArgumentException when policy=PERSONAL_ONLY and this caller could never
+     *         have brought a personal key (anonymous GraphQL, B2B) - the shared key may not
+     *         be spent on its behalf
+     */
     public Map<String, String> forRequest(RequestOrigin origin) {
         if (origin != RequestOrigin.GRAPHQL) {
             // B2B: no session, no stored keys - service key, unchanged from before.
+            refuseWhenServiceKeyForbidden(
+                    "A B2B service account has no personal LLM key to run with, and this "
+                            + "deployment spends personal keys only (LLM_CREDENTIALS_POLICY="
+                            + "PERSONAL_ONLY). Sign in to the UI and add your key with the "
+                            + "'🔑 Keys' button, or run the deployment with FALLBACK.");
             return Map.of();
         }
 
@@ -63,6 +82,11 @@ public class LlmRequestCredentials {
         if (userId == null) {
             // Anonymous: FALLBACK behaviour by construction (nobody to attribute a key to),
             // and REQUIRE cannot apply either - there is no user who could satisfy it.
+            // PERSONAL_ONLY is the exception: it is precisely about this caller.
+            refuseWhenServiceKeyForbidden(
+                    "Sign in and add a personal LLM key with the '🔑 Keys' button in the "
+                            + "sidebar: this deployment never spends the shared service key "
+                            + "(LLM_CREDENTIALS_POLICY=PERSONAL_ONLY).");
             return Map.of();
         }
 
@@ -84,5 +108,24 @@ public class LlmRequestCredentials {
             }
         }
         return Map.copyOf(context);
+    }
+
+    /**
+     * Throws when the shared service key may not be spent on behalf of {@code message}'s
+     * caller, i.e. policy=PERSONAL_ONLY and personal keys are usable.
+     *
+     * <p>Deliberately {@link IllegalArgumentException}, never {@code AccessDeniedException}:
+     * {@code GraphQlExceptionHandler} replaces an access denial's text with a fixed
+     * "Authentication required", which would hide the one line that explains the operator's
+     * choice, and {@code GrpcErrors} would need a new mapping for it. {@code
+     * IllegalArgumentException} already travels with <em>this</em> message on both surfaces -
+     * {@code BAD_REQUEST} from GraphQL, {@code INVALID_ARGUMENT} from the B2B facade - exactly
+     * like the feature's own "keys are disabled" refusal in
+     * {@code UserLlmCredentialService.requireEnabled()}.</p>
+     */
+    private void refuseWhenServiceKeyForbidden(String message) {
+        if (credentialService.serviceKeyForbidden()) {
+            throw new IllegalArgumentException(message);
+        }
     }
 }

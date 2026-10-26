@@ -683,10 +683,12 @@ For production deployments, use environment variables:
 # Server configuration
 export SERVER_PORT=9191
 
-# Redis configuration
+# Redis configuration (caches; HTTP sessions use the same store)
 export SPRING_DATA_REDIS_HOST=redis-cluster.prod
 export SPRING_DATA_REDIS_PORT=6379
 export SPRING_DATA_REDIS_PASSWORD=${REDIS_PASSWORD}
+# HTTP sessions are Redis-backed too (spring-boot-starter-session-data-redis)
+export SPRING_SESSION_DATA_REDIS_NAMESPACE=langgraph:sessions
 
 # gRPC configuration
 export SPRING_GRPC_CLIENT_CHANNELS_LANGGRAPH-SERVICE_ADDRESS=langgraph.prod:50051
@@ -697,7 +699,12 @@ export SPRING_GRAPHQL_GRAPHIQL_ENABLED=false
 
 # Personal LLM API keys (app.user_llm_credentials). Blank master key = feature disabled.
 export LLM_SECRET_MASTER_KEY=$(openssl rand -base64 32)   # back this up: keys are unrecoverable without it
-export LLM_CREDENTIALS_POLICY=FALLBACK                     # or REQUIRE to refuse a run with no user key
+export LLM_CREDENTIALS_POLICY=FALLBACK                     # or REQUIRE (stop instead of billing the
+                                                           # shared key) / PERSONAL_ONLY (also refuse
+                                                           # anonymous GraphQL and B2B gRPC callers)
+# Python engine's kill switch - the hard guarantee behind PERSONAL_ONLY: false = no path can
+# read YC_API_KEY / OPENAI_API_KEY / … (set it on the python service, not on Spring).
+export LLM_SERVICE_KEY_ENABLED=true
 ```
 
 ### GraphQL Configuration Bean
@@ -1100,8 +1107,22 @@ mutation DeleteGraph {
 ### 9. Personal LLM API keys (bring your own key)
 
 Per-user provider keys, stored AES-256-GCM encrypted and attached to every run the user
-makes. **All three fields require a session** (`@PreAuthorize("isAuthenticated()")`); they
+makes. **All three fields require a session** (`@PreAuthorize("!isAnonymous()")`); they
 return a *masked* hint and never the key itself, because rendering the list decrypts nothing.
+
+> **Sessions.** Spring Security 7 never persists the security context for you
+> (`requireExplicitSave = true`), so `login`/`register` write it explicitly through the
+> `SecurityContextRepository` bean (`SessionSecurityContext`) and `logout` invalidates the
+> session instead of only clearing the thread. The servlet request reaches the mutations through
+> `ServletRequestGraphQlInterceptor`, because Boot 4 runs data fetchers on the task executor
+> where `RequestContextHolder` is not bound. Sessions live in Redis
+> (`spring-boot-starter-session-data-redis`); the cookie stays `JSESSIONID`. A caller with no
+> session gets `{"message": "Authentication required", "extensions": {"code": "UNAUTHENTICATED"}}`
+> rather than an internal error.
+>
+> The guard is `!isAnonymous()` and not `isAuthenticated()`: Spring Security reports an anonymous
+> `AuthenticationToken` as authenticated, so the latter would wave a signed-out caller through to
+> `CurrentUser.requireId()`.
 
 ```graphql
 # List (masked)

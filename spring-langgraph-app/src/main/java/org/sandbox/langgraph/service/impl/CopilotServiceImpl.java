@@ -52,7 +52,11 @@ public class CopilotServiceImpl implements CopilotService {
         // Only the credential map and the policy flag are forwarded: the copilot's provider is
         // resolved engine-side, and it picks its own entry from that map. A B2B caller reaches
         // this method on a gRPC thread with no Spring Security session, so the lookup yields
-        // nothing and the shared key is used - unchanged from before personal keys existed.
+        // nothing: under FALLBACK/REQUIRE the shared key is used - unchanged from before
+        // personal keys existed - and under PERSONAL_ONLY the very same call is REFUSED here,
+        // before the engine is involved, through this method's anonymous branch (the wording
+        // is therefore the "sign in" one rather than the B2B-specific text the execute paths
+        // produce, because nothing in this signature distinguishes the two transports).
         Map<String, String> runContext = requestCredentials.forRequest(RequestOrigin.GRAPHQL);
 
         try {

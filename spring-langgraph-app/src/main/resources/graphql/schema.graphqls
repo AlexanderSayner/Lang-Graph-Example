@@ -13,6 +13,11 @@ type Query {
     # The signed-in user's personal LLM API keys, masked (provider + "••••xxxx"). Never the
     # key itself: rendering this list does not decrypt anything.
     llmCredentials: [LlmCredentialPayload!]!
+    # How this deployment resolves an LLM call with no personal key for its provider: billed
+    # to the shared service key, or refused. Read by the UI before a run so its pre-run hint
+    # matches what will really happen. Deployment facts only, no user data - so no session
+    # is required and an anonymous visitor sees the same answer.
+    llmBillingSettings: LlmBillingSettingsPayload!
 }
 
 type Mutation {
@@ -126,6 +131,20 @@ input SaveLlmCredentialInput {
     apiKey: String!
     # YandexGPT only (the user's folder id); ignored for other providers.
     ycFolderId: String
+}
+
+# Deployment-level LLM billing facts. The UI reads them before a run so the "about to bill
+# the shared service key" hint is honest: under PERSONAL_ONLY the run will be refused, not
+# billed, and saying otherwise would promise a path that does not exist.
+type LlmBillingSettingsPayload {
+    # LLM_CREDENTIALS_POLICY: FALLBACK | REQUIRE | PERSONAL_ONLY.
+    policy: String!
+    # false when no LLM_SECRET_MASTER_KEY is configured - personal keys cannot be stored
+    # then, and every policy fails open for runs that cannot possibly carry one.
+    personalKeysEnabled: Boolean!
+    # true when a call without a personal key for the resolved provider will be REFUSED
+    # instead of billed to the shared service key (PERSONAL_ONLY with keys enabled).
+    serviceKeyForbidden: Boolean!
 }
 
 # ============== HTTP Request Debug Types ==============

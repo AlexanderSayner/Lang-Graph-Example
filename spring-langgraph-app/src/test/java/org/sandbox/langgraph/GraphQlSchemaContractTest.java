@@ -131,6 +131,25 @@ class GraphQlSchemaContractTest {
     }
 
     @Test
+    @DisplayName("The LLM billing-settings query is exposed so the UI's pre-run hint can tell "
+            + "a shared-key run from a refusal")
+    void llmBillingSettingsIsExposed() throws Exception {
+        GraphQLSchema schema = buildSchema();
+
+        // The banner above the chat promises either "these nodes will run on the shared
+        // service key" or "this will be refused" depending on the policy - both claims need
+        // this query to be reachable (and, being deployment facts, without a session).
+        assertThat(schema.getQueryType().getField("llmBillingSettings")).isNotNull();
+        assertThat(fieldTypeName(schema, "Query", "llmBillingSettings"))
+                .isEqualTo("LlmBillingSettingsPayload");
+        assertThat(fieldTypeName(schema, "LlmBillingSettingsPayload", "policy")).isEqualTo("String");
+        assertThat(fieldTypeName(schema, "LlmBillingSettingsPayload", "personalKeysEnabled"))
+                .isEqualTo("Boolean");
+        assertThat(fieldTypeName(schema, "LlmBillingSettingsPayload", "serviceKeyForbidden"))
+                .isEqualTo("Boolean");
+    }
+
+    @Test
     @DisplayName("The execution-cancel mutation and payload are exposed for the UI's Cancel button")
     void cancelGraphExecutionMutationIsExposed() throws Exception {
         GraphQLSchema schema = buildSchema();

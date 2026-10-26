@@ -168,6 +168,7 @@ async for event in stub.ExecuteGraph(exec_request):
 | `YC_ASYNC_POLL_INTERVAL_SECONDS`| 1      | Poll interval while waiting for a deferred operation |
 | `YC_ASYNC_FALLBACK_TO_SYNC`     | true   | Fall back to the synchronous endpoint when the deferred operation times out |
 | `LLM_MAX_ATTEMPTS`              | 2      | Attempts per graph node when the LLM answer is unusable (refusal / empty text) |
+| `LLM_SERVICE_KEY_ENABLED`       | true   | Kill switch for the shared service keys (`YC_API_KEY` / `OPENAI_API_KEY` / …). `false` = the engine never reads them: a call with no personal user key for the resolved provider is refused with the "add your key" instruction instead of billed to the operator. Pair with the backend's `LLM_CREDENTIALS_POLICY=PERSONAL_ONLY` |
 | `LLM_PROVIDER`                  | yandex | Default provider: yandex / openai / groq / deepseek / openrouter / anthropic |
 | `LLM_MODEL`                     | (provider default) | Default model for `LLM_PROVIDER` **only**; empty = that provider's default. A node/graph selecting a different provider does **not** inherit it - that provider's own `YC_MODEL_NAME` / `<PROVIDER>_MODEL` (or its preset) is used |
 | `LLM_TEMPERATURE`               | 0.6    | Default sampling temperature (0.6 keeps the pre-multi-provider YandexGPT behaviour) |
@@ -271,12 +272,20 @@ strips them from client-supplied input as well.
 
 * `_generate` resolves `credential_set.for_provider(<this client's provider>)`; no entry means
   no personal key for that provider, so the service settings are used.
+* **`LLM_SERVICE_KEY_ENABLED=false` (the shared-key kill switch)**: `LLMClient._api_key()` reads
+  the service settings only when a personal key is present. With none, it raises
+  `MissingUserApiKeyError` *while the client is built*, so the shared key is never read by any
+  path - graph node, copilot, a direct call to this gRPC port, or a B2B run through the
+  backend. The node handlers already turn that into the readable "add your key" instruction
+  with `llm_billing=""`; `AskCopilot` checks the same flag up front so the answer carries that
+  instruction instead of a generic gRPC error. Default `true` = the deployed behaviour. Pair
+  it with the backend's `LLM_CREDENTIALS_POLICY=PERSONAL_ONLY`.
 * Every node reports `llm_billing` (`"user"` / `"service"` / `""` when no model was called),
   forwarded on `ExecuteGraphResponse.llm_billing` and folded by the backend into `"user"`,
   `"service"`, `"mixed"` or `null`. The run summary line is
   `run <id> user=<x_user_id|anonymous> thread=… tokens=… billing=…` (WARNING when service).
-* `MissingUserApiKeyError` is raised only under `require_user_key=1`; the message names the
-  provider and where to add the key.
+* `MissingUserApiKeyError` is raised under `require_user_key=1` (policy `REQUIRE` /
+  `PERSONAL_ONLY`) and whenever the kill switch above leaves no key to spend.
 * Compiled graphs stay credential-free (they are cached), subgraphs inherit the parent's
   keys, and `LLM_MAX_ATTEMPTS` retries pass the same credentials.
 * `MAX_CACHED_LLM_CLIENTS` bounds the client registry so rotated/deleted keys never stay

@@ -116,7 +116,17 @@ Required secrets:
     VPS_SSH_KEY: Private key created above.
 Optional secrets (Yandex Cloud billing / LLM integration):
     YC_API_KEY, YC_FOLDER_ID, YC_BILLING_ACCOUNT_ID, YC_SA_KEY_JSON
+Optional - personal LLM API keys (see "Personal LLM API keys" below):
+    Secret  LLM_SECRET_MASTER_KEY    openssl rand -base64 32 - MUST be a Secret and MUST stay
+                                     the same across deploys: ~/myapp.env is rewritten on every
+                                     deploy, and a different value makes every stored personal
+                                     key undecryptable. Back it up outside GitHub too.
+Variable  LLM_CREDENTIALS_POLICY    FALLBACK (default) | REQUIRE | PERSONAL_ONLY
+Variable  LLM_SERVICE_KEY_ENABLED    true (default) | false - the engine's shared-key kill switch
 ```
+`.github/workflows/deploy.yml` writes all three into `~/myapp.env` before
+`docker compose --env-file ~/myapp.env up -d`; unset/empty values fall back to the defaults
+above, so a deployment that does not use the feature needs none of them.
 
 ### Uploading files into VPS
 ```bash
@@ -147,7 +157,7 @@ This starts all services:
 | PostgreSQL | localhost:7432 |
 | Redis | localhost:6879 |
 
-Optional environment variables consumed by `docker-compose.yml`: `OPENAI_API_KEY`, `YC_API_KEY`, `YC_FOLDER_ID`, `YC_BILLING_ACCOUNT_ID`, `YC_SA_KEY_JSON_B64`.
+Optional environment variables consumed by `docker-compose.yml`: `OPENAI_API_KEY`, `YC_API_KEY`, `YC_FOLDER_ID`, `YC_BILLING_ACCOUNT_ID`, `YC_SA_KEY_JSON_B64`, plus the personal-key settings `LLM_SECRET_MASTER_KEY`, `LLM_CREDENTIALS_POLICY`, `LLM_SERVICE_KEY_ENABLED` (see [Personal LLM API keys](#personal-llm-api-keys)).
 
 ### Option B: Run services locally for development
 
@@ -182,6 +192,12 @@ export SPRING_JDBC_URL=jdbc:postgresql://localhost:7432/langgraph_db
 export POSTGRES_FLYWAY_URL=jdbc:postgresql://localhost:7432/langgraph_db
 export SPRING_JDBC_USERNAME=langgraph
 export SPRING_JDBC_PASSWORD=langgraph_password
+
+# Personal LLM API keys - optional. Blank master key keeps the feature off (the old
+# behaviour); generating one lets users save their own keys from the sidebar.
+export LLM_SECRET_MASTER_KEY="$(openssl rand -base64 32)"   # back it up: keys are unrecoverable without it
+export LLM_CREDENTIALS_POLICY=FALLBACK                      # or REQUIRE / PERSONAL_ONLY
+# export LLM_SERVICE_KEY_ENABLED=false                       # the Python service's kill switch
 
 # Build the application
 ./gradlew build
@@ -439,26 +455,15 @@ single-key router, and both warning texts — is in
 ### 5. Personal API keys (per-user, billed to the user)
 
 Users can save their own provider keys so their runs are billed to their own provider
-account instead of the shared service key.
+account instead of the shared service key. Saved from the sidebar (**🔑 Keys**) via
+`llmCredentials` / `saveLlmCredential` / `deleteLlmCredential`, encrypted at rest with
+AES-256-GCM (`LLM_SECRET_MASTER_KEY`), propagated per execution and picked **per node** by
+the engine; the UI reports who paid (`llmBilling: user | service | mixed`).
 
-- Saved from the sidebar (**🔑 Keys**) via `llmCredentials` / `saveLlmCredential` /
-  `deleteLlmCredential`.
-- Encrypted at rest with AES-256-GCM (`LLM_SECRET_MASTER_KEY`), bound to `user|provider`, so
-  a row cannot be moved onto another account. Listing returns a masked hint and never
-  decrypts anything.
-- Propagated per execution through `ExecuteGraphInput.context` →
-  `RunnableConfig.configurable`, and popped out of `GraphState` **before** it is
-  checkpointed — because the engine renders `state["context"]` into the model prompt, a key
-  left there would be sent to the LLM provider.
-- A graph resolves its provider **per node** (node metadata > graph config > server default),
-  so the whole credential map rides along and the engine picks the entry each node asks for;
-  subgraphs inherit it.
-- **Policy** (`LLM_CREDENTIALS_POLICY`): `FALLBACK` (default) runs on the shared key when a
-  user has no key for a provider and reports `llmBilling: "service"`; `REQUIRE` refuses the
-  run (and the copilot) with "add your key" instead.
-- Nothing is subsidised silently: every run logs `run … user=… billing=…`, and the UI shows a
-  pre-run banner plus a "served by the shared service key" note on affected answers.
-- No master key configured ⇒ the feature is off and behaviour is identical to before.
+The feature is off by default and needs no code change to enable — see
+[Personal LLM API keys](#personal-llm-api-keys) for the setup, the four policies
+(`FALLBACK` / `REQUIRE` / `PERSONAL_ONLY`), how to switch the shared key off entirely, and
+the operational notes (backing up the master key).
 
 Wire contract: `python-langgraph-service/README.md` → *Personal API keys*.
 
@@ -522,11 +527,145 @@ spring:
           address: ${LANGGRAPH_SERVICE_ADDRESS:localhost:50051}
 ```
 
-Key environment variables: `SPRING_JDBC_URL`, `POSTGRES_FLYWAY_URL`, `SPRING_JDBC_USERNAME`, `SPRING_JDBC_PASSWORD`, `SPRING_REDIS_HOST`, `SPRING_REDIS_PORT`, `LANGGRAPH_SERVICE_ADDRESS`, `YC_BILLING_ACCOUNT_ID`, `YC_SA_KEY_JSON`, plus the personal-key settings `LLM_SECRET_MASTER_KEY` (`openssl rand -base64 32`, blank = feature disabled) and `LLM_CREDENTIALS_POLICY` (`FALLBACK` default, or `REQUIRE`).
+Key environment variables: `SPRING_JDBC_URL`, `POSTGRES_FLYWAY_URL`, `SPRING_JDBC_USERNAME`, `SPRING_JDBC_PASSWORD`, `SPRING_REDIS_HOST`, `SPRING_REDIS_PORT`, `LANGGRAPH_SERVICE_ADDRESS`, `YC_BILLING_ACCOUNT_ID`, `YC_SA_KEY_JSON`, plus the personal-key settings `LLM_SECRET_MASTER_KEY` (`openssl rand -base64 32`, blank = feature disabled) and `LLM_CREDENTIALS_POLICY` (`FALLBACK` default, or `REQUIRE` / `PERSONAL_ONLY`) — see [Personal LLM API keys](#personal-llm-api-keys).
 
 ### Python Service
 
-Configured via environment variables or a `.env` file in `python-langgraph-service/` (see `python-langgraph-service/README.md` for the full list): `SERVER_PORT`, `LOG_LEVEL`, `DATABASE_URL`, `REDIS_URL`, `OPENAI_API_KEY`, `YC_API_KEY`, `YC_FOLDER_ID`, `YC_MODEL_NAME`, `YC_COMPLETION_MODE`, `HTTP_REQUEST_SERVICE_HOST`, `HTTP_REQUEST_SERVICE_PORT`, the LLM selection settings `LLM_PROVIDER`, `LLM_MODEL`, `LLM_TEMPERATURE`, `LLM_MAX_OUTPUT_TOKENS`, `COPILOT_PROVIDER`, `COPILOT_MODEL`, the cache bound `MAX_CACHED_LLM_CLIENTS`, plus the per-provider `<PROVIDER>_API_KEY` / `<PROVIDER>_MODEL` / `<PROVIDER>_BASE_URL`.
+Configured via environment variables or a `.env` file in `python-langgraph-service/` (see `python-langgraph-service/README.md` for the full list): `SERVER_PORT`, `LOG_LEVEL`, `DATABASE_URL`, `REDIS_URL`, `OPENAI_API_KEY`, `YC_API_KEY`, `YC_FOLDER_ID`, `YC_MODEL_NAME`, `YC_COMPLETION_MODE`, `HTTP_REQUEST_SERVICE_HOST`, `HTTP_REQUEST_SERVICE_PORT`, the LLM selection settings `LLM_PROVIDER`, `LLM_MODEL`, `LLM_TEMPERATURE`, `LLM_MAX_OUTPUT_TOKENS`, `COPILOT_PROVIDER`, `COPILOT_MODEL`, the shared-key kill switch `LLM_SERVICE_KEY_ENABLED`, the cache bound `MAX_CACHED_LLM_CLIENTS`, plus the per-provider `<PROVIDER>_API_KEY` / `<PROVIDER>_MODEL` / `<PROVIDER>_BASE_URL`.
+
+## Personal LLM API keys
+
+Users can save their own provider keys so their runs are billed to their own provider account
+instead of the shared service key. The feature is **opt-in and changes nothing until it is
+configured**: with no `LLM_SECRET_MASTER_KEY`, saving a key is refused with a readable message
+and every run keeps using the shared key exactly as before.
+
+### What is stored where
+
+| Layer | What it is | Where it lives | Restart to change |
+|---|---|---|---|
+| Shared **service** keys | the operator's keys, spent whenever no personal key covers the provider | Python service settings (`YC_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `YC_FOLDER_ID`) — `python-langgraph-service/.env` / `docker-compose.yml` | Python service |
+| **Personal** keys | one row per `(user, provider)`: AES-256-GCM ciphertext bound to `user\|provider`, plus a 4-character hint so the UI can mask without decrypting | Postgres `app.user_llm_credentials`, written only through the **🔑 Keys** panel | no — read on every request, never cached |
+| **Master key** | the encryption key for the layer above — **not** an LLM key, never sent to any provider | Spring only: `LLM_SECRET_MASTER_KEY` | Spring service |
+
+The Python service never sees `LLM_SECRET_MASTER_KEY`: it receives already-decrypted provider
+keys for the current request, or nothing at all.
+
+### Enabling it
+
+```bash
+openssl rand -base64 32      # must decode to EXACTLY 32 bytes
+```
+
+**1. Local Spring run** — export before `./gradlew bootRun`:
+
+```bash
+export LLM_SECRET_MASTER_KEY="$(openssl rand -base64 32)"
+export LLM_CREDENTIALS_POLICY=FALLBACK
+```
+
+**2. Docker Compose** — both belong in an untracked `.env` in the repository root (`.env` is
+git-ignored; `.env.example` is kept in the repo as the template):
+
+```dotenv
+LLM_SECRET_MASTER_KEY=<value printed by openssl rand -base64 32>
+LLM_CREDENTIALS_POLICY=FALLBACK
+LLM_SERVICE_KEY_ENABLED=true
+```
+
+```bash
+docker compose up -d --force-recreate spring-service   # plus langgraph-service if you change the kill switch
+```
+
+**3. VPS deploy** — in GitHub → *Settings → Secrets and variables → Actions*: put
+`LLM_SECRET_MASTER_KEY` into **Secrets** (never a variable), and `LLM_CREDENTIALS_POLICY` /
+`LLM_SERVICE_KEY_ENABLED` into **Variables**. `.github/workflows/deploy.yml` writes all three
+into `~/myapp.env` on every deploy; unset values fall back to `FALLBACK` / `true`.
+
+> ⚠️ **Back the master key up and keep it stable.** `~/myapp.env` is rewritten on each deploy,
+> and stored keys are encrypted with this value. If it changes or is lost, every stored key
+> becomes undecryptable: reads skip the row with `Skipping unreadable LLM credential …`, the
+> run silently falls back to the shared key, and users must re-enter their keys. There is no
+> key rotation yet (the table has a `key_version` column reserved for it).
+
+### The four policies
+
+| | 1. Off (default) | 2. `FALLBACK` | 3. `REQUIRE` | 4. `PERSONAL_ONLY` |
+|---|---|---|---|---|
+| `LLM_SECRET_MASTER_KEY` | blank | set | set | set |
+| `LLM_CREDENTIALS_POLICY` | — | `FALLBACK` | `REQUIRE` | `PERSONAL_ONLY` |
+| `LLM_SERVICE_KEY_ENABLED` (Python) | `true` | `true` | `true` | `false` |
+| signed-in user, **has** a key for the node's provider | shared key | their key, `llmBilling: "user"` | their key | their key |
+| signed-in user, **has none** | shared key, `"service"` | shared key, `"service"` | refused: *No personal API key saved for provider 'x' …* | refused |
+| anonymous `/graphql` run | shared key | shared key | shared key | **refused at the API edge** |
+| B2B gRPC call | shared key | shared key | shared key | **refused at the API edge** |
+| someone reaching the Python gRPC port directly | shared key | shared key | shared key | **refused inside the engine** |
+
+A run that mixes providers reports `llmBilling: "mixed"`; a run whose nodes called no model
+reports `null`. Every run logs `run <id> user=<id|anonymous> … tokens=… billing=…` (WARNING
+when `service`), so nothing is subsidised silently. Every policy is inert (fail-open) while
+the master key is blank — nobody could own a key then, so `REQUIRE`/`PERSONAL_ONLY` would
+otherwise refuse every run of a deployment where the feature is off.
+
+### Switching the shared key off entirely (mode 4)
+
+`LLM_CREDENTIALS_POLICY=PERSONAL_ONLY` alone is **not** enough — Spring can only enforce it
+for callers that reach *it*. Three settings together close every path:
+
+1. **`LLM_SECRET_MASTER_KEY=<value>`** — without it `PERSONAL_ONLY` fails open, because no
+   user could store a key in the first place.
+2. **`LLM_CREDENTIALS_POLICY=PERSONAL_ONLY`** (Spring) — a signed-in user without a key is
+   refused (the `require_user_key=1` flag also goes to the engine), and callers that can never
+   own one — anonymous GraphQL (`executeGraph`, `executeGraphStream`, `askCopilot`) and the
+   whole B2B gRPC facade — are refused *before* the engine is contacted, with the policy named
+   in the message (`BAD_REQUEST` / `INVALID_ARGUMENT`). The rule lives in
+   `LlmRequestCredentials.forRequest`, the one choke point every run passes through.
+3. **`LLM_SERVICE_KEY_ENABLED=false`** (Python service) — the hard guarantee. `LLMClient`
+   never reads `YC_API_KEY` / `OPENAI_API_KEY` / … when the caller brought no personal key, so
+   a graph node, the copilot, a B2B run or a direct call to port 50051 cannot spend them; the
+   refusal is the same instruction as mode 3 and `llmBilling` stays empty (no model was called).
+
+```bash
+docker compose up -d --force-recreate spring-service langgraph-service
+```
+
+What changes in practice:
+
+- A user needs a key for **every provider the graph touches**: a graph using two providers
+  needs two keys, otherwise that node stops with the instruction above (`mixed` is then
+  impossible by definition).
+- **B2B can no longer run LLM graphs at all** — a service account has no user and therefore
+  no key. Deliberate; per-tenant credentials are not implemented (a follow-up if B2B matters).
+- The model dropdown (`llmModels`) asks providers with the *service* key; with it disabled it
+  falls back to the built-in `curated` list — never an error, and a hand-typed model id still
+  works.
+- The chat's pre-run banner switches to *"this run will be refused"* instead of *"will run on
+  the shared service key"* (it reads the session-free `llmBillingSettings` query).
+- Port 50051 stays unauthenticated — Compose publishes it on loopback only. The kill switch
+  removes the *spend*, not the engine's reachability.
+
+### Using it in the UI
+
+- **🔑 Keys** in the sidebar adds one key per provider (the button turns green once any key
+  is stored).
+- The plaintext travels browser → server once and is encrypted there; only `••••xxxx` ever
+  comes back, so reopening the panel never needs a key again.
+- Deleting a key takes effect on the **very next run** — resolution is never cached.
+- Before a run the chat warns which providers the account has no key for; answers paid for by
+  the shared key carry *"Served by the shared service key"* (or *"Partly served…"* for a mixed
+  run).
+
+### Troubleshooting
+
+| Message | Where it shows up | What it means / fix |
+|---|---|---|
+| `Personal LLM keys are disabled on this server: set LLM_SECRET_MASTER_KEY (openssl rand -base64 32) and restart.` | GraphQL `BAD_REQUEST` when saving | No master key configured: generate one, set it on the **Spring** service, restart Spring |
+| `llm.credentials.master-key must decode to exactly 32 bytes, got N` | Spring startup failure | The value is not `openssl rand -base64 32` output (wrapped/truncated): fix the variable and restart |
+| `No personal API key saved for provider 'x', and this request requires one (llm.credentials.policy=REQUIRE). Add it with the '🔑 Keys' button in the sidebar.` | node output / copilot answer | Policy is `REQUIRE` or `PERSONAL_ONLY` and you have no key for that provider |
+| `Sign in and add a personal LLM key … this deployment never spends the shared service key` | GraphQL `BAD_REQUEST` | `PERSONAL_ONLY` refused an anonymous caller — sign in and add a key |
+| `A B2B service account has no personal LLM key to run with …` | gRPC `INVALID_ARGUMENT` on the B2B execute paths | `PERSONAL_ONLY` does not serve service accounts: run as a user, or switch to `FALLBACK`. A B2B **copilot** call is refused too, but with the "sign in" message above (it arrives through the anonymous path) |
+| `No API key for LLM provider 'x'. Set X_API_KEY.` | node error | Neither a personal nor a service key exists for that provider (service keys removed, none saved) |
+| `Skipping unreadable LLM credential (user … provider …)` | Spring log warning | Master key changed or the row was tampered with: that provider falls back to the shared key and the user must re-save it |
 
 ## License
 

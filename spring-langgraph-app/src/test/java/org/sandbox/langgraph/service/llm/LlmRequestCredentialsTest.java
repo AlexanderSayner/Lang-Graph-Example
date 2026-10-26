@@ -13,6 +13,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -22,9 +23,10 @@ import static org.mockito.Mockito.when;
 /**
  * The contract that decides whose money a run spends.
  *
- * <p>Two properties matter most: a B2B caller must never be attributed a personal key even
- * when a session happens to be visible on the thread, and an anonymous caller must produce
- * no context at all (the pre-migration behaviour).</p>
+ * <p>Three properties matter most: a B2B caller must never be attributed a personal key even
+ * when a session happens to be visible on the thread; an anonymous caller must produce no
+ * context at all (the pre-migration behaviour) - except under policy=PERSONAL_ONLY, where
+ * both are refused outright instead of being served from the shared key.</p>
  */
 class LlmRequestCredentialsTest {
 
@@ -111,6 +113,60 @@ class LlmRequestCredentialsTest {
         assertThat(resolver.forRequest(RequestOrigin.GRAPHQL)).isEmpty();
 
         verify(credentialService, never()).credentialsJson(any());
+    }
+
+    @Test
+    @DisplayName("under PERSONAL_ONLY an anonymous caller is refused: it could never pay")
+    void anonymousCallerIsRefusedWhenTheServiceKeyIsForbidden() {
+        SecurityContextHolder.clearContext();
+        when(credentialService.serviceKeyForbidden()).thenReturn(true);
+
+        assertThatThrownBy(() -> resolver.forRequest(RequestOrigin.GRAPHQL))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Sign in and add a personal LLM key")
+                .hasMessageContaining("PERSONAL_ONLY");
+
+        // Refused before anything is resolved, so the engine is never even asked.
+        verify(credentialService, never()).credentialsJson(any());
+        verify(credentialService, never()).personalKeysRequired();
+    }
+
+    @Test
+    @DisplayName("under PERSONAL_ONLY the B2B facade is refused - a service account has no key")
+    void b2bIsRefusedWhenTheServiceKeyIsForbidden() {
+        when(credentialService.serviceKeyForbidden()).thenReturn(true);
+
+        assertThatThrownBy(() -> resolver.forRequest(RequestOrigin.B2B))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("B2B service account")
+                .hasMessageContaining("PERSONAL_ONLY");
+
+        verify(credentialService, never()).credentialsJson(any());
+    }
+
+    @Test
+    @DisplayName("PERSONAL_ONLY does not touch a signed-in user: their keys still ride along")
+    void aSignedInUserStillRunsUnderPersonalOnly() {
+        authenticate();
+        when(credentialService.credentialsJson(any())).thenReturn(Optional.of(CREDENTIALS_JSON));
+        when(credentialService.personalKeysRequired()).thenReturn(true);
+        when(credentialService.serviceKeyForbidden()).thenReturn(true);
+
+        Map<String, String> context = resolver.forRequest(RequestOrigin.GRAPHQL);
+
+        assertThat(context)
+                .containsEntry(LlmRequestCredentials.CREDENTIALS_JSON, CREDENTIALS_JSON)
+                .containsEntry(LlmRequestCredentials.REQUIRE_USER_KEY, "1");
+    }
+
+    @Test
+    @DisplayName("without PERSONAL_ONLY the refusals never fire, whatever else is configured")
+    void refusalIsBoundToThePersonalOnlyPolicy() {
+        SecurityContextHolder.clearContext();
+        when(credentialService.serviceKeyForbidden()).thenReturn(false);
+
+        assertThat(resolver.forRequest(RequestOrigin.GRAPHQL)).isEmpty();
+        assertThat(resolver.forRequest(RequestOrigin.B2B)).isEmpty();
     }
 
     @Test

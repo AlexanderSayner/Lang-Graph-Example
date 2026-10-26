@@ -10,8 +10,8 @@ import {
     fetchGraphQL, LIST_QUERY, VIEW_QUERY, HISTORY_QUERY,
     BALANCE_QUERY, EXECUTE_MUTATION, CANCEL_EXECUTION_MUTATION, SAVE_MUTATION,
     DELETE_MUTATION, REWIND_MUTATION, COPILOT_MUTATION,
-    CLAIM_THREADS_MUTATION, LLM_CREDENTIALS_QUERY, collectGraphProviders,
-    layoutGraph, NODE_TYPES, EXECUTION_EVENT_TYPES, nodeClassName
+    CLAIM_THREADS_MUTATION, LLM_CREDENTIALS_QUERY, LLM_BILLING_SETTINGS_QUERY,
+    collectGraphProviders, layoutGraph, NODE_TYPES, EXECUTION_EVENT_TYPES, nodeClassName
 } from './constants';
 import CopilotTab from './copilot';
 import Sidebar from './components/Sidebar';
@@ -103,6 +103,27 @@ function App() {
 
     // Providers this graph explicitly asks for; only meaningful once we know the account's keys.
     const missingKeyProviders = graphProviders.filter(p => !savedKeyProviders.includes(p));
+
+    // How a run with no personal key resolves: false = it bills the shared service key
+    // (FALLBACK / REQUIRE), true = it is refused instead (PERSONAL_ONLY with a master key).
+    // Read once, without a session, because it decides what the chat's pre-run hint has to
+    // promise - it is a deployment fact, not user data.
+    const [serviceKeyForbidden, setServiceKeyForbidden] = useState(false);
+    useEffect(() => {
+        let alive = true;
+        (async () => {
+            try {
+                const data = await fetchGraphQL(LLM_BILLING_SETTINGS_QUERY);
+                if (alive) {
+                    setServiceKeyForbidden(!!data?.llmBillingSettings?.serviceKeyForbidden);
+                }
+            } catch {
+                // Unknown policy (old backend / no proxy): keep false, which is FALLBACK -
+                // the default wording and the default behaviour.
+            }
+        })();
+        return () => { alive = false; };
+    }, []);
 
     // --- Copilot State ---
     const [copilotMessages, setCopilotMessages] = useState([]);
@@ -923,6 +944,7 @@ function App() {
                     copilotLLM={copilotLLM} setCopilotLLM={setCopilotLLM}
                     formatTimestamp={formatTimestamp}
                     missingKeyProviders={isLoggedIn ? missingKeyProviders : []}
+                    serviceKeyForbidden={serviceKeyForbidden}
                     onOpenLlmSettings={() => setShowLlmSettings(true)}
                 />
             </div>

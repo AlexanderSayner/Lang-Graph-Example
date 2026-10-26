@@ -49,6 +49,17 @@ class Settings(BaseSettings):
     # -------------------------------------------------
     # Multi-provider LLM selection (see app/clients/llm.py)
     # -------------------------------------------------
+    # Hard kill switch for the SHARED service keys (YC_API_KEY / OPENAI_API_KEY / ...).
+    # true (default) = the deployed behaviour: a caller with no personal key runs on the
+    #   shared key and the run is reported as billing=service.
+    # false = the service key is never read by any path in this engine - graph node,
+    #   copilot, a direct call to this gRPC port or a B2B run through the backend. With no
+    #   personal key for the resolved provider the call fails with the same actionable
+    #   instruction policy=REQUIRE gives (see MissingUserApiKeyError), and nothing is billed.
+    # Pair it with the backend's LLM_CREDENTIALS_POLICY=PERSONAL_ONLY so the refusal happens
+    # at the API edge too instead of at a node; this flag is the guarantee behind it.
+    LLM_SERVICE_KEY_ENABLED: bool = True
+
     # Service-wide default provider / model. A graph may override these per graph
     # (graph config) or per AI node (node metadata); this is the last fallback.
     #   yandex | openai | groq | deepseek | openrouter | anthropic
