@@ -26,6 +26,11 @@ function App() {
     const [graphs, setGraphs] = useState([]);
     const [selected, setSelected] = useState(null);
 
+    // Catalogue state, so the canvas can tell "the list is still arriving" / "the list is
+    // empty" apart from "a graph is being loaded" - see the canvasPlaceholder below.
+    const [graphsStatus, setGraphsStatus] = useState('loading'); // 'loading' | 'ready' | 'error'
+    const [graphsError, setGraphsError] = useState(null);
+
     // --- Graph rendering state ---
     // status: 'idle' | 'loading' | 'ready' | 'error'.
     // `seq` is bumped on every load and becomes part of the ReactFlow key, so every graph open
@@ -176,10 +181,25 @@ function App() {
         document.addEventListener('mouseup', stopResizing);
     }, []);
 
-    // Load Graph List
-    useEffect(() => {
-        fetchGraphQL(LIST_QUERY).then(d => setGraphs(d.listGraphs.graphs)).catch(console.error);
+    // Load Graph List. The catalogue state is tracked explicitly because the canvas
+    // placeholder distinguishes "the list is still arriving" (or failed to arrive) from
+    // "a graph is being loaded" - see the canvasPlaceholder state machine below.
+    const loadGraphList = useCallback(() => {
+        setGraphsStatus('loading');
+        setGraphsError(null);
+        fetchGraphQL(LIST_QUERY)
+            .then(d => {
+                setGraphs(d.listGraphs.graphs);
+                setGraphsStatus('ready');
+            })
+            .catch(err => {
+                console.error("❌ Failed to load the graph list:", err);
+                setGraphsError(err.message);
+                setGraphsStatus('error');
+            });
     }, []);
+
+    useEffect(() => { loadGraphList(); }, [loadGraphList]);
 
     // Scroll chat to bottom
     useEffect(() => {
@@ -379,6 +399,15 @@ function App() {
     const fitViewOptions = renderState.fitMode === 'readable'
         ? { padding: 0.2, duration: 250, maxZoom: 1, minZoom: 0.45 }
         : { padding: 0.2, duration: 250, maxZoom: 1 };
+
+    // Placeholder shown while no graph is mounted. 'idle' must NOT read as "loading": a visitor
+    // who has not picked a graph (or has none) is not waiting for anything.
+    const canvasPlaceholder = renderState.status === 'error'   ? 'error'
+        : renderState.status === 'loading'                     ? 'loading-graph'
+        : graphsStatus === 'loading'                           ? 'loading-list'
+        : graphsStatus === 'error'                             ? 'list-error'
+        : graphs.length === 0                                  ? 'empty'
+        :                                                        'none-selected';
 
     // Re-apply node and edge styles when selection or execution state changes
     useEffect(() => {
@@ -627,6 +656,22 @@ function App() {
         if(!window.confirm("Delete?")) return;
         await fetchGraphQL(DELETE_MUTATION, { graphId: id });
         setGraphs(prev => prev.filter(g => g.graphId !== id));
+
+        // The deleted graph may be the one on the canvas: clear it, otherwise the canvas keeps
+        // showing (and offering to save / auto-layout) a graph that no longer exists.
+        if (selected === id) setSelected(null);
+        if (renderState.graphId === id) {
+            loadSeqRef.current += 1;           // drop any in-flight answer for the deleted graph
+            viewportsRef.current.delete(id);   // its remembered viewport is meaningless now
+            setNodes([]);
+            setEdges([]);
+            setSelectedNodeId(null);
+            setSelectedEdge(null);
+            setActiveNodeIds(new Set());
+            setRewindOriginNodeId(null);
+            setGraphProviders([]);
+            setRenderState(prev => ({ ...prev, graphId: null, status: 'idle', error: null }));
+        }
     };
 
     const resetThread = () => {
@@ -827,15 +872,35 @@ function App() {
                             <Controls />
                         </ReactFlow>
                     ) : (
-                        <div className={`canvas-message${renderState.status === 'error' ? ' error' : ''}`}>
-                            {renderState.status === 'error' ? (
+                        <div className={`canvas-message${canvasPlaceholder === 'error' || canvasPlaceholder === 'list-error' ? ' error' : ''}`}>
+                            {canvasPlaceholder === 'error' && (
                                 <>
                                     <strong>Failed to load the graph.</strong>
                                     <span className="canvas-message-detail">{renderState.error}</span>
                                     <button onClick={() => loadGraph(renderState.graphId)}>Retry</button>
                                 </>
-                            ) : (
-                                <span>Loading graph…</span>
+                            )}
+                            {canvasPlaceholder === 'loading-graph' && <span>Loading graph…</span>}
+                            {canvasPlaceholder === 'loading-list' && <span>Loading graph list…</span>}
+                            {canvasPlaceholder === 'list-error' && (
+                                <>
+                                    <strong>Failed to load the graph list.</strong>
+                                    <span className="canvas-message-detail">{graphsError}</span>
+                                    <button onClick={loadGraphList}>Retry</button>
+                                </>
+                            )}
+                            {canvasPlaceholder === 'empty' && (
+                                <>
+                                    <strong>No graphs yet.</strong>
+                                    <span className="canvas-message-detail">Create a graph to open it here.</span>
+                                    <button onClick={() => window.location.href = 'builder.html?isNew=true'}>+ New Graph</button>
+                                </>
+                            )}
+                            {canvasPlaceholder === 'none-selected' && (
+                                <>
+                                    <strong>No graph selected.</strong>
+                                    <span className="canvas-message-detail">Pick a graph in the sidebar to open it.</span>
+                                </>
                             )}
                         </div>
                     )}

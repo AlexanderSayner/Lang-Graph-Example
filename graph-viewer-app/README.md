@@ -36,7 +36,9 @@ content - in that case the `/graphql` proxy of the web server has to be used.
 - out-of-order GraphQL answers are dropped (`loadSeqRef`), so rapid switching always ends up showing
   the last clicked graph;
 - while loading, the canvas is replaced by a placeholder, and a failed load shows the error text with
-  a Retry button instead of an empty white canvas;
+  a Retry button instead of an empty white canvas; the placeholder also names the situations where
+  nothing is being loaded at all (the graph list still arriving, the list failing to load, no graphs
+  existing yet, or no graph selected), so an empty canvas never claims to be loading;
 - "Save Layout" stores the positions of the graph that is on the canvas (which may be a subgraph)
   and drops the remembered viewport of that graph.
 
