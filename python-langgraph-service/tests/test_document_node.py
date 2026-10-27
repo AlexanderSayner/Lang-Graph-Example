@@ -179,3 +179,61 @@ def test_an_unexpected_fetcher_exception_is_contained():
 
     assert "connection pool exploded" in result["output"]
     assert result["error"]
+
+
+# --- Build-time guarantee ------------------------------------------------------------
+
+
+def test_a_document_node_never_gets_an_llm_client():
+    """The DOCUMENT node must not be able to bill a model, whatever metadata it carries.
+
+    The whole feature is documented as "deterministic extraction, no tokens spent", so the
+    guarantee has to hold even for a node somebody gave a `system_prompt` by copy-pasting an
+    ACTION node: `uses_llm` must exclude DOCUMENT, exactly like HTTP_REQUEST and GRAPH.
+
+    Asserted through the real `_build_langgraph`, because that is where the client is
+    resolved - a test on `NodeHandler` alone would never see the decision at all.
+    """
+    from app.models import GraphDefinition, EdgeDefinition, NodeDefinition
+    from app.services.langgraph_servicer import LangGraphServiceServicer
+
+    resolved = []
+
+    class RecordingRegistry:
+        def lazy(self, config):
+            resolved.append(config)
+            return f"client-for-{config}"
+
+    # __new__ skips __init__ (which wants a checkpointer, a channel and Redis); only the two
+    # collaborators this path touches are needed.
+    servicer = LangGraphServiceServicer.__new__(LangGraphServiceServicer)
+    servicer._llm_registry = RecordingRegistry()
+    servicer._checkpointer = None
+
+    graph = GraphDefinition(
+        name="Invoice agent",
+        nodes=[
+            NodeDefinition(node_id="start", node_type="START", handler_name="h"),
+            NodeDefinition(node_id="attach", node_type="DOCUMENT", handler_name="h",
+                           metadata={"system_prompt": "MUST NOT REACH A MODEL"}),
+            NodeDefinition(node_id="act", node_type="ACTION", handler_name="h",
+                           metadata={"system_prompt": "summarise"}),
+            NodeDefinition(node_id="end", node_type="END", handler_name="h"),
+        ],
+        edges=[
+            EdgeDefinition(source="start", target="attach"),
+            EdgeDefinition(source="attach", target="act"),
+            EdgeDefinition(source="act", target="end"),
+        ],
+    )
+
+    compiled = servicer._build_langgraph(graph)
+
+    # A DOCUMENT node is a known type, so a graph containing one builds at all...
+    assert compiled is not None
+    # ...and exactly ONE client was resolved - the ACTION node's. The DOCUMENT node's own
+    # system_prompt must not have bought it a model.
+    assert len(resolved) == 1, (
+        "only the ACTION node should resolve an LLM client; "
+        f"got {len(resolved)} ({resolved})"
+    )
