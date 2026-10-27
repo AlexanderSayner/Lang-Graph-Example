@@ -62,6 +62,8 @@ enforcement is simply a `PERMISSION_DENIED` answer.
 | `DeleteGraph` | `graph_id` | `success`, `message` | Gated by your graph scope. |
 | `ListGraphs` | `page_size`, `page_token` | `graphs[]`, `total_count`, `has_next_page`, `next_page_token` | `page_size` defaults to 10, capped at 100; the token is an opaque numeric offset. Counts describe **your** scope only. |
 | `AskCopilot` | `graph_id`, `thread_id`, `message`, history/selection, provider/model overrides, `llm_credentials_json` | `success`, `ai_response`, `total_tokens`, `error_message` | Subject to the same key rules as a run (§6). |
+| `UploadDocument` | **`thread_id`**, `filename`, `mime_type`, `content` (bytes) | `document_id`, `filename`, `mime_type`, `size_bytes`, `sha256`, `expires_at` | Attach a spreadsheet or word document to a run. See §7. |
+| `UploadDocumentStream` | stream of the same shape | same as `UploadDocument` | The chunked form, for a file too large for one message. |
 
 `google.protobuf.Struct` is used for open-ended maps (`context`, `state`, `metadata`); raw JSON
 strings stay strings and are passed through verbatim.
@@ -174,7 +176,98 @@ history entries — and is therefore readable from `ExecuteGraphResponse.state`,
 (your keys), `service` (the deployment's shared key), or empty when no model was called for
 that step. `total_tokens` is per step on the events and totalled on the blocking response.
 
-## 7. Copilot (`AskCopilot`)
+## 7. Attachments (`UploadDocument` → `document_ref`)
+
+A run may carry a document — an `.xlsx` or `.docx` — that the graph reads and extracts text
+from. This is the mechanism for "send me this spreadsheet and tell me what's in it".
+
+### The shape of the feature
+
+There is a **`DOCUMENT` node type** in the graph, and it does exactly one thing: fetch the
+document your run names, extract its text, and write that text into the run's state as
+`variables.document_text`. It never calls a model, so the extraction is free and exact — no
+OCR, no tokens, no hallucinated cells. Any *interpretation* ("which column is the amount?")
+is the job of an ordinary `ACTION` node that runs after it.
+
+So a graph that uses attachments looks like:
+
+```
+START → DOCUMENT → ACTION("summarise these rows as JSON {total, top_client}") → END
+```
+
+### Uploading and quoting a reference
+
+Two calls, because uploading is expensive and running is cheap — one upload can serve many
+runs:
+
+```bash
+# 1. Upload once.
+grpcurl -proto external_api.proto -plaintext -H 'x-api-key: <key>' -d '{
+  "thread_id": "t-1",
+  "filename": "q1-report.xlsx",
+  "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "content": "'$(base64 -w0 q1-report.xlsx)'"
+}' localhost:9091 external.v1.LangGraphExternalApi/UploadDocument
+# → { "document_id": "b2b-3f2a-...", "size_bytes": 8213, "sha256": "…", "expires_at": "…" }
+
+# 2. Quote the reference in the run's context.
+grpcurl -proto external_api.proto -plaintext -H 'x-api-key: <key>' -d '{
+  "graph_id": "invoice-agent", "thread_id": "t-1", "input": "Summarise the attached file",
+  "context": { "document_ref": "b2b-3f2a-..." },
+  "llm_credentials_json": "{\"openai\": {\"api_key\": \"sk-...\"}}"
+}' localhost:9091 external.v1.LangGraphExternalApi/ExecuteGraph
+```
+
+`context.document_ref` is the **only** channel by which a document reaches a run. The engine
+resolves it while executing a `DOCUMENT` node; nothing else in the contract reads it.
+
+### The one-call form
+
+If you would rather not learn an id, send the bytes inline. The facade stores them and
+injects the resulting reference into the run context itself, exactly the way it derives your
+`llm_credentials_json`:
+
+```bash
+grpcurl -proto external_api.proto -plaintext -H 'x-api-key: <key>' -d '{
+  "graph_id": "invoice-agent", "thread_id": "t-2", "input": "Summarise the attached file",
+  "document_filename": "q1-report.xlsx",
+  "document_mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "document": "'$(base64 -w0 q1-report.xlsx)'"
+}' localhost:9091 external.v1.LangGraphExternalApi/ExecuteGraph
+```
+
+**`document` and `context.document_ref` are mutually exclusive.** Sending both is
+`INVALID_ARGUMENT`, not a precedence rule — "which file did I just attach?" must never be a
+guess.
+
+### Chunked upload
+
+`UploadDocumentStream` is a client-streaming call for a file too large to fit one message.
+Send the metadata on every frame; the server concatenates `content` in arrival order and
+takes `filename` / `mime_type` from the **last** frame that sets them. It is cut off as soon
+as the running total passes the size cap, rather than after the whole file has arrived.
+
+### Rules and limits
+
+| | |
+|---|---|
+| **Formats** | `.xlsx` and `.docx` only. `mime_type` is advisory — the engine re-detects from the file's own ZIP parts — but an obviously wrong value (e.g. `image/png`) is refused at upload rather than discovered at run time. |
+| **Size** | Capped (see `b2b.grpc.max-inbound-message-size` and the per-document limit). Above it, use `UploadDocumentStream`. |
+| **Tenancy** | A reference is scoped to **your tenant**. Quoting another tenant's id is refused, and reads exactly like a missing one — the answer never reveals that the id exists. |
+| **Retention** | Referenced by `expires_at` on the `DocumentRef`. Past it, the reference stops resolving and the run reports a node error instead of a crash. |
+| **Never returned** | No RPC on this service ever returns the stored bytes. Only the engine reads them, over the internal port. |
+
+### What reaches the model
+
+The extracted text is capped (sheets, rows, cells and total characters) and the caps are
+reported, not silent: a truncated extraction says so in `document_meta`. A wide sheet is
+deliberately cut rather than pasted into a prompt where it would not fit.
+
+Because the text lands in the run's state, **it is checkpointed and it appears in the `state`
+maps** returned by `ExecuteGraph`, `GetGraphState` and `GetExecutionHistory`. The raw
+document is not: only its extracted, capped text ever enters state.
+
+## 8. Copilot (`AskCopilot`)
 
 The copilot accepts the same `llm_credentials_json` (field 9) plus optional
 `copilot_provider` / `copilot_model` overrides. Answers come back as `success`, `ai_response`,
@@ -182,7 +275,7 @@ The copilot accepts the same `llm_credentials_json` (field 9) plus optional
 provider, or the deployment declined the call); in that case `success=false` and
 `ai_response` is empty, so branch on `success`, not on an empty string.
 
-## 8. Errors: codes and trailers
+## 9. Errors: codes and trailers
 
 Every failure carries a machine-readable `x-error-code` **gRPC trailer** with the same
 vocabulary the HTTP/GraphQL API uses in `extensions.code`, so one switch statement can serve
@@ -196,6 +289,7 @@ both surfaces.
 | `INVALID_ARGUMENT` | `INVALID_ARGUMENT` | malformed request, **or a rejected `llm_credentials_json`** — the description names the field/provider | no — fix the payload |
 | `INVALID_ARGUMENT` | `VALIDATION_ERROR` | bean-validation failure (`thread_id` missing, …) | no |
 | `NOT_FOUND` | `GRAPH_NOT_FOUND` | unknown `graph_id` in your scope | no |
+| `NOT_FOUND` | `DOCUMENT_NOT_FOUND` | a `document_ref` that does not resolve for your tenant (§7). Never distinguishes "never existed", "expired" and "another tenant's". | no |
 | **`FAILED_PRECONDITION`** | **`LLM_KEY_REQUIRED`** | the call carried no `llm_credentials_json` and this deployment will not spend its shared key — send yours (§6) | no — permanent until you send keys |
 | `INTERNAL` | `INTERNAL_ERROR` | an unexpected server fault; **the description is redacted on purpose** (details go to the server log only) | yes, with backoff |
 
@@ -204,7 +298,7 @@ node error) is **not** a gRPC status: the run completes with `success=false` and
 `error_message` set (unary), or carries the error as a node output in the stream. Only the
 call itself — auth, scope, shape, key precondition — uses statuses.
 
-## 9. Cookbook (`grpcurl`)
+## 10. Cookbook (`grpcurl`)
 
 ```bash
 # List what you may run
@@ -240,13 +334,35 @@ grpcurl -proto external_api.proto -plaintext -H 'x-api-key: <key>' -d '{
   "graph_id": "demo", "thread_id": "t-1", "message": "what does this node do?",
   "llm_credentials_json": "{\"openai\": {\"api_key\": \"sk-...\", \"folder_id\": \"\"}}"
 }' localhost:9091 external.v1.LangGraphExternalApi/AskCopilot
+
+# --- Attachments (§7) ---
+
+# Upload a spreadsheet, then quote its id in a later run
+grpcurl -proto external_api.proto -plaintext -H 'x-api-key: <key>' -d '{
+  "thread_id": "t-1", "filename": "q1.xlsx",
+  "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "content": "'$(base64 -w0 q1.xlsx)'"
+}' localhost:9091 external.v1.LangGraphExternalApi/UploadDocument
+
+# ...then run a graph that has a DOCUMENT node, pointing at it
+grpcurl -proto external_api.proto -plaintext -H 'x-api-key: <key>' -d '{
+  "graph_id": "invoice-agent", "thread_id": "t-1", "input": "summarise the attachment",
+  "context": {"document_ref": "<document_id from above>"}
+}' localhost:9091 external.v1.LangGraphExternalApi/ExecuteGraph
+
+# Or skip the two-step entirely and send the bytes inline
+grpcurl -proto external_api.proto -plaintext -H 'x-api-key: <key>' -d '{
+  "graph_id": "invoice-agent", "thread_id": "t-2", "input": "summarise the attachment",
+  "document_filename": "q1.xlsx",
+  "document": "'$(base64 -w0 q1.xlsx)'"
+}' localhost:9091 external.v1.LangGraphExternalApi/ExecuteGraph
 ```
 
 (The `grpcurl ...` resume line omits the repeated flag block for brevity.)
 
 ---
 
-## 10. What this contract deliberately does not offer
+## 11. What this contract deliberately does not offer
 
 - **No UI concerns**: canvas positions are never accepted or returned.
 - **No session/user management**: there is no login — your API key is the identity.
@@ -254,6 +370,11 @@ grpcurl -proto external_api.proto -plaintext -H 'x-api-key: <key>' -d '{
   (the `HTTP_REQUEST` node type is a graph capability, not a passthrough endpoint).
 - **No credential store for your keys**: they travel with the call and are never stored
   (§6) — which is also why rotation is a client-side concern.
+- **No OCR, and no format beyond `.xlsx` / `.docx`** (§7): attachments are extracted
+  deterministically, so a scanned PDF or a PNG of an invoice is out of scope by design —
+  the file's text is already text, and anything else is a different problem.
+- **No document retrieval**: no RPC returns uploaded bytes. A `DocumentRef` is a handle a
+  run resolves, not a file you can download back.
 
 
 

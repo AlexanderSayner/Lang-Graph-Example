@@ -17,6 +17,8 @@ import org.sandbox.langgraph.grpc.external.CancelExecutionRequest;
 import org.sandbox.langgraph.grpc.external.CancelExecutionResponse;
 import org.sandbox.langgraph.grpc.external.DeleteGraphRequest;
 import org.sandbox.langgraph.grpc.external.DeleteGraphResponse;
+import org.sandbox.langgraph.grpc.external.DocumentChunk;
+import org.sandbox.langgraph.grpc.external.DocumentRef;
 import org.sandbox.langgraph.grpc.external.ExecuteGraphRequest;
 import org.sandbox.langgraph.grpc.external.ExecuteGraphResponse;
 import org.sandbox.langgraph.grpc.external.GetExecutionHistoryRequest;
@@ -29,6 +31,7 @@ import org.sandbox.langgraph.grpc.external.ListGraphsRequest;
 import org.sandbox.langgraph.grpc.external.ListGraphsResponse;
 import org.sandbox.langgraph.grpc.external.UpdateGraphStateRequest;
 import org.sandbox.langgraph.grpc.external.UpdateGraphStateResponse;
+import org.sandbox.langgraph.grpc.external.UploadDocumentRequest;
 import org.sandbox.langgraph.mapper.ExternalApiMapper;
 import org.sandbox.langgraph.security.b2b.B2BClientContext;
 import org.sandbox.langgraph.security.b2b.B2BGraphScope;
@@ -36,11 +39,18 @@ import org.sandbox.langgraph.security.b2b.B2BThreadScope;
 import org.sandbox.langgraph.service.CopilotService;
 import org.sandbox.langgraph.service.GraphExecutionAggregator;
 import org.sandbox.langgraph.service.LangGraphGrpcService;
+import org.sandbox.langgraph.service.document.DocumentNotFoundException;
+import org.sandbox.langgraph.service.document.DocumentRejectedException;
+import org.sandbox.langgraph.service.document.DocumentService;
 import org.sandbox.langgraph.service.llm.RequestOrigin;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.grpc.server.service.GrpcService;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -81,6 +91,13 @@ public class LangGraphExternalApiService extends LangGraphExternalApiGrpc.LangGr
 
     private static final Logger log = LoggerFactory.getLogger(LangGraphExternalApiService.class);
 
+    /**
+     * The context key a caller quotes to attach a previously uploaded document, and the key
+     * the engine's DOCUMENT node reads. Chosen to match the engine exactly: the facade puts
+     * it into the run context, the Python node looks for it in {@code state["context"]}.
+     */
+    static final String DOCUMENT_REF_KEY = "document_ref";
+
     private final LangGraphGrpcService langGraphService;
     private final CopilotService copilotService;
     private final GraphExecutionAggregator aggregator;
@@ -88,6 +105,7 @@ public class LangGraphExternalApiService extends LangGraphExternalApiGrpc.LangGr
     private final B2BThreadScope threadScope;
     private final B2BGraphScope graphScope;
     private final Validator validator;
+    private final DocumentService documentService;
 
     public LangGraphExternalApiService(LangGraphGrpcService langGraphService,
                                        CopilotService copilotService,
@@ -95,7 +113,8 @@ public class LangGraphExternalApiService extends LangGraphExternalApiGrpc.LangGr
                                        ExternalApiMapper mapper,
                                        B2BThreadScope threadScope,
                                        B2BGraphScope graphScope,
-                                       Validator validator) {
+                                       Validator validator,
+                                       DocumentService documentService) {
         this.langGraphService = langGraphService;
         this.copilotService = copilotService;
         this.aggregator = aggregator;
@@ -103,6 +122,7 @@ public class LangGraphExternalApiService extends LangGraphExternalApiGrpc.LangGr
         this.threadScope = threadScope;
         this.graphScope = graphScope;
         this.validator = validator;
+        this.documentService = documentService;
     }
 
     /**
@@ -150,7 +170,10 @@ public class LangGraphExternalApiService extends LangGraphExternalApiGrpc.LangGr
             B2BClientContext client = B2BClientContext.require();
             graphScope.requireAccess(client, request.getGraphId());
             String threadId = threadScope.toInternal(client, request.getThreadId());
-            ExecuteGraphInput input = mapper.toExecuteGraphInput(request, threadId);
+            // Attachment resolution happens here, not in the mapper: it stores bytes and
+            // enforces tenant ownership, so it needs the service layer and the caller's
+            // identity. The mapper stays a pure function of the request.
+            ExecuteGraphInput input = withAttachment(client, request, threadId);
             validate(input);
             log.info("B2B executeGraph '{}' (thread '{}') {}",
                     request.getGraphId(), threadScope.toExternal(client, threadId), client.audit());
@@ -328,7 +351,7 @@ public class LangGraphExternalApiService extends LangGraphExternalApiGrpc.LangGr
             graphScope.requireAccess(client, graphId);
             threadId = threadScope.toInternal(client, request.getThreadId());
             visibleThreadId = threadScope.toExternal(client, threadId);
-            input = mapper.toExecuteGraphInput(request, threadId);
+            input = withAttachment(client, request, threadId);
             validate(input);
         } catch (RuntimeException e) {
             // Nothing was subscribed yet, so report the failure directly.
@@ -349,10 +372,176 @@ public class LangGraphExternalApiService extends LangGraphExternalApiGrpc.LangGr
         }
     }
 
+    // ============================== Documents =================================
+
+    /**
+     * Upload a document once so a later run can attach it by reference.
+     *
+     * <p>Not graph-keyed: a document belongs to a tenant and a thread, not to a graph
+     * definition (graphs are persisted and shared across runs, a document is one run's
+     * input), so the graph scope does not apply here. The tenant scope does - the id is
+     * minted under it, and quoting a foreign id later is refused by {@link #resolveAttachment}.</p>
+     */
+    @Override
+    public void uploadDocument(UploadDocumentRequest request,
+                               StreamObserver<DocumentRef> responseObserver) {
+        GrpcResponses.unary(responseObserver, () -> {
+            B2BClientContext client = B2BClientContext.require();
+            String threadId = threadScope.toInternal(client, request.getThreadId());
+            var stored = documentService.store(DocumentService.OWNER_B2B, client.tenantId(),
+                    threadId, request.getFilename(), request.getMimeType(),
+                    request.getContent().toByteArray());
+            log.info("B2B uploadDocument '{}' (thread '{}') {}",
+                    stored.getDocumentId(), threadScope.toExternal(client, threadId), client.audit());
+            return mapper.toDocumentRef(stored);
+        });
+    }
+
+    /**
+     * The same upload, chunked, for a document too large for one message.
+     *
+     * <p>Frames are buffered in arrival order and stored once on half-close. That is
+     * deliberate: the size cap must be enforceable against the WHOLE document, and writing
+     * straight to storage would mean persisting bytes we might have to delete afterwards. The
+     * cap is also applied to the running total, so an over-long stream is cut off as it
+     * crosses the limit rather than after it has been fully received.</p>
+     */
+    @Override
+    public StreamObserver<DocumentChunk> uploadDocumentStream(StreamObserver<DocumentRef> responseObserver) {
+        return new StreamObserver<>() {
+            private final List<byte[]> parts = new ArrayList<>();
+            private B2BClientContext client;
+            private String internalThreadId;
+            private String filename = "";
+            private String mimeType = "";
+            private long total;
+            private boolean failed;
+
+            @Override
+            public void onNext(DocumentChunk chunk) {
+                if (failed) {
+                    return; // the caller was already told; ignore the rest of the stream
+                }
+                try {
+                    if (client == null) {
+                        // Identity is resolved on the FIRST frame, so an unauthenticated
+                        // stream is rejected before a single byte is buffered.
+                        client = B2BClientContext.require();
+                        internalThreadId = threadScope.toInternal(client, chunk.getThreadId());
+                    }
+                    if (!chunk.getFilename().isBlank()) {
+                        filename = chunk.getFilename();
+                    }
+                    if (!chunk.getMimeType().isBlank()) {
+                        mimeType = chunk.getMimeType();
+                    }
+                    byte[] data = chunk.getContent().toByteArray();
+                    total += data.length;
+                    if (total > DocumentService.MAX_CONTENT_BYTES) {
+                        throw new DocumentRejectedException("too_large", "The document is larger than the "
+                                + (DocumentService.MAX_CONTENT_BYTES / (1024 * 1024)) + " MB limit.");
+                    }
+                    parts.add(data);
+                } catch (RuntimeException e) {
+                    failed = true;
+                    parts.clear();
+                    GrpcResponses.error(responseObserver, GrpcErrors.toStatus(e));
+                }
+            }
+
+            @Override
+            public void onError(Throwable t) {
+                log.debug("B2B uploadDocumentStream aborted by the caller: {}", t.toString());
+                parts.clear();
+            }
+
+            @Override
+            public void onCompleted() {
+                if (failed) {
+                    return;
+                }
+                try {
+                    byte[] all = new byte[(int) total];
+                    int offset = 0;
+                    for (byte[] part : parts) {
+                        System.arraycopy(part, 0, all, offset, part.length);
+                        offset += part.length;
+                    }
+                    var stored = documentService.store(DocumentService.OWNER_B2B, client.tenantId(),
+                            internalThreadId, filename, mimeType, all);
+                    log.info("B2B uploadDocumentStream '{}' ({} chunks, {} bytes) {}",
+                            stored.getDocumentId(), parts.size(), total, client.audit());
+                    GrpcResponses.unary(responseObserver, () -> mapper.toDocumentRef(stored));
+                } catch (RuntimeException e) {
+                    GrpcResponses.error(responseObserver, GrpcErrors.toStatus(e));
+                } finally {
+                    parts.clear();
+                }
+            }
+        };
+    }
+
+    /**
+     * Turn whichever attachment form the caller chose into the reference the engine's
+     * DOCUMENT node will resolve.
+     *
+     * <p>Two forms, and exactly one may be used:</p>
+     * <ul>
+     *   <li><b>Inline</b> - {@code document} carries the bytes. They are stored here, under
+     *       the caller's tenant, and the resulting id is injected into the run context
+     *       server-side. The caller never has to learn the id.</li>
+     *   <li><b>By reference</b> - {@code context.document_ref} names a document uploaded
+     *       earlier. It is checked against the caller's tenant, so quoting another tenant's
+     *       id fails rather than attaching their file.</li>
+     * </ul>
+     *
+     * <p>Supplying both is INVALID_ARGUMENT rather than a precedence rule: "which file did I
+     * just attach?" must never be a guess.</p>
+     *
+     * @return the input to run, with the context possibly carrying {@code document_ref}
+     * @throws IllegalArgumentException when both forms are supplied, or the referenced
+     *                                  document belongs to another tenant
+     */
+    private ExecuteGraphInput withAttachment(B2BClientContext client, ExecuteGraphRequest request,
+                                             String internalThreadId) {
+        boolean hasInline = request.getDocument() != null && !request.getDocument().isEmpty();
+        String suppliedRef = suppliedDocumentRef(request);
+
+        if (hasInline && !suppliedRef.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "document and context." + DOCUMENT_REF_KEY + " are mutually exclusive; send one");
+        }
+
+        if (hasInline) {
+            var stored = documentService.store(DocumentService.OWNER_B2B, client.tenantId(),
+                    internalThreadId, request.getDocumentFilename(), request.getDocumentMimeType(),
+                    request.getDocument().toByteArray());
+            log.info("B2B stored inline document {} ({} bytes) for thread '{}'",
+                    stored.getDocumentId(), stored.getSizeBytes(), internalThreadId);
+            return mapper.toExecuteGraphInput(request, internalThreadId, stored.getDocumentId());
+        }
+
+        if (!suppliedRef.isEmpty()) {
+            // Ownership gate. A foreign or expired id is reported exactly like a missing one,
+            // so a caller cannot probe for documents that exist.
+            documentService.requireOwnedBy(suppliedRef, DocumentService.OWNER_B2B, client.tenantId());
+        }
+        return mapper.toExecuteGraphInput(request, internalThreadId, null);
+    }
+
+    /** The {@code document_ref} a caller put in the context, trimmed; empty when absent. */
+    private static String suppliedDocumentRef(ExecuteGraphRequest request) {
+        var fields = request.getContext().getFieldsMap();
+        if (!fields.containsKey(DOCUMENT_REF_KEY)) {
+            return "";
+        }
+        return fields.get(DOCUMENT_REF_KEY).getStringValue().trim();
+    }
+
     /**
      * The B2B side of the one page-size rule. Delegates to the service so the wire contract
-     * ("default 10, capped at 100" on {@code page_size}) and the guard the service applies to the
-     * GraphQL path can never disagree about the numbers.
+     * ("default 10, capped at 100" on {@code page_size}) and the guard the service applies to
+     * the GraphQL path can never disagree about the numbers.
      */
     private static int clampPageSize(int requested) {
         return LangGraphGrpcService.clampPageSize(requested);

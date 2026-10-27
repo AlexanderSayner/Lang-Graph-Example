@@ -81,6 +81,8 @@ session cookie.
 | `CancelExecution` | unary | For runs started with the unary `ExecuteGraph` |
 | `DeleteGraph`, `ListGraphs` | unary | `ListGraphs` is read-only, page-token paging |
 | `AskCopilot` | unary | Chat history is a raw JSON string, passed through |
+| `UploadDocument` | unary | Attach an `.xlsx`/`.docx`; returns a `document_id` reference |
+| `UploadDocumentStream` | client streaming | The same upload, chunked, for a large file |
 
 Structured JSON (`state`, `context`, `config`, `state_updates`) travels as
 `google.protobuf.Struct`; raw JSON strings (the copilot chat history) stay
@@ -146,6 +148,32 @@ A thread addresses a run's checkpoint, state, history and cancellation, and
 nothing in the engine owns one. The facade therefore scopes `thread_id` to the
 caller's tenant (`<tenant>:<threadId>`): send `"abc"` and the engine is asked for
 `"orchestra:abc"`. An id namespaced with another tenant's prefix is rejected.
+
+### Attachments
+
+A run may carry a document (`UploadDocument`, or the inline `document` field on
+`ExecuteGraph`). Both paths converge on `DocumentService`, which validates, digests and
+stores the bytes in `app.documents` and hands back an opaque `document_id`:
+
+* **Owner-bound.** The id is minted as `<owner_kind>-<owner_hash>-<random>`, so it is both
+  unguessable and tied to the tenant that uploaded it. Quoting another tenant's id is
+  refused and reads exactly like a missing one (`DOCUMENT_NOT_FOUND`) - a caller can never
+  probe for ids that exist.
+* **Not graph-scoped.** A document belongs to a tenant and a thread, not to a graph
+  definition; graphs are persisted and shared, a document is one run's input.
+* **Never returned.** No RPC on the B2B surface serves the bytes back. Only the engine
+  reads them, over the internal port (`JavaGraphProvider.GetDocument`), and only to parse
+  them in the `DOCUMENT` node.
+* **Bounded.** An 8 MB cap and a format allowlist (`.xlsx`/`.docx`, detected from the ZIP's
+  own parts rather than trusting the declared mime type). `UploadDocumentStream` enforces
+  the same cap against the running total, so an over-long stream is cut off as it crosses
+  the limit.
+* **Expiring.** Rows carry `expires_at` (7 days by default) and `DocumentService.purgeExpired`
+  frees them. Past the deadline a reference resolves to NOT_FOUND, which the engine reports
+  as a node error rather than a crash.
+
+The browser path (multipart upload) enforces the same rules through the same service, so
+the two facades cannot drift.
 
 ### Cancelling a run
 

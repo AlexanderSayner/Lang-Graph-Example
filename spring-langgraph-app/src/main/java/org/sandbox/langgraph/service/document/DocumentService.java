@@ -50,8 +50,13 @@ public class DocumentService {
             "application/octet-stream");
 
     private static final Duration RETENTION = Duration.ofDays(7);
-    /** Refuse rather than store a file the engine could not put in a prompt anyway. */
-    private static final long MAX_CONTENT_BYTES = 8L * 1024 * 1024;
+    /**
+     * Refuse rather than store a file the engine could not put in a prompt anyway.
+     *
+     * <p>Public because the streaming upload enforces it against the running total too: a
+     * chunked caller must be cut off as it crosses the limit, not after it has sent 500 MB.</p>
+     */
+    public static final long MAX_CONTENT_BYTES = 8L * 1024 * 1024;
     private static final String ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
 
     private final DocumentRepository repository;
@@ -107,6 +112,28 @@ public class DocumentService {
                 .orElseThrow(() -> new DocumentNotFoundException(documentId));
         if (entity.isExpired()) {
             log.info("Document {} is past its retention deadline", documentId);
+            throw new DocumentNotFoundException(documentId);
+        }
+        return entity;
+    }
+
+    /**
+     * The gate a facade runs BEFORE letting a caller attach someone else's reference.
+     *
+     * <p>{@link #fetch} is the engine's path and trusts the id, because the engine only ever
+     * receives an id from a facade that already authorised the run. This method is the
+     * opposite: it is what the facade itself calls when a CLIENT supplied the reference, so
+     * tenant A cannot quote tenant B's id and have B's spreadsheet summarised into A's run.</p>
+     *
+     * <p>A foreign owner is reported as {@link DocumentNotFoundException}, not as a
+     * permission error - the caller must not learn that the id exists.</p>
+     */
+    @Transactional(readOnly = true)
+    public DocumentEntity requireOwnedBy(String documentId, String ownerKind, String ownerId) {
+        DocumentEntity entity = fetch(documentId);
+        if (!ownerKind.equals(entity.getOwnerKind()) || !ownerId.equals(entity.getOwnerId())) {
+            log.warn("Refusing document {} to {}/{}: owned by {}/{}",
+                    documentId, ownerKind, ownerId, entity.getOwnerKind(), entity.getOwnerId());
             throw new DocumentNotFoundException(documentId);
         }
         return entity;

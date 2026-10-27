@@ -69,7 +69,8 @@ class B2bGrpcServiceDiscoveryTest {
                 new ExternalApiMapper(),
                 new B2BThreadScope(),
                 new B2BGraphScope(),
-                mock(jakarta.validation.Validator.class));
+                mock(jakarta.validation.Validator.class),
+                mock(org.sandbox.langgraph.service.document.DocumentService.class));
     }
 
     /**

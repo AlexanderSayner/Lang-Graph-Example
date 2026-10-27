@@ -509,4 +509,59 @@ mutation BuildManager {
     success
   }
 }
+
+#### Attachments: read a spreadsheet or a word document
+
+A `DOCUMENT` node is deterministic — it never calls a model. It fetches the file the run
+names, extracts its text, and writes it to `variables.document_text`; the `ACTION` node after
+it is what actually reasons over that text. Details in
+[B2B_INTEGRATION.md §7](B2B_INTEGRATION.md).
+
+Build a graph with one:
+
+```http request
+POST http://localhost:9191/graphql
+
+{
+  "query": "mutation BuildGraph($input: BuildGraphInput!) { buildGraph(input: $input) { success graphId message } }",
+  "variables": {
+    "input": {
+      "graphId": "invoice-agent",
+      "graphName": "Invoice agent",
+      "nodes": [
+        { "nodeId": "start",   "nodeType": "START",    "handlerName": "startHandler" },
+        { "nodeId": "attach",  "nodeType": "DOCUMENT", "handlerName": "attachHandler",
+          "metadata": { "label": "Read the attached file",
+                        "max_rows_per_sheet": 200,
+                        "max_total_chars": 15000 } },
+        { "nodeId": "summarise", "nodeType": "ACTION", "handlerName": "summariseHandler",
+          "metadata": { "system_prompt": "You receive spreadsheet rows in variables.document_text. Reply with JSON only: {\"total\": number, \"top_client\": string}." } },
+        { "nodeId": "end",     "nodeType": "END",      "handlerName": "endHandler" }
+      ],
+      "edges": [
+        { "source": "start", "target": "attach" },
+        { "source": "attach", "target": "summarise" },
+        { "source": "summarise", "target": "end" }
+      ]
+    }
+  }
+}
+```
+
+Then, for B2B, upload the file and quote its id in the run's context
+(see [B2B_INTEGRATION.md §7](B2B_INTEGRATION.md) for the inline one-call form):
+
+```bash
+grpcurl -proto external_api.proto -plaintext -H 'x-api-key: <key>' -d '{
+  "thread_id": "t-1", "filename": "q1.xlsx",
+  "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "content": "'$(base64 -w0 q1.xlsx)'"
+}' localhost:9091 external.v1.LangGraphExternalApi/UploadDocument
+
+grpcurl -proto external_api.proto -plaintext -H 'x-api-key: <key>' -d '{
+  "graph_id": "invoice-agent", "thread_id": "t-1", "input": "Summarise the attached file",
+  "context": { "document_ref": "<document_id>" }
+}' localhost:9091 external.v1.LangGraphExternalApi/ExecuteGraph
+```
+
 ```
