@@ -668,6 +668,17 @@ class NodeHandler:
 
         try:
             content, filename, _mime_type = await self.document_fetcher(document_ref)
+        except KeyError:
+            # The Java callback raises KeyError for NOT_FOUND: either the reference was never
+            # uploaded, or it is past its retention deadline. A readable node error either
+            # way - a raw gRPC status would be noise in the chat.
+            logger.warning("Node %s: document %r is not available", n_id, document_ref)
+            return {
+                "last_node": n_id,
+                "output": "Error: that document is no longer available "
+                          "(it may never have been uploaded, or its retention period has elapsed).",
+                "error": f"document_not_found:{document_ref}",
+            }
         except grpc.RpcError as e:
             logger.error("Node %s: document fetch failed - %s: %s", n_id, e.code(), e.details())
             return {

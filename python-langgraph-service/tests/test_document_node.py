@@ -159,6 +159,17 @@ def test_an_unparseable_document_is_a_node_error():
     assert "variables" not in result
 
 
+def test_an_unknown_document_reference_is_reported_readably():
+    async def fetcher(ref):
+        raise KeyError("Document b2b-abc not found in Java service")
+
+    state = {"context": {"document_ref": "b2b-abc"}}
+    result = run_node(make_handler(fetcher), state)
+
+    assert result["error"] == "document_not_found:b2b-abc"
+    assert "no longer available" in result["output"]
+
+
 def test_an_unexpected_fetcher_exception_is_contained():
     async def fetcher(ref):
         raise RuntimeError("connection pool exploded")

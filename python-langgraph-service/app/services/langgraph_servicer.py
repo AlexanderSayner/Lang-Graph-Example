@@ -205,9 +205,14 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
 
         # Pass the unified loader to NodeHandler for subgraph resolution. Nodes resolve their
         # own client at compile time (see _build_langgraph); this is only the fallback.
+        #
+        # The document fetcher is the Java callback the DOCUMENT node uses to pull an uploaded
+        # attachment's bytes. It is passed as a bound method so the handler never needs to know
+        # about channels or stubs - it just awaits one callable (document_id) -> bytes.
         self.node_handler = NodeHandler(
             self._load_and_compile_graph,
             default_llm_factory=lambda: self._llm_registry.lazy(resolve_llm_config({}, {})),
+            document_fetcher=self.java_client.get_document,
         )
 
         # Live ExecuteGraph streams register here so a runaway run can be cancelled
