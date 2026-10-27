@@ -143,7 +143,8 @@ function Builder() {
                         body: n.metadata?.body || "",
                         llmProvider: n.metadata?.llm_provider || "",
                         llmModel: n.metadata?.llm_model || "",
-                        contextMode: n.metadata?.context_mode || ""
+                        contextMode: n.metadata?.context_mode || "",
+                        documentRefKey: n.metadata?.document_ref_key || ""
                     }
                 })));
                 setEdges(data.getGraphView.edges.map((e, i) => ({
@@ -178,7 +179,7 @@ function Builder() {
         const id = `node_${Date.now()}`;
         setNodes(nds => nds.concat({
             id, type: 'designNode', position,
-            data: { label: id, type: type, prompt: "", subgraphId: null, friendlyName: null, method: "GET", url: "", headers: "{}", body: "", llmProvider: "", llmModel: "", contextMode: "" }
+            data: { label: id, type: type, prompt: "", subgraphId: null, friendlyName: null, method: "GET", url: "", headers: "{}", body: "", llmProvider: "", llmModel: "", contextMode: "", documentRefKey: "" }
         }));
     }, [hasStartNode, screenToFlowPosition, setNodes]);
 
@@ -208,6 +209,12 @@ function Builder() {
                 const meta = { system_prompt: n.data?.prompt || "", label: n.data?.friendlyName || "" };
                 if (n.data?.type === NODE_TYPES.GRAPH && n.data.subgraphId) meta.subgraph_id = n.data.subgraphId;
                 if (n.data?.type === NODE_TYPES.HTTP_REQUEST) { meta.method = n.data.method || "GET"; meta.url = n.data.url || ""; meta.headers = n.data.headers || "{}"; meta.body = n.data.body || ""; }
+                // DOCUMENT carries no system prompt (it never calls a model). Only the context
+                // key is written back, and only when non-blank: an empty value would override
+                // the engine's default with nothing.
+                if (n.data?.type === NODE_TYPES.DOCUMENT && (n.data.documentRefKey || '').trim()) {
+                    meta.document_ref_key = n.data.documentRefKey.trim();
+                }
                 // Per-node AI overrides (empty = inherit the graph/server default).
                 // context_mode is written back too - it used to be silently dropped here.
                 if (n.data?.llmProvider) meta.llm_provider = n.data.llmProvider;
@@ -365,6 +372,9 @@ function Builder() {
                     <div className="palette-node" title="Human Node" draggable onDragStart={(e) => onDragStart(e, NODE_TYPES.HUMAN)}>👤</div>
                     <div className="palette-node" title="Subgraph Node" draggable onDragStart={(e) => onDragStart(e, NODE_TYPES.GRAPH)}>🧩</div>
                     <div className="palette-node" title="HTTP Request Node" draggable onDragStart={(e) => onDragStart(e, NODE_TYPES.HTTP_REQUEST)}>🔧</div>
+                    {/* A document is an attachment, not an outbound call: the palette glyph is
+                        a paperclip and the node never calls a model (see AI_NODE_TYPES). */}
+                    <div className="palette-node" title="Document Node — extract text from an attached .xlsx/.docx" draggable onDragStart={(e) => onDragStart(e, NODE_TYPES.DOCUMENT)}>📎</div>
                     <div className="palette-node" title="End Node" draggable onDragStart={(e) => onDragStart(e, NODE_TYPES.END)}>🛑</div>
                 </div>
 
@@ -487,6 +497,24 @@ function Builder() {
                                             </div>
                                         )}
                                     </>
+                                ) : selectedElement.data.type === NODE_TYPES.DOCUMENT ? (
+                                    /* No system prompt field: the node never calls a model, so a prompt
+                                       here would be a silent no-op. What matters is where the run's
+                                       context keeps the reference, and how much of the file reaches
+                                       the prompt - both are caps the operator can tighten. */
+                                    <div className="form-row">
+                                        <div className="form-group" style={{flex: 2}}>
+                                            <label className="form-label">Context key holding the document reference</label>
+                                            <input className="form-input"
+                                                   value={selectedElement.data.documentRefKey || ''}
+                                                   onChange={(e) => updateNode('documentRefKey', e.target.value)}
+                                                   placeholder="document_ref" />
+                                            <div style={{fontSize: 11, color: '#777', marginTop: 2}}>
+                                                Read from the run's context (usually set by the upload,
+                                                so leave this blank unless the caller uses its own key name).
+                                            </div>
+                                        </div>
+                                    </div>
                                 ) : (
                                     <div className="form-row">
                                         <div className="form-group" style={{flex: 2}}>

@@ -37,6 +37,8 @@ The service was designed to:
 - **In-Memory Store**: Thread-safe storage for graph definitions and execution states
 - **Pydantic Validation**: All graph definitions are validated using Pydantic models
 - **Conditional Routing**: typed condition literals on edges, validated when the graph is compiled - see [Conditional Edges](#conditional-edges)
+- **Document extraction**: a deterministic `DOCUMENT` node turns an attached `.xlsx`/`.docx`
+  into prompt-ready markdown text — see [Document attachments](#document-attachments)
 - **gRPC Reflection**: Enabled for easier debugging and client development
 - **uvloop Support**: Optional high-performance event loop for Linux/macOS
 
@@ -393,6 +395,67 @@ repository root `README.md` → *Edge conditions*.
 
 ---
 
+## Document attachments
+
+A graph may carry a document (`DOCUMENT` node type). The node fetches the file the run's
+context names, extracts its text, and writes `variables.document_text` for whatever follows.
+
+**The extraction is deliberately not a model call.** An `.xlsx`/`.docx` is a ZIP container of
+XML whose text is already text, so `openpyxl` and `python-docx` recover it exactly and for
+free — no OCR, no tokens, no hallucinated cells. The node also never receives an LLM client
+(the `uses_llm` exclusion in `langgraph_servicer.py`), so giving one a `system_prompt` cannot
+silently bill a model.
+
+What the parser does instead of thinking is *bounding* — see
+`app/graph_engine/document_parser.py`:
+
+| Cap | Default | Why |
+|---|---|---|
+| `max_sheets` | 5 | Keeps a 40-sheet workbook from becoming 40 tables in one prompt |
+| `max_rows_per_sheet` | 500 | A 5 000-row sheet is ~100k tokens; it would not fit anyway |
+| `max_cell_chars` | 200 | One runaway cell cannot evict the rest of the document |
+| `max_total_chars` | 20000 | The final prompt bound; applied with an explicit truncation marker |
+
+Every cap is **reported, not silent**: a truncated extraction sets `truncated` and appends a
+warning to `document_meta`, so a reader can tell "the file said this" from "the file said
+this about the first 500 rows".
+
+### Where the reference comes from
+
+The reference travels in the run's context, under `context.document_ref` — a graph definition
+is persisted and shared, so a *per-run* file cannot live in node metadata. Metadata only
+carries the **key name** to read (`document_ref_key`, default `document_ref`), which lets a
+caller that stores its files elsewhere name its own key.
+
+```text
+state["context"]["document_ref"]  ->  fetch  ->  parse  ->  state["variables"]["document_text"]
+```
+
+The bytes never enter `GraphState`: they would be checkpointed to Postgres on every step and
+rendered wholesale into the next node's prompt. Only the extracted, capped text does.
+
+### Failure modes
+
+| Condition | Node reports |
+|---|---|
+| No reference in the context | `error = missing_context:document_ref` |
+| Reference unknown or past retention | `error = document_not_found:…` with a readable message |
+| Not an `.xlsx`/`.docx` | `error` carrying "not a readable .xlsx or .docx file" |
+| Fetch unreachable / service down | `error` carrying the gRPC code or the connection failure |
+
+Each is a **node error, not a crash**: the run completes with `success=false` and a message,
+exactly like any other node-level failure.
+
+### Where it comes from
+
+- Browser — the chat panel's attach button → `POST /api/documents` (multipart).
+- B2B — `UploadDocument`, or the inline `document` field on `ExecuteGraph`; see
+  [../B2B_INTEGRATION.md](../B2B_INTEGRATION.md) §7.
+
+Both funnel into the same Java-side store, so the size cap and format allowlist are identical.
+
+---
+
 ## Tests
 
 Every suite below runs without a gRPC server, database, Redis or model access — the model and the
@@ -404,6 +467,8 @@ other collaborators are stubbed:
 | `test_scalar_router_answer.py` | The bare-answer fallback of a single-key router: word tokens accepted, truncated JSON and prose rejected |
 | `test_router_edges.py` | End-to-end routing on a quiz-shaped graph (real builder and node handler, stubbed model): which END node runs, build-time rejection, the `INVALID_ARGUMENT` abort, and both routing warnings |
 | `test_execute_graph_cancel.py` | Cancellation aborts the in-flight node and reports a clean `CANCELLED` event |
+| `test_document_parser.py` | `.xlsx`/`.docx` extraction: markdown tables, typed cells, blank-row dropping, every size cap firing loudly, and rejection of a non-ZIP or a foreign ZIP |
+| `test_document_node.py` | The DOCUMENT node's contract: where the reference is read from, what reaches state (and that the raw bytes never do), and each failure path reported as a node error |
 | `test_execution_registry.py` | The live-run registry behind cancellation |
 | `test_llm_config.py` | Provider/model precedence, aliases, unknown-provider failure |
 | `test_model_catalog.py` | Model suggestions per provider |
