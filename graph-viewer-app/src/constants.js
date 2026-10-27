@@ -204,6 +204,9 @@ export const NODE_TYPES = Object.freeze({
     HUMAN: 'HUMAN',
     GRAPH: 'GRAPH',
     HTTP_REQUEST: 'HTTP_REQUEST',
+    // Deterministic document extraction: reads the file the run's context names and writes
+    // the text to variables.document_text. Never calls a model - see AI_NODE_TYPES below.
+    DOCUMENT: 'DOCUMENT',
 });
 
 // Multi-provider LLM selection. Keep the values in sync with
@@ -333,9 +336,10 @@ export const fetchLlmModels = async (provider) => {
 };
 
 // Node types whose system prompt is actually sent to a model (NodeHandler.process).
-// Every type except HTTP_REQUEST and GRAPH runs the model when it carries a system_prompt, so
-// START/HUMAN nodes qualify too - only HTTP_REQUEST and GRAPH never do (unless they are routers,
-// which builder.jsx adds back via nodeUsesLlm).
+// Every type except HTTP_REQUEST, DOCUMENT and GRAPH runs the model when it carries a
+// system_prompt, so START/HUMAN nodes qualify too - those three never do (unless they are
+// routers, which builder.jsx adds back via nodeUsesLlm). DOCUMENT is the clearest case: it
+// only reads bytes and extracts text, so giving it a prompt would be a silent no-op.
 // Keep in sync with `uses_llm` in python-langgraph-service/app/services/langgraph_servicer.py.
 export const AI_NODE_TYPES = Object.freeze([NODE_TYPES.START, NODE_TYPES.END, NODE_TYPES.ACTION, NODE_TYPES.HUMAN]);
 
@@ -350,6 +354,7 @@ const NODE_CLASS_SUFFIXES = Object.freeze({
     [NODE_TYPES.HUMAN]: 'human',
     [NODE_TYPES.GRAPH]: 'graph',
     [NODE_TYPES.HTTP_REQUEST]: 'http-request',
+    [NODE_TYPES.DOCUMENT]: 'document',
 });
 
 /** React Flow node class for a node type, e.g. HTTP_REQUEST -> "node-http-request". */

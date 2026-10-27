@@ -306,6 +306,11 @@ enum NodeType {
   NODE_TYPE_HUMAN = 4;
   NODE_TYPE_GRAPH = 5;
   NODE_TYPE_HTTP_REQUEST = 6;
+  // Fetches the document the run's context names (context.document_ref) and extracts
+  // prompt-ready text from it. Deterministic - it never calls a model - so the extraction is
+  // free and exact, and any semantics ("which column is the amount?") belong to a downstream
+  // ACTION node reading variables.document_text.
+  NODE_TYPE_DOCUMENT = 7;
 }
 
 enum ExecutionEventType {

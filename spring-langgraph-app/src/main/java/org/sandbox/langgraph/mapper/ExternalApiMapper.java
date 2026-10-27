@@ -107,6 +107,7 @@ public final class ExternalApiMapper {
             case NODE_TYPE_HUMAN -> org.sandbox.langgraph.core.model.NodeType.HUMAN;
             case NODE_TYPE_GRAPH -> org.sandbox.langgraph.core.model.NodeType.GRAPH;
             case NODE_TYPE_HTTP_REQUEST -> org.sandbox.langgraph.core.model.NodeType.HTTP_REQUEST;
+            case NODE_TYPE_DOCUMENT -> org.sandbox.langgraph.core.model.NodeType.DOCUMENT;
             // Protobuf enums carry an extra UNRECOGNIZED sentinel for values the
             // client sent with a newer contract; it is as invalid as UNSPECIFIED.
             case NODE_TYPE_UNSPECIFIED, UNRECOGNIZED ->

@@ -58,7 +58,8 @@ class GraphQlSchemaContractTest {
         GraphQLSchema schema = buildSchema();
 
         assertThat(enumValues(schema, "NodeType"))
-                .containsExactlyInAnyOrder("START", "END", "ACTION", "HUMAN", "GRAPH", "HTTP_REQUEST");
+                .containsExactlyInAnyOrder("START", "END", "ACTION", "HUMAN", "GRAPH",
+                        "HTTP_REQUEST", "DOCUMENT");
         assertThat(enumValues(schema, "ExecutionEventType"))
                 .containsExactlyInAnyOrder("START", "NODE_START", "NODE_END", "END", "WAITING_FOR_INPUT", "ERROR", "CANCELLED");
         assertThat(enumValues(schema, "HttpMethod"))

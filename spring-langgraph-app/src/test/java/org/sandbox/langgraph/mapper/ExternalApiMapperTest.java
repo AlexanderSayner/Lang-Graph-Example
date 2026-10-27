@@ -47,6 +47,18 @@ class ExternalApiMapperTest {
     }
 
     @Test
+    @DisplayName("a DOCUMENT node maps through - it is a first-class node type, not a special case")
+    void mapsDocumentNodeType() {
+        NodeInput node = mapper.toNodeInput(org.sandbox.langgraph.grpc.external.NodeDefinition.newBuilder()
+                .setNodeId("attach_1")
+                .setNodeType(org.sandbox.langgraph.grpc.external.NodeType.NODE_TYPE_DOCUMENT)
+                .setHandlerName("attach1Handler")
+                .build());
+
+        assertThat(node.nodeType()).isEqualTo(org.sandbox.langgraph.core.model.NodeType.DOCUMENT);
+    }
+
+    @Test
     @DisplayName("an UNSPECIFIED node type is rejected at the edge")
     void rejectsUnspecifiedNodeType() {
         assertThatIllegalArgumentException()

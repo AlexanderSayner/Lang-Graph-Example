@@ -391,6 +391,9 @@ enum NodeType {
     HUMAN
     GRAPH
     HTTP_REQUEST
+    # Deterministic document extraction: reads the file the run context names
+    # (context.document_ref) and writes the extracted text to variables.document_text.
+    DOCUMENT
 }
 
 enum ExecutionEventType {
