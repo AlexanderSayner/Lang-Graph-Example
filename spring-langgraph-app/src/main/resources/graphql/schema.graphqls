@@ -149,6 +149,11 @@ type LlmBillingSettingsPayload {
     # actually runs on (its nodes fall back to this). Empty when the engine could not be
     # reached - then the UI names no provider rather than guessing one.
     defaultProvider: String
+    # The model that same default provider resolves to: the engine's LLM_MODEL /
+    # <PROVIDER>_MODEL / that provider's preset. It belongs to defaultProvider alone - a graph
+    # that pins a different provider inherits that provider's own default. Empty when the
+    # engine could not be reached - then the UI names no model rather than a wrong one.
+    defaultModel: String
     # false when the engine's LLM_SERVICE_KEY_ENABLED is off: no path may read the shared
     # key, so a run without a matching personal key fails instead of billing the operator.
     serviceKeyEnabled: Boolean!

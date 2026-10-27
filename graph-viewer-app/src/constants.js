@@ -147,6 +147,7 @@ export const LLM_BILLING_SETTINGS_QUERY = `
             personalKeysEnabled
             serviceKeyForbidden
             defaultProvider
+            defaultModel
             serviceKeyEnabled
         }
     }
@@ -257,6 +258,37 @@ export const collectGraphProviders = (view) => {
     add(view?.config?.llm_provider);
     (view?.nodes || []).forEach(node => add(node?.metadata?.llm_provider));
     return Array.from(providers);
+};
+
+/**
+ * What the viewer's canvas badge needs to name the model a run of this graph will use:
+ * the graph-level default plus every node that departs from it. Same precedence the engine
+ * applies (see `resolve_llm_config` in python-langgraph-service/app/clients/llm.py):
+ * node metadata beats graph config, and an empty provider/model means "inherit" - which the
+ * viewer then resolves against the engine's own default rather than guessing a name.
+ *
+ * Only REAL differences are reported as overrides: a node that declares nothing, or exactly
+ * what the graph already declares, changes nothing a reader of the badge would care about.
+ *
+ * @param {{ config?: object, nodes?: Array<{nodeId?: string, metadata?: object}> }} view getGraphView payload
+ * @returns {{provider: string, model: string, nodeOverrides: Array<{nodeId: string, provider: string, model: string}>}}
+ */
+export const collectGraphLlm = (view) => {
+    const text = (value) => String(value ?? '').trim();
+    const config = view?.config || {};
+    const provider = normalizeProviderId(config.llm_provider);
+    const model = text(config.llm_model);
+    const nodeOverrides = [];
+
+    (view?.nodes || []).forEach(node => {
+        const nodeProvider = normalizeProviderId(node?.metadata?.llm_provider);
+        const nodeModel = text(node?.metadata?.llm_model);
+        if ((nodeProvider && nodeProvider !== provider) || (nodeModel && nodeModel !== model)) {
+            nodeOverrides.push({ nodeId: text(node?.nodeId) || '(unknown)', provider: nodeProvider, model: nodeModel });
+        }
+    });
+
+    return { provider, model, nodeOverrides };
 };
 
 // Copilot provider options: the same choices as the graph/node selectors, but the empty value

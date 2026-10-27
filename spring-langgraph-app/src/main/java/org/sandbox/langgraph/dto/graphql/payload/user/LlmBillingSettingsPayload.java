@@ -19,6 +19,12 @@ package org.sandbox.langgraph.dto.graphql.payload.user;
  *                            selects no provider of its own actually runs on. Empty when the
  *                            engine could not be reached, so the UI names no provider rather
  *                            than guessing one
+ * @param defaultModel        the model that same default provider resolves to
+ *                            ({@code LLM_MODEL} / {@code <PROVIDER>_MODEL} / the preset). It
+ *                            belongs to {@code defaultProvider} alone - a graph pinning a
+ *                            different provider inherits that provider's own default - and is
+ *                            empty when the engine could not be reached, so the UI names no
+ *                            model rather than the wrong one
  * @param serviceKeyEnabled   false when the engine's {@code LLM_SERVICE_KEY_ENABLED} makes the
  *                            shared key unspendable - a run without a matching personal key
  *                            then fails instead of billing the operator
@@ -28,6 +34,7 @@ public record LlmBillingSettingsPayload(
         Boolean personalKeysEnabled,
         Boolean serviceKeyForbidden,
         String defaultProvider,
+        String defaultModel,
         Boolean serviceKeyEnabled
 ) {
 }

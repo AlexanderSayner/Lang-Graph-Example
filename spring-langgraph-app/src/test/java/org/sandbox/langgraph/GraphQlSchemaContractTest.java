@@ -152,6 +152,11 @@ class GraphQlSchemaContractTest {
         // whether the shared key may be spent at all.
         assertThat(fieldTypeName(schema, "LlmBillingSettingsPayload", "defaultProvider"))
                 .isEqualTo("String");
+        // The same claim one level down: the model that default provider will call, nullable
+        // for the same reason - an unreachable engine reports nothing rather than a name the
+        // viewer would print as fact.
+        assertThat(fieldTypeName(schema, "LlmBillingSettingsPayload", "defaultModel"))
+                .isEqualTo("String");
         assertThat(fieldTypeName(schema, "LlmBillingSettingsPayload", "serviceKeyEnabled"))
                 .isEqualTo("Boolean");
     }

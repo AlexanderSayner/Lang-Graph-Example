@@ -11,7 +11,8 @@ import {
     BALANCE_QUERY, EXECUTE_MUTATION, CANCEL_EXECUTION_MUTATION, SAVE_MUTATION,
     DELETE_MUTATION, REWIND_MUTATION, COPILOT_MUTATION,
     CLAIM_THREADS_MUTATION, LLM_CREDENTIALS_QUERY, LLM_BILLING_SETTINGS_QUERY,
-    collectGraphProviders, layoutGraph, NODE_TYPES, EXECUTION_EVENT_TYPES, nodeClassName
+    collectGraphProviders, collectGraphLlm, normalizeProviderId,
+    layoutGraph, NODE_TYPES, EXECUTION_EVENT_TYPES, nodeClassName
 } from './constants';
 import CopilotTab from './copilot';
 import Sidebar from './components/Sidebar';
@@ -79,6 +80,9 @@ function App() {
     const [isLoggedIn, setIsLoggedIn] = useState(false);
     const [savedKeyProviders, setSavedKeyProviders] = useState([]);
     const [graphProviders, setGraphProviders] = useState([]);
+    // What the graph itself declares as its LLM (graph config + per-node overrides), kept in
+    // step with `graphProviders` so the canvas badge can never describe a previous graph.
+    const [graphLlm, setGraphLlm] = useState({ provider: '', model: '', nodeOverrides: [] });
     const [showLlmSettings, setShowLlmSettings] = useState(false);
 
     const loadSavedKeys = async () => {
@@ -114,6 +118,10 @@ function App() {
         personalKeysEnabled: true,
         serviceKeyForbidden: false,
         defaultProvider: '',
+        // The model that same default provider resolves to (empty until the engine answers,
+        // and staying empty when it cannot be reached - never a guess). It is what the canvas
+        // badge shows for a graph that pins no model of its own.
+        defaultModel: '',
         serviceKeyEnabled: true,
     });
     useEffect(() => {
@@ -317,6 +325,7 @@ function App() {
         // Cleared before the fetch: otherwise a failed load (or a fast switch) would keep
         // showing the PREVIOUS graph's providers in the "no personal key" banner.
         setGraphProviders([]);
+        setGraphLlm({ provider: '', model: '', nodeOverrides: [] });
         setRenderState({ graphId: id, seq, status: 'loading', error: null, fitMode: 'all' });
 
         fetchGraphQL(VIEW_QUERY, { graphId: id })
@@ -334,6 +343,7 @@ function App() {
                 // captured here because the raw view - not the React Flow projection - is
                 // what carries `config` and each node's `metadata`.
                 setGraphProviders(collectGraphProviders(view));
+                setGraphLlm(collectGraphLlm(view));
                 // Create Label Map
                 const labels = {};
                 view.nodes.forEach(n => { if(n.metadata?.label) labels[n.nodeId] = n.metadata.label; });
@@ -436,6 +446,42 @@ function App() {
         : graphsStatus === 'error'                             ? 'list-error'
         : graphs.length === 0                                  ? 'empty'
         :                                                        'none-selected';
+
+    // --- The canvas badge: which LLM a run of THIS graph will use --------------------
+    // The engine's own precedence is applied here (resolve_llm_config in
+    // python-langgraph-service/app/clients/llm.py): the graph's llm_provider / llm_model when
+    // it declares them, otherwise the engine's default provider and the model that provider
+    // resolves to (`defaultModel`, i.e. LLM_MODEL / <PROVIDER>_MODEL / the preset).
+    //
+    // The one subtlety: that default model belongs to the engine's default provider. A graph
+    // that pins a DIFFERENT provider inherits that provider's own default model instead, and
+    // the browser has no way to name it - so it says "Provider default" rather than printing
+    // a model name belonging to an unrelated provider (e.g. a Groq node showing "yandexgpt").
+    const engineDefaultProvider = normalizeProviderId(billingSettings.defaultProvider);
+    const followsEngineModel = !graphLlm.provider
+        || !engineDefaultProvider
+        || graphLlm.provider === engineDefaultProvider;
+    const llmBadgeModel = graphLlm.model
+        || (followsEngineModel ? billingSettings.defaultModel : '')
+        || '';
+    const llmBadgeProvider = graphLlm.provider || billingSettings.defaultProvider;
+
+    // Everything the chip can not fit, spelled out: what is pinned where, where the model
+    // came from, and which nodes depart from it.
+    const llmBadgeTooltip = [
+        graphLlm.model
+            ? `Model: ${graphLlm.model} (pinned in this graph's settings).`
+            : llmBadgeModel
+                ? `Model: ${llmBadgeModel} - this graph pins no model, so it runs on the engine's default.`
+                : `Model: not pinned - the selected provider falls back to its own default model.`,
+        graphLlm.provider
+            ? `Provider: ${graphLlm.provider} (pinned in this graph's settings).`
+            : billingSettings.defaultProvider
+                ? `Provider: ${billingSettings.defaultProvider} - this graph pins none, so the engine's default is used.`
+                : `Provider: the server default (the engine did not report which one).`,
+        ...graphLlm.nodeOverrides.map(node =>
+            `${node.nodeId}: ${[node.provider, node.model].filter(Boolean).join(' / ')} (overrides the graph default).`),
+    ].join('\n');
 
     // Re-apply node and edge styles when selection or execution state changes
     useEffect(() => {
@@ -698,6 +744,7 @@ function App() {
             setActiveNodeIds(new Set());
             setRewindOriginNodeId(null);
             setGraphProviders([]);
+            setGraphLlm({ provider: '', model: '', nodeOverrides: [] });
             setRenderState(prev => ({ ...prev, graphId: null, status: 'idle', error: null }));
         }
     };
@@ -846,6 +893,21 @@ function App() {
             {/* Main Content */}
             <div className="main-area">
                 <div className="canvas-container">
+                    {/* Which LLM a run of the loaded graph will use. Read-only, and shown only
+                        while a graph is actually mounted - the placeholder states below speak
+                        for themselves when the canvas is empty. */}
+                    {renderState.status === 'ready' && (
+                        <div className="canvas-llm-badge" title={llmBadgeTooltip}>
+                            <span aria-hidden="true">🧠</span>
+                            <b>{llmBadgeModel || 'Provider default'}</b>
+                            <span className="canvas-llm-provider">{llmBadgeProvider || 'server default'}</span>
+                            {graphLlm.nodeOverrides.length > 0 && (
+                                <span className="canvas-llm-overrides">
+                                    +{graphLlm.nodeOverrides.length} node override{graphLlm.nodeOverrides.length === 1 ? '' : 's'}
+                                </span>
+                            )}
+                        </div>
+                    )}
                     <div className="canvas-actions">
                         <button className="save-layout-btn" onClick={handleSaveLayout} disabled={!canvasKey}>Save Layout</button>
                         <div className="layout-dir" role="group" aria-label="Auto layout direction">

@@ -46,6 +46,9 @@ class UserGraphQLControllerTest {
         assertThat(payload.personalKeysEnabled()).isTrue();
         assertThat(payload.serviceKeyForbidden()).isTrue();
         assertThat(payload.defaultProvider()).isEqualTo("yandex");
+        // The engine's own model answer travels with its provider, so the viewer can name the
+        // model a graph that inherits will really call instead of a vague "default".
+        assertThat(payload.defaultModel()).isEqualTo("yandexgpt");
         // The engine's kill switch is reported even when the policy itself would allow the
         // shared key: the UI has to know it cannot promise a shared-key run either.
         assertThat(payload.serviceKeyEnabled()).isFalse();
@@ -63,6 +66,9 @@ class UserGraphQLControllerTest {
         LlmBillingSettingsPayload payload = controller().llmBillingSettings();
 
         assertThat(payload.defaultProvider()).isEmpty();
+        // An unknown default is unknown as a whole: no provider AND no model, never the
+        // previous run's answer and never a guess.
+        assertThat(payload.defaultModel()).isEmpty();
         assertThat(payload.serviceKeyEnabled()).isTrue();
         assertThat(payload.serviceKeyForbidden()).isFalse();
     }

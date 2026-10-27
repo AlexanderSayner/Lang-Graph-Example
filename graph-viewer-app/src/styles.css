@@ -394,6 +394,24 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
 .layout-dir button:hover { background: #e3f2fd; }
 .layout-dir button.active { background: #2196f3; color: white; }
 
+/* Read-only LLM chip in the top-left of the canvas: what model (and provider) a run of the
+   loaded graph will use, plus a count of nodes that override the graph default. Mirrors the
+   position of .canvas-actions on the opposite side so the two never overlap. */
+.canvas-llm-badge {
+    position: absolute; top: 10px; left: 10px; z-index: 5;
+    display: flex; align-items: center; gap: 6px; max-width: calc(50% - 90px);
+    background: #fff; border: 1px solid #ccc; border-radius: 4px; padding: 5px 10px;
+    font-size: 12px; color: #333; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.canvas-llm-badge b { font-weight: 600; }
+.canvas-llm-provider { color: #666; }
+.canvas-llm-provider::before { content: "·"; color: #bbb; margin-right: 6px; }
+.canvas-llm-overrides {
+    background: #e3f2fd; border: 1px solid #bbdefb; color: #0d47a1;
+    border-radius: 10px; padding: 1px 6px; font-size: 10px; font-weight: 600;
+}
+
 /* Shown instead of the canvas while a graph is loading, or when loading it failed */
 .canvas-message { position: absolute; inset: 0; z-index: 4; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; background: rgba(255,255,255,0.92); color: #666; font-size: 13px; }
 .canvas-message.error { color: #c62828; }

@@ -157,6 +157,7 @@ public class UserGraphQLController {
                 llmCredentialService.personalKeysEnabled(),
                 llmCredentialService.serviceKeyForbidden(),
                 engine.defaultProvider(),
+                engine.defaultModel(),
                 engine.serviceKeyEnabled());
     }
 
