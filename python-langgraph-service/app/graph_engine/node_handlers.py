@@ -13,6 +13,11 @@ from app.clients.llm import LLMCredentialSet, LLMCredentials, MissingUserApiKeyE
     missing_user_key_message
 from app.config import settings
 from app.generated import langgraph_pb2_grpc, langgraph_pb2
+from app.graph_engine.document_parser import (
+    DocumentLimits,
+    DocumentParseError,
+    parse_document,
+)
 from app.graph_engine.graph_utils import format_state_context, extract_json_from_response, JsonGenerationError, \
     parse_literal, GraphState
 
@@ -212,9 +217,10 @@ class NodeHandler:
     # call simply never happened and nothing reported it.
     # START / END / HUMAN are pass-through ACTION nodes here - they carry no prompt of their own.
     ACTION_NODE_TYPES = frozenset({"START", "END", "ACTION", "HUMAN"})
-    KNOWN_NODE_TYPES = ACTION_NODE_TYPES | {"GRAPH", "HTTP_REQUEST"}
+    KNOWN_NODE_TYPES = ACTION_NODE_TYPES | {"GRAPH", "HTTP_REQUEST", "DOCUMENT"}
 
-    def __init__(self, graph_loader: GraphLoader, default_llm=None, default_llm_factory=None):
+    def __init__(self, graph_loader: GraphLoader, default_llm=None, default_llm_factory=None,
+                 document_fetcher=None):
         # Each node may carry its own provider/model: the servicer resolves a client per
         # node (node metadata -> graph config -> service default) and passes it into
         # process(). The service-level fallback below is built lazily so that a missing
@@ -222,6 +228,11 @@ class NodeHandler:
         self.default_llm = default_llm
         self.default_llm_factory = default_llm_factory
         self.graph_loader = graph_loader
+        # Injected by the servicer in commit 3 of this feature: an async callable
+        # (document_id) -> (bytes, filename, mime_type) backed by the Java source of truth.
+        # A DOCUMENT node with no fetcher fails loudly at run time instead of silently
+        # producing an empty prompt - the same contract as an unreachable HTTP service.
+        self.document_fetcher = document_fetcher
 
         try:
             self.http_channel = grpc.aio.insecure_channel(
@@ -335,6 +346,8 @@ class NodeHandler:
             return await self._process_subgraph(n_id, n_meta, state, config)
         if node_type == "HTTP_REQUEST":
             return await self._process_http_request(n_id, n_meta, state)
+        if node_type == "DOCUMENT":
+            return await self._process_document(n_id, n_meta, state)
         if node_type in self.ACTION_NODE_TYPES:
             return await self._process_action(n_id, n_meta, state, llm,
                                               credentials, require_user_key, caller_kind)
@@ -618,3 +631,91 @@ class NodeHandler:
         except Exception as e:
             logger.error(f"Node {n_id}: Unexpected HTTP request error - {e}", exc_info=True)
             return {"last_node": n_id, "output": "Unexpected error during HTTP request execution.", "error": str(e)}
+
+    async def _process_document(self, n_id: str, n_meta: Dict, state: GraphState) -> Dict:
+        """Fetch a caller-attached document and extract prompt-ready text from it.
+
+        The document itself NEVER enters GraphState: it would be checkpointed to Postgres on
+        every step and rendered wholesale into the next node's prompt by
+        ``format_state_context``. Only the extracted text (capped) and a small metadata dict
+        are written, under ``variables`` so the existing reducer merges them into whatever
+        the graph already holds.
+
+        The reference arrives per run - a graph definition is persisted and shared, so it
+        cannot live in node metadata - under ``context[document_ref_key]``.
+        """
+        context = state.get("context") or {}
+        if not isinstance(context, dict):
+            context = {}
+        ref_key = str((n_meta or {}).get("document_ref_key") or "document_ref").strip()
+        ref_key = ref_key or "document_ref"
+        document_ref = str(context.get(ref_key) or "").strip()
+
+        if not document_ref:
+            return {
+                "last_node": n_id,
+                "output": f"Document node found no '{ref_key}' in the run context.",
+                "error": f"missing_context:{ref_key}",
+            }
+
+        if self.document_fetcher is None:
+            logger.error("Node %s: no document fetcher is configured", n_id)
+            return {
+                "last_node": n_id,
+                "output": "Error: Document Service is not connected.",
+                "error": "Document Service Unavailable",
+            }
+
+        try:
+            content, filename, _mime_type = await self.document_fetcher(document_ref)
+        except grpc.RpcError as e:
+            logger.error("Node %s: document fetch failed - %s: %s", n_id, e.code(), e.details())
+            return {
+                "last_node": n_id,
+                "output": f"System Error: could not fetch the document ({e.code()}).",
+                "error": str(e.details()),
+            }
+        except Exception as e:
+            logger.error("Node %s: document fetch raised - %s", n_id, e, exc_info=True)
+            return {
+                "last_node": n_id,
+                "output": f"Error: could not fetch the document ({e}).",
+                "error": str(e),
+            }
+
+        limits = DocumentLimits.from_metadata(n_meta)
+        try:
+            parsed = parse_document(content, limits, filename=filename)
+        except DocumentParseError as e:
+            logger.error("Node %s: could not parse document: %s", n_id, e)
+            return {
+                "last_node": n_id,
+                "output": f"Error: {e}",
+                "error": str(e),
+            }
+
+        stats = dict(parsed.stats)
+        meta = {
+            "document_ref": document_ref,
+            "filename": filename,
+            "kind": parsed.kind,
+            "truncated": parsed.truncated,
+            "chars": len(parsed.text),
+            "stats": stats,
+        }
+        if parsed.warnings:
+            meta["warnings"] = parsed.warnings
+
+        summary = (
+            f"Parsed {parsed.kind} '{filename}': {len(parsed.text)} chars"
+            + (f" (truncated: {'; '.join(parsed.warnings)})" if parsed.warnings else "")
+        )
+        return {
+            "last_node": n_id,
+            "output": summary,
+            "variables": {"document_text": parsed.text, "document_meta": meta},
+            "total_tokens": 0,
+            "history": [{"node": n_id, "output": summary, "tokens_used": 0}],
+            "llm_billing": "",
+        }
+
