@@ -76,6 +76,48 @@ export const fetchGraphQL = async (query, variables, options = {}) => {
     throw new Error(`GraphQL request failed. Tried: ${problems.join(' | ')}`);
 };
 
+// --- Document upload ---------------------------------------------------------------
+//
+// Attachments are REST/multipart, not GraphQL: the file is binary and base64-in-JSON would
+// inflate every upload by a third and hit the GraphQL message limit. Same origin rules as
+// fetchGraphQL above - the same-origin /api path first (it goes through the dev server's
+// proxy and nginx's), the absolute backend URL as the fallback when the UI is served
+// without one.
+export const DOCUMENT_UPLOAD_URL = `${window.location.origin}/api/documents`;
+
+/**
+ * Upload one file and return `{ documentId, filename, sizeBytes, sha256 }`.
+ *
+ * @param {File}   file     the chosen file; the browser sets its own content type
+ * @param {string} threadId the thread it will be attached to (audit only; may be blank)
+ * @param {object} options  optional AbortSignal, so a stuck upload can be cancelled
+ * @returns {Promise<object>} the reference to quote as context.document_ref on the next run
+ */
+export const uploadDocument = async (file, threadId, options = {}) => {
+    const form = new FormData();
+    form.append('file', file);
+    if (threadId) form.append('threadId', threadId);
+
+    const response = await fetch(DOCUMENT_UPLOAD_URL, {
+        method: 'POST',
+        credentials: 'include',
+        signal: options.signal,
+        body: form,
+    });
+
+    const contentType = response.headers.get('content-type') || '';
+    const text = await response.text();
+    if (!contentType.includes('json')) {
+        // Same SPA-fallback failure as fetchGraphQL: no /api proxy, so index.html came back.
+        throw new Error(`no JSON from ${DOCUMENT_UPLOAD_URL} (HTTP ${response.status})`);
+    }
+    const json = JSON.parse(text);
+    if (!response.ok || json.success === false) {
+        throw new Error(json.errorMessage || `Upload failed (HTTP ${response.status})`);
+    }
+    return json;
+};
+
 // --- Auth Queries & Mutations ---
 export const GET_CURRENT_USER_QUERY = `
     query {

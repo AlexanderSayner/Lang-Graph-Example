@@ -12,7 +12,8 @@ import {
     DELETE_MUTATION, REWIND_MUTATION, COPILOT_MUTATION,
     CLAIM_THREADS_MUTATION, LLM_CREDENTIALS_QUERY, LLM_BILLING_SETTINGS_QUERY,
     collectGraphProviders, collectGraphLlm, normalizeProviderId,
-    layoutGraph, NODE_TYPES, EXECUTION_EVENT_TYPES, nodeClassName
+    layoutGraph, NODE_TYPES, EXECUTION_EVENT_TYPES, nodeClassName,
+    uploadDocument
 } from './constants';
 import CopilotTab from './copilot';
 import Sidebar from './components/Sidebar';
@@ -62,6 +63,12 @@ function App() {
     const [input, setInput] = useState("");
     const [threadId, setThreadId] = useState(Date.now().toString());
     const [loading, setLoading] = useState(false);
+    // The document this run will carry. `attachment` holds the server's reference once the
+    // upload lands; `attachmentUploading` and `attachmentError` describe the request itself,
+    // so a refused file is shown rather than silently dropped.
+    const [attachment, setAttachment] = useState(null);
+    const [attachmentUploading, setAttachmentUploading] = useState(false);
+    const [attachmentError, setAttachmentError] = useState(null);
     const chatEndRef = useRef(null);
     // AbortController of the in-flight ExecuteGraph request, so the Cancel button can stop it.
     const abortControllerRef = useRef(null);
@@ -578,6 +585,35 @@ function App() {
         return () => clearTimeout(timer);
     }, [collapsed]);
 
+    // --- Attachments -------------------------------------------------------------------
+    //
+    // The file is uploaded the moment it is chosen, not when the run starts: the user gets
+    // an immediate "too large / wrong type" answer instead of discovering it after writing
+    // their message, and the run itself then travels as ordinary context.
+    const handlePickAttachment = async (event) => {
+        const file = event.target.files && event.target.files[0];
+        // Reset the picker so choosing the SAME file twice still fires a change event.
+        event.target.value = '';
+        if (!file) return;
+
+        setAttachment(null);
+        setAttachmentError(null);
+        setAttachmentUploading(true);
+        try {
+            const result = await uploadDocument(file, threadId);
+            setAttachment(result);
+        } catch (err) {
+            setAttachmentError(err.message || 'The upload failed.');
+        } finally {
+            setAttachmentUploading(false);
+        }
+    };
+
+    const handleClearAttachment = () => {
+        setAttachment(null);
+        setAttachmentError(null);
+    };
+
     const handleExecute = async () => {
         if (!input.trim() || !selected) return;
 
@@ -594,8 +630,14 @@ function App() {
         abortControllerRef.current = controller;
 
         try {
+            // An attachment travels as run context, which is the only channel the engine's
+            // DOCUMENT node reads. It is quoted once, on the NEXT run, and cleared after a
+            // successful one so a follow-up message does not silently re-attach the file.
+            const runContext = attachment
+                ? { document_ref: attachment.documentId }
+                : undefined;
             const data = await fetchGraphQL(EXECUTE_MUTATION, {
-                input: { graphId: selected, threadId: threadId, input: userText }
+                input: { graphId: selected, threadId: threadId, input: userText, context: runContext }
             }, { signal: controller.signal });
 
             // A newer run started (or a cancel cleared this one) while we were waiting.
@@ -641,6 +683,9 @@ function App() {
                 if (rewindOriginNodeId) {
                     setRewindOriginNodeId(null);
                 }
+                // The attachment was consumed by this run. Leaving it set would silently
+                // re-attach the same file to the next message, which is a surprise at best.
+                setAttachment(null);
             } else if (eventType === EXECUTION_EVENT_TYPES.WAITING_FOR_INPUT) {
                 setGraphStatus('waiting');
             } else if (eventType === EXECUTION_EVENT_TYPES.START || eventType === EXECUTION_EVENT_TYPES.NODE_END) {
@@ -1019,6 +1064,11 @@ function App() {
                     savedKeyProviders={isLoggedIn ? savedKeyProviders : []}
                     graphUsesServerDefault={renderState.status === 'ready' && graphProviders.length === 0}
                     onOpenLlmSettings={() => setShowLlmSettings(true)}
+                    attachment={attachment}
+                    attachmentUploading={attachmentUploading}
+                    attachmentError={attachmentError}
+                    onPickAttachment={handlePickAttachment}
+                    onClearAttachment={handleClearAttachment}
                 />
             </div>
         </React.Fragment>

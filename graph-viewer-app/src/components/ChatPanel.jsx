@@ -64,7 +64,18 @@ export default function ChatPanel({
     // the engine's server default then decides, and nothing here can tell whether it matches
     // a saved key.
     graphUsesServerDefault = false,
-    onOpenLlmSettings
+    onOpenLlmSettings,
+    // --- Attachments ---
+    // The document this run will carry, once the upload has finished. Null means "nothing
+    // attached"; a run with no attachment behaves exactly as before.
+    attachment = null,
+    // True while the chosen file is uploading, so the chip can say so instead of a stale name.
+    attachmentUploading = false,
+    // Set when the upload was refused (too large, wrong type): shown, not swallowed.
+    attachmentError = null,
+    // Chosen a file / pressed the remove button. Both live in app.jsx, which owns the request.
+    onPickAttachment = () => {},
+    onClearAttachment = () => {},
 }) {
     // Either half being set means the shared key will NOT pay for this run.
     const sharedKeyBlocked = serviceKeyForbidden || !serviceKeyEnabled;
@@ -243,7 +254,32 @@ export default function ChatPanel({
                             </span>
                         </div>
                     )}
+                    {/* An attached document rides with the NEXT run: the chip is the whole
+                        affordance, so the file picker is a hidden input the button triggers. */}
+                    {(attachment || attachmentUploading || attachmentError) && (
+                        <div className={`attachment-row ${attachmentError ? 'attachment-row--error' : ''}`}>
+                            <span className="attachment-chip" title={attachmentError || (attachment && attachment.filename)}>
+                                {attachmentUploading ? '⏳ Uploading…'
+                                    : attachmentError ? `⚠ ${attachmentError}`
+                                    : `📎 ${attachment.filename}`}
+                            </span>
+                            <button
+                                type="button"
+                                className="attachment-remove"
+                                onClick={onClearAttachment}
+                                disabled={loading}
+                                title="Remove the attachment"
+                            >×</button>
+                        </div>
+                    )}
                     <div className="chat-input-area">
+                        <input
+                            type="file"
+                            className="attachment-file-input"
+                            accept=".xlsx,.docx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                            onChange={onPickAttachment}
+                            disabled={loading}
+                        />
                         <input className="chat-input" placeholder={ graphStatus === 'finished' ? "💬 Graph finished — send a message to continue, or click 'New' for a fresh thread" : "Send message..." } value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleExecute()} disabled={loading} />
                         {loading ? (
                             /* While a run is in flight the Send button becomes a Cancel button, so

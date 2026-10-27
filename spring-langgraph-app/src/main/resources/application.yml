@@ -41,6 +41,17 @@ spring:
     websocket:
       path: /graphql/ws
 
+  # Browser document uploads (POST /api/documents). Boot's defaults are 1 MB / 10 MB, which
+  # would reject a perfectly ordinary spreadsheet before the service's own 8 MB cap ever ran;
+  # the request limit is kept above the file limit so the FILE limit is what actually bites,
+  # and a too-large file reaches DocumentService and gets a readable reason rather than a
+  # Tomcat 500.
+  servlet:
+    multipart:
+      max-file-size: ${DOCUMENT_MAX_FILE_SIZE:10MB}
+      max-request-size: ${DOCUMENT_MAX_REQUEST_SIZE:12MB}
+      file-size-threshold: 0
+
   jackson:
     default-property-inclusion: non_null
 

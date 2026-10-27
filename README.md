@@ -38,7 +38,7 @@ This project demonstrates a microservices architecture where:
 │       ├── java/org/sandbox/langgraph/
 │       │   ├── LangGraphApplication.java
 │       │   ├── config/                 # Configuration (gRPC, security, GraphQL, props)
-│       │   ├── controller/             # GraphQL controllers
+│       │   ├── controller/             # GraphQL controllers + the /api/documents upload
 │       │   ├── service/                # Business logic (grpc/, user/, customer/, ui/)
 │       │   ├── core/                   # JPA entities, repositories, graph service
 │       │   ├── dto/                    # Data transfer objects
@@ -405,6 +405,37 @@ mutation {
 - Per-node and per-graph LLM provider/model selection layered over the service defaults, so credentials are only needed for the selected provider (see `python-langgraph-service/README.md` → *Multi-Provider LLM Configuration*)
 - Checkpointed execution state persisted in PostgreSQL
 - Execution history with state diffs and rewind
+- **Document attachments**: a `DOCUMENT` node extracts text from an attached `.xlsx`/`.docx`
+  deterministically (no OCR, no model call), so a run can be handed a real spreadsheet — see
+  *Attachments* below
+
+#### Attachments
+
+A run may carry a file. The `DOCUMENT` node fetches the document the run names, extracts its
+text as markdown tables, and writes it to `variables.document_text`; an ordinary `ACTION` node
+downstream then reasons over that text as it would any other variable.
+
+The extraction is **deliberately not an LLM call** — an `.xlsx`/`.docx` is a ZIP of XML whose
+text is already text, so a few lines of library code recover it exactly and for free. What the
+parser does instead of thinking is *bounding*: per-sheet, per-row, per-cell and total-character
+caps, each reported rather than silent, so a 5 000-row sheet is cut to something a context
+window can hold rather than being truncated mid-answer by the provider.
+
+```text
+START → DOCUMENT → ACTION("map these rows to {total, top_client}") → END
+```
+
+Two ways to attach, both landing in the run's `context` as `document_ref`:
+
+- **Browser** — the chat panel's attach button uploads to `POST /api/documents`
+  (multipart; a file is binary and base64-in-JSON would inflate every upload by a third).
+- **B2B** — `UploadDocument`, or the inline `document` field on `ExecuteGraph`. See
+  [B2B_INTEGRATION.md §7](B2B_INTEGRATION.md).
+
+Both paths funnel into `DocumentService`, so the rules — 8 MB cap, `.xlsx`/`.docx` only,
+owner-bound unguessable id, 7-day retention — are identical whichever door the file comes
+through. Uploaded bytes are never returned by any API: only the engine reads them, over the
+internal port, and only the extracted text ever enters graph state.
 
 #### Edge conditions
 

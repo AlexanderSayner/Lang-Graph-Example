@@ -446,4 +446,6 @@ mutation DeleteGraph {
 | `B2B_API_KEY` | API key of the default B2B caller. With neither key set, every B2B call is rejected. | *(blank)* |
 | `B2B_API_KEY_SHA256` | Hex SHA-256 of the API key, for setups that must not put the key in the environment. | *(blank)* |
 | `B2B_ALLOWED_GRAPHS` | Graph scope of the default caller: exact ids, `prefix-*`, or `*` for every graph. Empty = no graph (fail closed). | `*` |
+| `DOCUMENT_MAX_FILE_SIZE` | Largest single document accepted by `POST /api/documents`. | `10MB` |
+| `DOCUMENT_MAX_REQUEST_SIZE` | Largest multipart request; keep it above the file size so the *file* limit is what reports the error. | `12MB` |
 
