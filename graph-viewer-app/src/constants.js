@@ -120,6 +120,56 @@ export const REGISTER_MUTATION = `
 
 export const LOGOUT_MUTATION = `mutation { logout }`;
 
+// --- Personal LLM API keys ---
+//
+// The key itself only ever travels browser -> server: it is encrypted server-side (AES-256-GCM,
+// bound to user+provider) and never comes back. Listing returns a MASKED hint built at save
+// time, so rendering this list cannot decrypt anything.
+
+export const LLM_CREDENTIALS_QUERY = `
+    query {
+        llmCredentials {
+            provider
+            maskedKey
+            ycFolderId
+            updatedAt
+        }
+    }
+`;
+
+// Deployment-level billing facts: decides whether the chat's pre-run hint may promise "these
+// nodes will run on the shared service key" (FALLBACK / REQUIRE) or must warn that the run
+// will be REFUSED instead (PERSONAL_ONLY). Needs no session - it is not user data.
+export const LLM_BILLING_SETTINGS_QUERY = `
+    query {
+        llmBillingSettings {
+            policy
+            personalKeysEnabled
+            serviceKeyForbidden
+            defaultProvider
+            defaultModel
+            serviceKeyEnabled
+        }
+    }
+`;
+
+export const SAVE_LLM_CREDENTIAL_MUTATION = `
+    mutation SaveLlmCredential($input: SaveLlmCredentialInput!) {
+        saveLlmCredential(input: $input) {
+            provider
+            maskedKey
+            ycFolderId
+            updatedAt
+        }
+    }
+`;
+
+export const DELETE_LLM_CREDENTIAL_MUTATION = `
+    mutation DeleteLlmCredential($provider: String!) {
+        deleteLlmCredential(provider: $provider)
+    }
+`;
+
 // --- Existing Queries/Mutations ---
 export const LIST_QUERY = `query { listGraphs(pageSize: 100) { graphs { graphId graphName nodeCount } } }`;
 export const VIEW_QUERY = `query Get($graphId: String!) { getGraphView(graphId: $graphId) { config nodes { nodeId nodeType metadata position { x y } } edges { source target condition } } }`;
@@ -131,7 +181,7 @@ export const HISTORY_QUERY = `query History($graphId: String!, $threadId: String
     }
 }`;
 export const BALANCE_QUERY = `query { getYandexBalance { success balance currency errorMessage } }`;
-export const EXECUTE_MUTATION = `mutation Exec($input: ExecuteGraphInput!) { executeGraph(input: $input) { output eventType state totalTokens errorMessage } }`;
+export const EXECUTE_MUTATION = `mutation Exec($input: ExecuteGraphInput!) { executeGraph(input: $input) { output eventType state totalTokens errorMessage llmBilling } }`;
 
 // Stops a running graph execution immediately (mid-node, mid-LLM call) server-side, so token
 // spend halts without waiting for the node to finish. `cancelled=false` just means the run
@@ -140,7 +190,7 @@ export const CANCEL_EXECUTION_MUTATION = `mutation CancelExec($graphId: String!,
 export const SAVE_MUTATION = `mutation Save($graphId: String!, $positions: [NodePositionInput!]!) { saveGraphCoordinates(graphId: $graphId, positions: $positions) { success } }`;
 export const DELETE_MUTATION = `mutation Del($graphId: String!) { deleteGraph(graphId: $graphId) { success } }`;
 export const REWIND_MUTATION = `mutation Rewind($graphId: String!, $threadId: String!, $stateJson: String!, $targetNodeId: String) { rewindGraph(graphId: $graphId, threadId: $threadId, stateJson: $stateJson, targetNodeId: $targetNodeId) { success message } }`;
-export const COPILOT_MUTATION = `mutation AskCopilot($graphId: String!, $threadId: String!, $message: String!, $chatHistory: String!, $selectedNodeId: String, $selectedEdgeJson: String) { askCopilot(graphId: $graphId, threadId: $threadId, message: $message, copilotChatHistoryJson: $chatHistory, selectedNodeId: $selectedNodeId, selectedEdgeJson: $selectedEdgeJson) { success aiResponse totalTokens errorMessage } }`;
+export const COPILOT_MUTATION = `mutation AskCopilot($graphId: String!, $threadId: String!, $message: String!, $chatHistory: String!, $selectedNodeId: String, $selectedEdgeJson: String) { askCopilot(graphId: $graphId, threadId: $threadId, message: $message, copilotChatHistoryJson: $chatHistory, selectedNodeId: $selectedNodeId, selectedEdgeJson: $selectedEdgeJson) { success aiResponse totalTokens errorMessage llmBilling } }`;
 
 // --- Strict enum contract (mirrors the GraphQL enums in spring-langgraph-app schema.graphqls) ---
 // The GraphQL gateway now types nodeType / eventType / method / status as enums, so these values are
@@ -168,6 +218,78 @@ export const LLM_PROVIDER_OPTIONS = Object.freeze([
     { value: 'openrouter', label: 'OpenRouter' },
     { value: 'anthropic', label: 'Anthropic (Claude)' },
 ]);
+
+// What an account can actually STORE a personal key for: the same list without "Inherit",
+// because inheriting is a graph-level decision, not a credential.
+export const LLM_CREDENTIAL_PROVIDERS = Object.freeze(
+    LLM_PROVIDER_OPTIONS.filter(option => option.value !== '')
+);
+
+// --- Provider id normalisation -----------------------------------------------------
+// Mirrors PROVIDER_ALIASES in python-langgraph-service/app/clients/llm.py so a graph that
+// says "claude" is matched against a credential stored under "anthropic".
+const PROVIDER_ALIASES = Object.freeze({
+    claude: 'anthropic',
+    'open-router': 'openrouter',
+    open_router: 'openrouter',
+    ds: 'deepseek',
+});
+
+export const normalizeProviderId = (value) => {
+    const id = String(value || '').trim().toLowerCase();
+    return PROVIDER_ALIASES[id] || id;
+};
+
+/**
+ * Which providers a graph will actually ask for, applying the engine's own precedence:
+ * node metadata beats graph config. Only EXPLICIT choices count - a graph that inherits
+ * everywhere runs on the server default, which the browser deliberately cannot see, so
+ * there is nothing to warn about (and nothing to attribute).
+ *
+ * @param {{ config?: object, nodes?: Array<{metadata?: object}> }} view getGraphView payload
+ * @returns {string[]} canonical provider ids, deduplicated
+ */
+export const collectGraphProviders = (view) => {
+    const providers = new Set();
+    const add = (value) => {
+        const id = normalizeProviderId(value);
+        if (id) providers.add(id);
+    };
+    add(view?.config?.llm_provider);
+    (view?.nodes || []).forEach(node => add(node?.metadata?.llm_provider));
+    return Array.from(providers);
+};
+
+/**
+ * What the viewer's canvas badge needs to name the model a run of this graph will use:
+ * the graph-level default plus every node that departs from it. Same precedence the engine
+ * applies (see `resolve_llm_config` in python-langgraph-service/app/clients/llm.py):
+ * node metadata beats graph config, and an empty provider/model means "inherit" - which the
+ * viewer then resolves against the engine's own default rather than guessing a name.
+ *
+ * Only REAL differences are reported as overrides: a node that declares nothing, or exactly
+ * what the graph already declares, changes nothing a reader of the badge would care about.
+ *
+ * @param {{ config?: object, nodes?: Array<{nodeId?: string, metadata?: object}> }} view getGraphView payload
+ * @returns {{provider: string, model: string, nodeOverrides: Array<{nodeId: string, provider: string, model: string}>}}
+ */
+export const collectGraphLlm = (view) => {
+    const text = (value) => String(value ?? '').trim();
+    const config = view?.config || {};
+    const provider = normalizeProviderId(config.llm_provider);
+    const model = text(config.llm_model);
+    const nodeOverrides = [];
+
+    (view?.nodes || []).forEach(node => {
+        const nodeProvider = normalizeProviderId(node?.metadata?.llm_provider);
+        const nodeModel = text(node?.metadata?.llm_model);
+        if ((nodeProvider && nodeProvider !== provider) || (nodeModel && nodeModel !== model)) {
+            nodeOverrides.push({ nodeId: text(node?.nodeId) || '(unknown)', provider: nodeProvider, model: nodeModel });
+        }
+    });
+
+    return { provider, model, nodeOverrides };
+};
 
 // Copilot provider options: the same choices as the graph/node selectors, but the empty value
 // means "inherit the server-side COPILOT_* / LLM_* default". The copilot is a UI assistant, not

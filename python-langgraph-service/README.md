@@ -168,6 +168,7 @@ async for event in stub.ExecuteGraph(exec_request):
 | `YC_ASYNC_POLL_INTERVAL_SECONDS`| 1      | Poll interval while waiting for a deferred operation |
 | `YC_ASYNC_FALLBACK_TO_SYNC`     | true   | Fall back to the synchronous endpoint when the deferred operation times out |
 | `LLM_MAX_ATTEMPTS`              | 2      | Attempts per graph node when the LLM answer is unusable (refusal / empty text) |
+| `LLM_SERVICE_KEY_ENABLED`       | true   | Kill switch for the shared service keys (`YC_API_KEY` / `OPENAI_API_KEY` / …). `false` = the engine never reads them: a call with no personal user key for the resolved provider is refused with the "add your key" instruction instead of billed to the operator. Pair with the backend's `LLM_CREDENTIALS_POLICY=PERSONAL_ONLY` |
 | `LLM_PROVIDER`                  | yandex | Default provider: yandex / openai / groq / deepseek / openrouter / anthropic |
 | `LLM_MODEL`                     | (provider default) | Default model for `LLM_PROVIDER` **only**; empty = that provider's default. A node/graph selecting a different provider does **not** inherit it - that provider's own `YC_MODEL_NAME` / `<PROVIDER>_MODEL` (or its preset) is used |
 | `LLM_TEMPERATURE`               | 0.6    | Default sampling temperature (0.6 keeps the pre-multi-provider YandexGPT behaviour) |
@@ -235,6 +236,71 @@ implicit `settings.system_prompt` (`app/ya_prompt.md`) fallback is no longer inj
 Note: `langchain-openai` sends `max_completion_tokens` (the modern OpenAI name) rather
 than `max_tokens`. Groq, DeepSeek and OpenRouter accept it; if a strict gateway rejects
 it, drop the `llm_max_tokens` override for that node/graph.
+
+---
+
+## Personal API keys
+
+Service-wide keys (`.env` / settings) stay the *fallback*. A caller may additionally supply
+per-user keys, which is what lets a deployment bill a user's own provider account for their
+own runs. Nothing changes when none arrive - that is the pre-migration behaviour.
+
+### What arrives on a run
+
+Three context keys, lifted out of `ExecuteGraphRequest.context` into
+`RunnableConfig.configurable` by `_split_run_context` (`app/services/langgraph_servicer.py`):
+
+| key | value | meaning |
+|---|---|---|
+| `llm_credentials_json` | `{"openai": {"api_key": "…", "folder_id": ""}, …}` | every key the user owns, keyed by provider |
+| `require_user_key` | `"1"` | deployment runs `policy=REQUIRE`: a missing key fails instead of falling back |
+| `x_user_id` | UUID | attribution for the per-run billing log |
+
+A **map, not a single key**, because a graph resolves its provider *per node* (node metadata
+> graph config > server default): one run can legitimately spend on OpenAI and Anthropic.
+
+The legacy single-key shape (`llm_api_key`, `yc_folder_id`) is **dropped** — a bare key
+cannot be attributed to a provider. All of these are removed from `GraphState.context`
+*before* the state is checkpointed and again before `_process_action` renders that context
+into the model prompt (a key left there would be sent to the LLM provider), and the backend
+strips them from client-supplied input as well.
+
+`AskCopilot` carries the same contract as proto fields `llm_credentials_json` (9) and
+`require_user_key` (10), so the copilot cannot bypass the policy.
+
+### Selection, billing and policy
+
+* `_generate` resolves `credential_set.for_provider(<this client's provider>)`; no entry means
+  no personal key for that provider, so the service settings are used.
+* **`LLM_SERVICE_KEY_ENABLED=false` (the shared-key kill switch)**: `LLMClient._api_key()` reads
+  the service settings only when a personal key is present. With none, it raises
+  `MissingUserApiKeyError` *while the client is built*, so the shared key is never read by any
+  path - graph node, copilot, a direct call to this gRPC port, or a B2B run through the
+  backend. The node handlers already turn that into the readable "add your key" instruction
+  with `llm_billing=""`; `AskCopilot` checks the same flag up front so the answer carries that
+  instruction instead of a generic gRPC error. Default `true` = the deployed behaviour. Pair
+  it with the backend's `LLM_CREDENTIALS_POLICY=PERSONAL_ONLY`.
+* Every node reports `llm_billing` (`"user"` / `"service"` / `""` when no model was called),
+  forwarded on `ExecuteGraphResponse.llm_billing` and folded by the backend into `"user"`,
+  `"service"`, `"mixed"` or `null`. The run summary line is
+  `run <id> user=<x_user_id|anonymous> thread=… tokens=… billing=…` (WARNING when service).
+* `MissingUserApiKeyError` is raised under `require_user_key=1` (policy `REQUIRE` /
+  `PERSONAL_ONLY`) and whenever the kill switch above leaves no key to spend.
+* `GetLlmSettings` reports the *resolved* default provider/model (through `resolve_llm_config`,
+  so it is exactly what an inheriting node will build) and `LLM_SERVICE_KEY_ENABLED`, so the
+  backend's `llmBillingSettings` query can name the provider in its pre-run hint instead of
+  promising a shared-key run that may not be possible.
+* `caller_kind` (a run key the backend owns, like `require_user_key`) picks *who* the
+  "no key for this provider" failure is addressed to: `"b2b"` gets "add it to
+  llm_credentials_json on the call" instead of the UI instruction an integrator could never
+  act on. It is lifted into `configurable` (never into `GraphState`), inherited by subgraphs,
+  and stripped from anything a client sends.
+* Compiled graphs stay credential-free (they are cached), subgraphs inherit the parent's
+  keys, and `LLM_MAX_ATTEMPTS` retries pass the same credentials.
+* `MAX_CACHED_LLM_CLIENTS` bounds the client registry so rotated/deleted keys never stay
+  resident.
+
+Tests: `tests/test_llm_credentials.py`.
 
 ---
 

@@ -31,6 +31,30 @@ docker run -d \
 * **B2B gRPC facade** (`external.v1`, API-key auth): `localhost:9091`
 * **Internal gRPC server** (Python engine callbacks, cluster-internal only): `localhost:9090`
 
+## Sessions and authentication
+
+GraphQL itself is `permitAll`; auth is enforced per field. `UserGraphQLController` carries
+`@PreAuthorize("!isAnonymous()")` on everything that belongs to a user (threads, personal LLM
+keys), so `@EnableMethodSecurity` in `SecurityConfig` has to stay enabled - and the guard is
+`!isAnonymous()` rather than `isAuthenticated()`, because Spring Security reports an anonymous
+`AuthenticationToken` as authenticated.
+
+* `login` and `register` write the `SecurityContext` into the HTTP session **explicitly**
+  (`SessionSecurityContext`, through the `SecurityContextRepository` bean). Spring Security 7
+  defaults to `requireExplicitSave = true` and never saves a context for you: setting only the
+  ThreadLocal authenticates the request that ran the login and nothing after it, which is what
+  made `llmCredentials` fail with *"Failed to get user id from auth context"*.
+* The servlet request reaches those mutations through `ServletRequestGraphQlInterceptor`,
+  because Boot 4 runs data fetchers on the application task executor, where `RequestContextHolder`
+  is not bound (only the security context is propagated).
+* Sessions are Redis-backed (`spring-boot-starter-session-data-redis`, namespace
+  `langgraph:sessions`), so they survive a restart and are shared by every instance. The cookie
+  stays `JSESSIONID`: Boot maps `server.servlet.session.cookie.*` onto Spring Session's serializer.
+* `logout` invalidates the session as well as clearing the thread - clearing only the ThreadLocal
+  would leave a live cookie behind.
+* A rejected call answers `{"message": "Authentication required", "extensions": {"code":
+  "UNAUTHENTICATED"}}`, never "Internal server error".
+
 ## B2B gRPC API (`external.v1`)
 
 A narrow, authenticated facade for backend-to-backend callers (for example the

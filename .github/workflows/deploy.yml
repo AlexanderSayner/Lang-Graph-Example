@@ -119,6 +119,15 @@ jobs:
             echo "YC_BILLING_ACCOUNT_ID=${{ secrets.YC_BILLING_ACCOUNT_ID }}" >> ~/myapp.env
             echo "YC_SA_KEY_JSON_B64=${{ steps.prepare-secrets.outputs.SA_KEY_B64 }}" >> ~/myapp.env
             echo "B2B_API_KEY=${{ secrets.B2B_API_KEY }}" >> ~/myapp.env
+            # Personal LLM API keys. LLM_SECRET_MASTER_KEY MUST be a GitHub Secret and MUST be
+            # STABLE: this file is rewritten on every deploy, so a key that lives only in a
+            # shell or in ~/myapp.env would be lost here and every stored personal key would
+            # become undecryptable (users would have to re-enter them). Back it up separately.
+            # The policy and the engine's kill switch are not secrets -> repository variables;
+            # `|| 'default'` keeps them at their default when the variable is unset.
+            echo "LLM_SECRET_MASTER_KEY=${{ secrets.LLM_SECRET_MASTER_KEY }}" >> ~/myapp.env
+            echo "LLM_CREDENTIALS_POLICY=${{ vars.LLM_CREDENTIALS_POLICY || 'FALLBACK' }}" >> ~/myapp.env
+            echo "LLM_SERVICE_KEY_ENABLED=${{ vars.LLM_SERVICE_KEY_ENABLED || 'true' }}" >> ~/myapp.env
             
             chmod 600 ~/myapp.env
             

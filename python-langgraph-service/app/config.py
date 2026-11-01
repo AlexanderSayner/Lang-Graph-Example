@@ -49,6 +49,17 @@ class Settings(BaseSettings):
     # -------------------------------------------------
     # Multi-provider LLM selection (see app/clients/llm.py)
     # -------------------------------------------------
+    # Hard kill switch for the SHARED service keys (YC_API_KEY / OPENAI_API_KEY / ...).
+    # true (default) = the deployed behaviour: a caller with no personal key runs on the
+    #   shared key and the run is reported as billing=service.
+    # false = the service key is never read by any path in this engine - graph node,
+    #   copilot, a direct call to this gRPC port or a B2B run through the backend. With no
+    #   personal key for the resolved provider the call fails with the same actionable
+    #   instruction policy=REQUIRE gives (see MissingUserApiKeyError), and nothing is billed.
+    # Pair it with the backend's LLM_CREDENTIALS_POLICY=PERSONAL_ONLY so the refusal happens
+    # at the API edge too instead of at a node; this flag is the guarantee behind it.
+    LLM_SERVICE_KEY_ENABLED: bool = True
+
     # Service-wide default provider / model. A graph may override these per graph
     # (graph config) or per AI node (node metadata); this is the last fallback.
     #   yandex | openai | groq | deepseek | openrouter | anthropic
@@ -63,6 +74,12 @@ class Settings(BaseSettings):
     # back to LLM_PROVIDER / LLM_MODEL above.
     COPILOT_PROVIDER: str = ""
     COPILOT_MODEL: str = ""
+
+    # Upper bound of the LLM client cache (one entry per distinct config INCLUDING a
+    # user's personal key). Personal keys are resolved per request, so an unbounded map
+    # would keep rotated/deleted keys and their HTTP pools resident for the process'
+    # whole lifetime. Eviction is safe: the next call rebuilds from the request's keys.
+    MAX_CACHED_LLM_CLIENTS: int = 256
 
     # Model catalog (UI model suggestions via ListLlmModels / the llmModels GraphQL query).
     # Live provider lists are cached so the dropdown does not hammer the providers; failures

@@ -15,8 +15,11 @@ import org.sandbox.langgraph.mapper.GraphGrpcMapper;
 import org.sandbox.langgraph.service.CopilotService;
 import org.sandbox.langgraph.service.LangGraphGrpcService;
 import org.sandbox.langgraph.service.PostgresGraphViewService;
+import org.sandbox.langgraph.service.llm.LlmRequestCredentials;
+import org.sandbox.langgraph.service.llm.RequestOrigin;
 import org.springframework.stereotype.Service;
 
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 @Service
@@ -29,6 +32,7 @@ public class CopilotServiceImpl implements CopilotService {
     private final PostgresGraphViewService postgresGraphViewService;
     private final GraphGrpcMapper mapper;
     private final ObjectMapper objectMapper;
+    private final LlmRequestCredentials requestCredentials;
 
     @Override
     public @NonNull CopilotGraphPayload askCopilot(String graphId,
@@ -38,11 +42,23 @@ public class CopilotServiceImpl implements CopilotService {
                                                    String selectedNodeId,
                                                    String selectedEdgeJson,
                                                    String copilotProvider,
-                                                   String copilotModel) {
-        log.debug("Copilot request for graph: {}, thread: {}", graphId, threadId);
+                                                   String copilotModel,
+                                                   RequestOrigin origin,
+                                                   String suppliedCredentialsJson) {
+        log.debug("Copilot request for graph: {}, thread: {}, origin: {}", graphId, threadId, origin);
 
         GraphViewData graphView = postgresGraphViewService.getGraphViewData(graphId);
         GraphHistoryPayload executionHistory = langGraphGrpcService.getExecutionHistory(graphId, threadId);
+
+        // Resolved on THIS thread, before anything reactive (see LlmRequestCredentials).
+        // Only the credential map and the policy flag are forwarded: the copilot's provider is
+        // resolved engine-side, and it picks its own entry from that map. A B2B caller reaches
+        // this method with its own origin and the keys it sent on the call (the facade used to
+        // come through as an anonymous GRAPHQL lookup, which silently billed the shared key);
+        // under FALLBACK with no keys the outcome is unchanged from before personal keys
+        // existed, and under REQUIRE / PERSONAL_ONLY the caller is refused here - before the
+        // engine - with the same instruction an integrator can act on.
+        Map<String, String> runContext = requestCredentials.forRequest(origin, suppliedCredentialsJson);
 
         try {
             String graphContextJson = objectMapper.writeValueAsString(graphView);
@@ -58,6 +74,15 @@ public class CopilotServiceImpl implements CopilotService {
                     // Empty means "inherit": the Python service falls back to COPILOT_* / LLM_*.
                     .setCopilotProvider(copilotProvider != null ? copilotProvider : "")
                     .setCopilotModel(copilotModel != null ? copilotModel : "")
+                    // Empty means "use the service settings" (config-based mode).
+                    .setLlmCredentialsJson(
+                            runContext.getOrDefault(LlmRequestCredentials.CREDENTIALS_JSON, ""))
+                    .setRequireUserKey(
+                            runContext.getOrDefault(LlmRequestCredentials.REQUIRE_USER_KEY, ""))
+                    // Who asks, so the engine words its refusal for that audience ("send
+                    // llm_credentials_json" for an integrator, "add it in the 🔑 Keys panel"
+                    // for a browser). Unset for an interactive session - already correct.
+                    .setCallerKind(runContext.getOrDefault(LlmRequestCredentials.CALLER_KIND, ""))
                     .build();
 
             CopilotResponse response = blockingStub.withDeadlineAfter(30, TimeUnit.SECONDS).askCopilot(request);

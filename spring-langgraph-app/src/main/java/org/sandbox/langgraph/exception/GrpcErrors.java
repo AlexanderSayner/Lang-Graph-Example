@@ -133,6 +133,12 @@ public final class GrpcErrors {
                 || error instanceof LangGraphException.GraphStateException) {
             return Status.INVALID_ARGUMENT;
         }
+        if (error instanceof LangGraphException.LlmKeyRequiredException) {
+            // A precondition of THIS deployment, not a malformed request: FAILED_PRECONDITION
+            // with the detail intact (the branch below only redacts INTERNAL), so an
+            // integrator reads "send llm_credentials_json" instead of hunting for a shape bug.
+            return Status.FAILED_PRECONDITION;
+        }
         return Status.INTERNAL;
     }
 

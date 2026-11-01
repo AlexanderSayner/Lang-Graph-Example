@@ -12,6 +12,9 @@ import org.sandbox.langgraph.grpc.BuildGraphRequest;
 import org.sandbox.langgraph.grpc.BuildGraphResponse;
 import org.sandbox.langgraph.grpc.LangGraphServiceGrpc;
 import org.sandbox.langgraph.mapper.GraphGrpcMapper;
+import org.sandbox.langgraph.security.CurrentUser;
+import org.sandbox.langgraph.service.llm.LlmRequestCredentials;
+import org.sandbox.langgraph.service.user.UserLlmCredentialService;
 
 import java.util.List;
 import java.util.Map;
@@ -41,6 +44,13 @@ class LangGraphGrpcServiceBuildTest {
 
     private final GraphGrpcMapper mapper = mock(GraphGrpcMapper.class);
     private final GraphPostgresService store = mock(GraphPostgresService.class);
+    /**
+     * A real (not stubbed) resolver: this test only exercises {@code buildGraph}, and a real
+     * one with no authenticated session yields an empty run context - the behaviour every
+     * anonymous caller sees.
+     */
+    private final LlmRequestCredentials requestCredentials =
+            new LlmRequestCredentials(new CurrentUser(), mock(UserLlmCredentialService.class));
 
     /** The mapper is stubbed below, so the definition content is irrelevant to this contract. */
     private static BuildGraphInput input() {
@@ -61,7 +71,7 @@ class LangGraphGrpcServiceBuildTest {
                 .thenReturn(BuildGraphRequest.newBuilder().setGraphId("g1").build());
         when(mapper.toBuildGraphPayload(any(BuildGraphResponse.class)))
                 .thenReturn(new BuildGraphPayload(true, "g1", "ok"));
-        return new LangGraphGrpcService(stub, mapper, new ObjectMapper(), store);
+        return new LangGraphGrpcService(stub, mapper, new ObjectMapper(), store, requestCredentials);
     }
 
     @Test

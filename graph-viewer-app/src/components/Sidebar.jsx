@@ -4,7 +4,7 @@ import { fetchGraphQL, GET_CURRENT_USER_QUERY, LOGIN_MUTATION, REGISTER_MUTATION
 export default function Sidebar({
     graphs, selected, collapsed, setCollapsed, onSelectGraph,
     copyGraphId, copiedGraph, handleDelete, realBalance,
-    onUserLoggedIn
+    onUserLoggedIn, onAuthStateChange, onOpenLlmSettings, hasPersonalKeys
 }) {
     const [isLoggedIn, setIsLoggedIn] = useState(false);
     const [currentUser, setCurrentUser] = useState('');
@@ -13,6 +13,11 @@ export default function Sidebar({
     const [formPass, setFormPass] = useState('');
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState('');
+
+    // Report the session state upward: App needs it because personal LLM keys only exist
+    // for a signed-in user (the chat's "this will use the shared key" hint is meaningless
+    // for an anonymous visitor, who cannot have keys at all).
+    useEffect(() => { onAuthStateChange?.(isLoggedIn); }, [isLoggedIn, onAuthStateChange]);
 
     // Check session on mount
     useEffect(() => {
@@ -153,13 +158,30 @@ export default function Sidebar({
                         </div>
                     )
                 ) : (
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
                         <span style={{ fontWeight: '600', color: '#333', display: 'flex', alignItems: 'center', gap: '6px' }}>
                             👤 {currentUser}
                         </span>
-                        <button onClick={handleLogout} style={{ padding: '4px 10px', background: '#ffebee', color: '#c62828', border: '1px solid #ef9a9a', borderRadius: '4px', cursor: 'pointer', fontSize: '11px', fontWeight: '600' }}>
-                            Sign Out
-                        </button>
+                        <span style={{ display: 'flex', gap: '5px' }}>
+                            {/* Opens the personal key manager. The dot marks "you have at least
+                                one key saved" - the account is paying for its own runs. */}
+                            <button
+                                onClick={() => onOpenLlmSettings?.()}
+                                title="Personal AI provider keys"
+                                style={{
+                                    padding: '4px 8px', fontSize: '11px', fontWeight: '600',
+                                    border: hasPersonalKeys ? '1px solid #81c784' : '1px solid #90caf9',
+                                    background: hasPersonalKeys ? '#e8f5e9' : '#e3f2fd',
+                                    color: hasPersonalKeys ? '#2e7d32' : '#1565c0',
+                                    borderRadius: '4px', cursor: 'pointer', whiteSpace: 'nowrap',
+                                }}
+                            >
+                                {hasPersonalKeys ? '🔑 Keys ●' : '🔑 Keys'}
+                            </button>
+                            <button onClick={handleLogout} style={{ padding: '4px 10px', background: '#ffebee', color: '#c62828', border: '1px solid #ef9a9a', borderRadius: '4px', cursor: 'pointer', fontSize: '11px', fontWeight: '600' }}>
+                                Sign Out
+                            </button>
+                        </span>
                     </div>
                 )}
             </div>

@@ -18,10 +18,15 @@ spring:
     virtual:
       enabled: true
   session:
-    store-type: redis
-    redis:
-      namespace: langgraph:sessions
-      flush-mode: on_save
+    # Redis-backed (spring-boot-starter-session-data-redis): the signed-in caller survives a
+    # restart and every instance sees the same sessions. Boot 4 selects the store purely from
+    # the classpath - spring.session.store-type no longer exists - so there is deliberately no
+    # "store-type" here, and the Redis store properties now live under spring.session.data.*.
+    # The cookie stays JSESSIONID: Boot maps server.servlet.session.cookie.* onto the serializer.
+    data:
+      redis:
+        namespace: langgraph:sessions
+        flush-mode: on_save
   security:
     user:
       name: dummy # Prevents default auto-generated password log
@@ -151,3 +156,25 @@ yandex:
   cloud:
     billing-account-id: ${YC_BILLING_ACCOUNT_ID:}
     serviceAccountKeyJson: ${YC_SA_KEY_JSON:}
+
+# Personal LLM API keys (table app.user_llm_credentials), AES-256-GCM encrypted at rest.
+llm:
+  credentials:
+    # Base64 for exactly 32 bytes:  openssl rand -base64 32
+    # Blank (the default) = personal keys are DISABLED: the save mutation is refused with an
+    # actionable message and every run keeps using the shared service key, so the feature is
+    # opt-in per deployment and nothing changes until this is set.
+    # Back it up: losing it means stored keys are unrecoverable (users re-enter them).
+    master-key: ${LLM_SECRET_MASTER_KEY:}
+    # FALLBACK (default) - a signed-in user with no key for a provider runs on the shared
+    #   service key; the run is reported as llmBilling="service" in the UI and logged by the
+    #   engine as `billing=service`, so a subsidised run is visible but never fatal.
+    # REQUIRE - the run (and the copilot) stops with "add your key" instead of spending the
+    #   operator's credits. Switch for the future subscription tier.
+    # PERSONAL_ONLY - REQUIRE for a signed-in user, plus a caller without a key is REFUSED at
+    #   the API edge instead of being served from the shared one: an anonymous GraphQL request,
+    #   or a B2B call that sent no llm_credentials_json (an integrator brings its own keys on
+    #   the call - see B2B_INTEGRATION.md). Pair it with LLM_SERVICE_KEY_ENABLED=false on the
+    #   Python service, which is the hard guarantee that no path can read the shared key.
+    #   Inert while master-key is blank - fail open, like REQUIRE.
+    policy: ${LLM_CREDENTIALS_POLICY:FALLBACK}

@@ -17,6 +17,11 @@ public record GraphExecutionEventPayload(
         Map<String, Object> state,
         long timestamp,
         Integer totalTokens,
-        String errorMessage
+        String errorMessage,
+        /**
+         * "user" | "service" | "mixed" | "" - who paid for this node's model call. Empty when
+         * the node never called a model (HTTP request, pass-through).
+         */
+        String llmBilling
 ) {
 }

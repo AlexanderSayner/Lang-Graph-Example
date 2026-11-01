@@ -131,6 +131,37 @@ class GraphQlSchemaContractTest {
     }
 
     @Test
+    @DisplayName("The LLM billing-settings query is exposed so the UI's pre-run hint can tell "
+            + "a shared-key run from a refusal")
+    void llmBillingSettingsIsExposed() throws Exception {
+        GraphQLSchema schema = buildSchema();
+
+        // The banner above the chat promises either "these nodes will run on the shared
+        // service key" or "this will be refused" depending on the policy - both claims need
+        // this query to be reachable (and, being deployment facts, without a session).
+        assertThat(schema.getQueryType().getField("llmBillingSettings")).isNotNull();
+        assertThat(fieldTypeName(schema, "Query", "llmBillingSettings"))
+                .isEqualTo("LlmBillingSettingsPayload");
+        assertThat(fieldTypeName(schema, "LlmBillingSettingsPayload", "policy")).isEqualTo("String");
+        assertThat(fieldTypeName(schema, "LlmBillingSettingsPayload", "personalKeysEnabled"))
+                .isEqualTo("Boolean");
+        assertThat(fieldTypeName(schema, "LlmBillingSettingsPayload", "serviceKeyForbidden"))
+                .isEqualTo("Boolean");
+        // The engine's half: which provider an inheriting graph resolves (named in the hint,
+        // nullable because an unreachable engine reports nothing rather than a guess) and
+        // whether the shared key may be spent at all.
+        assertThat(fieldTypeName(schema, "LlmBillingSettingsPayload", "defaultProvider"))
+                .isEqualTo("String");
+        // The same claim one level down: the model that default provider will call, nullable
+        // for the same reason - an unreachable engine reports nothing rather than a name the
+        // viewer would print as fact.
+        assertThat(fieldTypeName(schema, "LlmBillingSettingsPayload", "defaultModel"))
+                .isEqualTo("String");
+        assertThat(fieldTypeName(schema, "LlmBillingSettingsPayload", "serviceKeyEnabled"))
+                .isEqualTo("Boolean");
+    }
+
+    @Test
     @DisplayName("The execution-cancel mutation and payload are exposed for the UI's Cancel button")
     void cancelGraphExecutionMutationIsExposed() throws Exception {
         GraphQLSchema schema = buildSchema();

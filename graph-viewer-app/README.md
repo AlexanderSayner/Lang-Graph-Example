@@ -36,7 +36,9 @@ content - in that case the `/graphql` proxy of the web server has to be used.
 - out-of-order GraphQL answers are dropped (`loadSeqRef`), so rapid switching always ends up showing
   the last clicked graph;
 - while loading, the canvas is replaced by a placeholder, and a failed load shows the error text with
-  a Retry button instead of an empty white canvas;
+  a Retry button instead of an empty white canvas; the placeholder also names the situations where
+  nothing is being loaded at all (the graph list still arriving, the list failing to load, no graphs
+  existing yet, or no graph selected), so an empty canvas never claims to be loading;
 - "Save Layout" stores the positions of the graph that is on the canvas (which may be a subgraph)
   and drops the remembered viewport of that graph.
 
@@ -68,3 +70,44 @@ list that could drift away from the nodes. The same `saveGraphCoordinates` mutat
 afterwards as a redundant confirmation write - it takes the flat `positions: [{ nodeId, x, y }]` pair, is
 idempotent on the server, and remains the path used by the canvas buttons above, which save a layout
 without rebuilding the graph.
+
+## Personal AI keys
+
+The signed-in user can save their own provider keys so their runs bill their own account
+(`components/LlmSettings.jsx`, opened from the **🔑 Keys** button in the sidebar footer or from
+the chat's warning banner):
+
+- the key goes browser -> server once, is encrypted there (AES-256-GCM, bound to user+provider)
+  and is **never returned**; the list shows `maskedKey` (`••••xxxx`), which the server builds from a
+  short hint stored at save time and can render without decrypting anything;
+- `llmCredentials` is fetched into `app.jsx` so the UI knows *which* providers the account holds
+  a key for. The browser never sees a key, so nothing about the CSP/session story changes.
+
+Two warnings keep a subsidised run visible instead of silent (policy is FALLBACK by default, so
+nothing is ever blocked):
+
+1. **before a run** - `collectGraphProviders(getGraphView)` gives the providers the graph explicitly
+   asks for (node metadata beats graph config, aliases normalised like the engine), and any of them
+   the account has no key for produces *"⚠ No personal key for … these nodes will run on the shared
+   service key"* above the composer, with an **Add keys** button. On a deployment running
+   `PERSONAL_ONLY` the same banner turns red and says *"this run will be refused (the deployment
+   spends personal keys only)"* instead: the wording comes from the session-free
+   `llmBillingSettings` query (`serviceKeyForbidden`), because there the shared key would never pay;
+2. **after a run / per answer** - `llmBilling` on `executeGraph` and `askCopilot` (`"user"` /
+   `"service"` / `"mixed"`) renders *"⚠ Served by the shared service key"* under the message, so a
+   run is never attributed to the wrong payer.
+
+There are also two informational notes (blue and green, no button), for the case the two
+warnings above cannot reach: a graph that names **no** provider anywhere. The engine is asked
+for its default (`GetLlmSettings`) so the panel can say the provider out loud instead of
+guessing it:
+
+- **blue** when the default is *not* among the account's saved keys - *"This graph runs on the
+  server default provider **yandex**; your saved keys (openrouter) don't cover it — the shared
+  service key pays"* (or *"the run will be refused"* when neither the policy nor
+  `LLM_SERVICE_KEY_ENABLED` allows the shared key). With an unreachable engine the provider is
+  simply not named, and the wording stays conditional rather than promising something unknown;
+- **green** when it *is* among them - *"runs on the server default provider **yandex**, and you
+  hold a personal key for it — expect llmBilling: user below."*
+
+Anonymous visitors never see the first warning: they have no account to hold a key in.

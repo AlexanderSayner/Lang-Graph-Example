@@ -44,8 +44,48 @@ export default function ChatPanel({
     historyItems, setModalData, getNodeDisplayName, handleRewind,
     copilotMessages, copilotInput, setCopilotInput, copilotLoading, handleCopilotSend,
     copilotLLM, setCopilotLLM,
-    formatTimestamp
+    formatTimestamp,
+    // Providers this graph asks for that the signed-in account holds no key for (empty for
+    // anonymous visitors, who cannot have keys at all).
+    missingKeyProviders = [],
+    // The deployment refuses a run that has no personal key (policy=PERSONAL_ONLY) instead
+    // of billing the shared service key - so the hint below must promise a refusal, not a
+    // shared-key run that will never happen.
+    serviceKeyForbidden = false,
+    // The engine's kill switch (LLM_SERVICE_KEY_ENABLED): false = no path may read the shared
+    // key, so a run without a matching personal key fails even when the policy says FALLBACK.
+    serviceKeyEnabled = true,
+    // The engine's LLM_PROVIDER: what a graph that selects no provider actually runs on.
+    // Empty when the engine could not be reached - then no provider is named, only described.
+    defaultProvider = '',
+    // The account's own providers (for the "server default" notes below).
+    savedKeyProviders = [],
+    // True when the LOADED graph names no provider anywhere (config and every node inherit):
+    // the engine's server default then decides, and nothing here can tell whether it matches
+    // a saved key.
+    graphUsesServerDefault = false,
+    onOpenLlmSettings
 }) {
+    // Either half being set means the shared key will NOT pay for this run.
+    const sharedKeyBlocked = serviceKeyForbidden || !serviceKeyEnabled;
+    const showSharedKeyHint = activeTab === 'chat' && !loading && missingKeyProviders.length > 0;
+    // The trap the "server default" notes exist for: an account saves a key, the graph
+    // declares no provider, so `missingKeyProviders` is empty, the "no personal key for X"
+    // hint can never fire - and the run still bills the shared service key because the
+    // default is a provider the account has no key for. Say so BEFORE the run instead of
+    // leaving only the after-the-fact billing note to explain it.
+    const defaultMatchesSavedKey = Boolean(defaultProvider)
+        && savedKeyProviders.includes(defaultProvider);
+    const showServerDefaultHint = activeTab === 'chat' && !loading
+        && graphUsesServerDefault
+        && savedKeyProviders.length > 0
+        && missingKeyProviders.length === 0
+        && !defaultMatchesSavedKey;
+    // The pleasant mirror of the same case: nothing to warn about, the key WILL be spent.
+    const showServerDefaultMatch = activeTab === 'chat' && !loading
+        && graphUsesServerDefault
+        && defaultMatchesSavedKey
+        && missingKeyProviders.length === 0;
     return (
         <div className="chat-panel" style={{ height: `${panelHeight}px` }} ref={panelRef}>
 
@@ -79,6 +119,16 @@ export default function ChatPanel({
                                 {m.type === 'bot' && m.tokens > 0 && (
                                     <div style={{ fontSize: '10px', color: '#888', marginTop: '4px', fontStyle: 'italic' }}>
                                         🪙 Tokens used: {m.tokens}
+                                    </div>
+                                )}
+                                {/* Who paid for that run. Only shown when the shared service key
+                                    was involved - a fully personal run needs no footnote - so a
+                                    subsidised answer is never invisible. */}
+                                {m.type === 'bot' && (m.llmBilling === 'service' || m.llmBilling === 'mixed') && (
+                                    <div style={{ fontSize: '10px', color: '#e65100', marginTop: '4px' }}>
+                                        ⚠️ {m.llmBilling === 'mixed'
+                                            ? 'Partly served by the shared service key (you have no key for every provider this graph used).'
+                                            : 'Served by the shared service key — no personal key for this provider.'}
                                     </div>
                                 )}
                             </div>
@@ -121,6 +171,78 @@ export default function ChatPanel({
                         {loading && <div className="msg msg-bot">Thinking… <span style={{ color: '#999', fontStyle: 'italic', fontSize: '11px' }}>press Cancel to stop</span></div>}
                         <div ref={chatEndRef} />
                     </div>
+                    {/* Pre-run warning about providers the account holds no key for. Under
+                        FALLBACK/REQUIRE nothing stops the run, so it says the shared service
+                        key will pay; when the key cannot pay at all (PERSONAL_ONLY policy or
+                        the engine's LLM_SERVICE_KEY_ENABLED=false) the run is refused instead,
+                        and "will run on the shared key" would promise something that cannot
+                        happen. Either way it opens the key manager, the one action that fixes
+                        both. */}
+                    {showSharedKeyHint && (
+                        <div style={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                            gap: '8px', padding: '6px 12px', fontSize: '11px',
+                            background: sharedKeyBlocked ? '#ffebee' : '#fff8e1',
+                            borderTop: '1px solid', borderColor: sharedKeyBlocked ? '#ffcdd2' : '#ffe0b2',
+                            color: sharedKeyBlocked ? '#b71c1c' : '#e65100',
+                        }}>
+                            <span>
+                                {sharedKeyBlocked
+                                    ? <>🚫 No personal key for <b>{missingKeyProviders.join(', ')}</b> —
+                                        this run will be refused (only personal keys can be spent here).</>
+                                    : <>⚠️ No personal key for <b>{missingKeyProviders.join(', ')}</b> —
+                                        these nodes will run on the shared service key.</>}
+                            </span>
+                            <button
+                                onClick={onOpenLlmSettings}
+                                style={{
+                                    padding: '4px 9px', fontSize: '11px', cursor: 'pointer', whiteSpace: 'nowrap',
+                                    border: '1px solid #ffb74d', background: '#ffe0b2', color: '#e65100',
+                                    borderRadius: '4px', fontWeight: '600',
+                                }}
+                            >
+                                Add keys
+                            </button>
+                        </div>
+                    )}
+                    {/* The graph declares no provider at all, so the ENGINE's server default
+                        decides - amber/red above cannot fire (a graph that names no provider
+                        has no missing provider to name). Two outcomes, both stated before the
+                        run: the default is named when the engine reported it, and the account's
+                        key either misses it (shared key pays / refusal) or covers it. */}
+                    {showServerDefaultHint && (
+                        <div style={{
+                            display: 'flex', alignItems: 'center', gap: '8px',
+                            padding: '6px 12px', fontSize: '11px',
+                            background: '#e3f2fd', borderTop: '1px solid #bbdefb', color: '#0d47a1',
+                        }}>
+                            <span>
+                                {defaultProvider
+                                    ? <>ℹ️ This graph runs on the server default provider <b>{defaultProvider}</b>.
+                                        Your saved keys (<b>{savedKeyProviders.join(', ')}</b>) don't cover it —
+                                        {' '}{sharedKeyBlocked ? 'the run will be refused' : 'the shared service key pays'}.</>
+                                    : <>ℹ️ This graph selects no LLM provider — it runs on the server
+                                        default. Your saved keys (<b>{savedKeyProviders.join(', ')}</b>)
+                                        are used only if that default matches; otherwise {sharedKeyBlocked
+                                            ? 'the run is refused'
+                                            : 'the shared service key pays'}.</>}
+                                {' '}Pick a provider in the builder (graph settings or the node) to be
+                                sure — the note under the answer says who actually paid.
+                            </span>
+                        </div>
+                    )}
+                    {showServerDefaultMatch && (
+                        <div style={{
+                            display: 'flex', alignItems: 'center', gap: '8px',
+                            padding: '6px 12px', fontSize: '11px',
+                            background: '#e8f5e9', borderTop: '1px solid #c8e6c9', color: '#1b5e20',
+                        }}>
+                            <span>
+                                ✅ This graph runs on the server default provider <b>{defaultProvider}</b>,
+                                and you hold a personal key for it — expect <b>llmBilling: user</b> below.
+                            </span>
+                        </div>
+                    )}
                     <div className="chat-input-area">
                         <input className="chat-input" placeholder={ graphStatus === 'finished' ? "💬 Graph finished — send a message to continue, or click 'New' for a fresh thread" : "Send message..." } value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleExecute()} disabled={loading} />
                         {loading ? (

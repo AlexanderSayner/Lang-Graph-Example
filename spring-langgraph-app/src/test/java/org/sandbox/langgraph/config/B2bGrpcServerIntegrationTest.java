@@ -1,5 +1,7 @@
 package org.sandbox.langgraph.config;
 
+import org.sandbox.langgraph.service.llm.RequestOrigin;
+
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
@@ -159,9 +161,9 @@ class B2bGrpcServerIntegrationTest {
     @Test
     @DisplayName("a streaming call reaches the service and completes over the wire")
     void streamsOverTheWire() {
-        when(langGraphService.executeGraphStream(any(), anyBoolean())).thenReturn(Flux.just(
+        when(langGraphService.executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class), any())).thenReturn(Flux.just(
                 new GraphExecutionEventPayload(ExecutionEventType.START, "node", "out",
-                        Map.of("k", "v"), 1L, 1, null)));
+                        Map.of("k", "v"), 1L, 1, null, null)));
 
         List<GraphExecutionEvent> events = new ArrayList<>();
         var stream = blockingStub(apiKeyHeaders())
@@ -182,7 +184,8 @@ class B2bGrpcServerIntegrationTest {
         // The thread the engine is asked to run on is tenant-scoped.
         org.mockito.Mockito.verify(langGraphService).executeGraphStream(
                 org.mockito.ArgumentMatchers.argThat(input ->
-                        "orchestra:abc".equals(input.threadId())), anyBoolean());
+                        "orchestra:abc".equals(input.threadId())),
+                anyBoolean(), any(RequestOrigin.class), any());
     }
 
     private LangGraphExternalApiGrpc.LangGraphExternalApiBlockingStub blockingStub(Metadata headers) {

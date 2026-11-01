@@ -1,4 +1,9 @@
 # Request flow
+
+> B2B (backend-to-backend) callers use the `external.v1` gRPC facade instead of these HTTP
+> requests — authentication headers, thread scoping and running a graph on your own LLM keys
+> are covered in [B2B_INTEGRATION.md](B2B_INTEGRATION.md).
+
 #### Build graph 
 ```http request
 POST http://localhost:9191/graphql
