@@ -12,8 +12,8 @@ import {
     DELETE_MUTATION, REWIND_MUTATION, COPILOT_MUTATION,
     CLAIM_THREADS_MUTATION, LLM_CREDENTIALS_QUERY, LLM_BILLING_SETTINGS_QUERY,
     collectGraphProviders, collectGraphLlm, normalizeProviderId,
-    layoutGraph, NODE_TYPES, EXECUTION_EVENT_TYPES, nodeClassName,
-    uploadDocument
+    documentSlots, documentContextFor, layoutGraph, NODE_TYPES, EXECUTION_EVENT_TYPES,
+    nodeClassName, uploadDocument
 } from './constants';
 import CopilotTab from './copilot';
 import Sidebar from './components/Sidebar';
@@ -63,12 +63,17 @@ function App() {
     const [input, setInput] = useState("");
     const [threadId, setThreadId] = useState(Date.now().toString());
     const [loading, setLoading] = useState(false);
-    // The document this run will carry. `attachment` holds the server's reference once the
-    // upload lands; `attachmentUploading` and `attachmentError` describe the request itself,
-    // so a refused file is shown rather than silently dropped.
-    const [attachment, setAttachment] = useState(null);
-    const [attachmentUploading, setAttachmentUploading] = useState(false);
-    const [attachmentError, setAttachmentError] = useState(null);
+    // The documents this run will carry, one per slot the loaded graph declares (a slot is a
+    // DOCUMENT node's context key, see documentSlots in constants.js). All three are keyed by
+    // that ref key: `attachments` holds the server's reference once the upload lands,
+    // `attachmentUploading` and `attachmentError` describe the request itself, so a refused
+    // file is shown rather than silently dropped.
+    const [attachments, setAttachments] = useState({});
+    const [attachmentUploading, setAttachmentUploading] = useState({});
+    const [attachmentError, setAttachmentError] = useState({});
+    // The slots of the LOADED graph, captured from the same raw view that carries each node's
+    // metadata - not derived from the React Flow projection, which throws the metadata away.
+    const [documentSlotList, setDocumentSlotList] = useState([]);
     const chatEndRef = useRef(null);
     // AbortController of the in-flight ExecuteGraph request, so the Cancel button can stop it.
     const abortControllerRef = useRef(null);
@@ -114,6 +119,28 @@ function App() {
 
     // Providers this graph explicitly asks for; only meaningful once we know the account's keys.
     const missingKeyProviders = graphProviders.filter(p => !savedKeyProviders.includes(p));
+
+    // Whether the LOADED graph contains a DOCUMENT node - the only thing that reads an
+    // attached file (the engine's _process_document). Without one a run carries the
+    // reference and nothing consumes it, so the chat panel can say so before the run
+    // instead of leaving the model to explain that it cannot read the file.
+    //
+    // Two things this must get right:
+    // - The node type lives at `data.nodeType` (see the mapping below in loadGraph), NOT
+    //   `data.type` - that field name is the builder's own convention (builder.jsx builds
+    //   its nodes with `data.type`); the viewer has never written it. Reading `data.type`
+    //   here was always `undefined`, so this check answered "no" for every ready graph
+    //   and the banner showed even on a graph that had a DOCUMENT node.
+    // - Until the graph is actually 'ready' the answer is UNKNOWN, not "no". ChatPanel's
+    //   own default is `true` (unknown => stay silent); because we always pass the prop
+    //   explicitly, `false` for 'idle'/'loading'/'error' would read as "this graph has no
+    //   DOCUMENT node" and flash the banner while a graph was still loading.
+    //
+    // Derived from the attachment slots rather than by scanning the canvas nodes: they are
+    // built from the same view, and `declared` is exactly this question ("did the graph
+    // declare a node that reads a document?"), so the two can never disagree.
+    const graphHasDocumentNode =
+        renderState.status !== 'ready' || documentSlotList.some(slot => slot.declared);
 
     // How a run with no personal key resolves, and what a graph that selects no provider of
     // its own runs on: `serviceKeyForbidden` (policy refuses it), `serviceKeyEnabled` (the
@@ -333,6 +360,12 @@ function App() {
         // showing the PREVIOUS graph's providers in the "no personal key" banner.
         setGraphProviders([]);
         setGraphLlm({ provider: '', model: '', nodeOverrides: [] });
+        setDocumentSlotList([]);
+        // A file is attached for a specific graph's slots; carrying one across a switch would
+        // send it to a graph that may not read it at all. Cleared with everything else above.
+        setAttachments({});
+        setAttachmentUploading({});
+        setAttachmentError({});
         setRenderState({ graphId: id, seq, status: 'loading', error: null, fitMode: 'all' });
 
         fetchGraphQL(VIEW_QUERY, { graphId: id })
@@ -351,6 +384,9 @@ function App() {
                 // what carries `config` and each node's `metadata`.
                 setGraphProviders(collectGraphProviders(view));
                 setGraphLlm(collectGraphLlm(view));
+                // The attachment slots this graph declares - one per DOCUMENT node key, which
+                // is how the graph says "this file is the timesheet, that one is the report".
+                setDocumentSlotList(documentSlots(view));
                 // Create Label Map
                 const labels = {};
                 view.nodes.forEach(n => { if(n.metadata?.label) labels[n.nodeId] = n.metadata.label; });
@@ -589,29 +625,39 @@ function App() {
     //
     // The file is uploaded the moment it is chosen, not when the run starts: the user gets
     // an immediate "too large / wrong type" answer instead of discovering it after writing
-    // their message, and the run itself then travels as ordinary context.
-    const handlePickAttachment = async (event) => {
+    // their message, and the run itself then travels as ordinary context. One upload per
+    // SLOT, because that is how a graph says which file is which - a graph that reads two
+    // files asks for two, and each lands under its own context key.
+    const handlePickAttachment = async (refKey, event) => {
         const file = event.target.files && event.target.files[0];
         // Reset the picker so choosing the SAME file twice still fires a change event.
         event.target.value = '';
         if (!file) return;
 
-        setAttachment(null);
-        setAttachmentError(null);
-        setAttachmentUploading(true);
+        setAttachments(prev => ({ ...prev, [refKey]: null }));
+        setAttachmentError(prev => ({ ...prev, [refKey]: null }));
+        setAttachmentUploading(prev => ({ ...prev, [refKey]: true }));
         try {
             const result = await uploadDocument(file, threadId);
-            setAttachment(result);
+            setAttachments(prev => ({ ...prev, [refKey]: result }));
         } catch (err) {
-            setAttachmentError(err.message || 'The upload failed.');
+            setAttachmentError(prev => ({ ...prev, [refKey]: err.message || 'The upload failed.' }));
         } finally {
-            setAttachmentUploading(false);
+            setAttachmentUploading(prev => ({ ...prev, [refKey]: false }));
         }
     };
 
-    const handleClearAttachment = () => {
-        setAttachment(null);
-        setAttachmentError(null);
+    const handleClearAttachment = (refKey) => {
+        setAttachments(prev => {
+            const next = { ...prev };
+            delete next[refKey];
+            return next;
+        });
+        setAttachmentError(prev => {
+            const next = { ...prev };
+            delete next[refKey];
+            return next;
+        });
     };
 
     const handleExecute = async () => {
@@ -630,12 +676,11 @@ function App() {
         abortControllerRef.current = controller;
 
         try {
-            // An attachment travels as run context, which is the only channel the engine's
-            // DOCUMENT node reads. It is quoted once, on the NEXT run, and cleared after a
-            // successful one so a follow-up message does not silently re-attach the file.
-            const runContext = attachment
-                ? { document_ref: attachment.documentId }
-                : undefined;
+            // Every attachment travels as run context, one entry per slot the graph declares,
+            // which is the only channel the engine's DOCUMENT nodes read. Each is quoted on
+            // the NEXT run and cleared after a successful one, so a follow-up message does not
+            // silently re-attach the same files.
+            const runContext = documentContextFor(documentSlotList, attachments);
             const data = await fetchGraphQL(EXECUTE_MUTATION, {
                 input: { graphId: selected, threadId: threadId, input: userText, context: runContext }
             }, { signal: controller.signal });
@@ -683,9 +728,9 @@ function App() {
                 if (rewindOriginNodeId) {
                     setRewindOriginNodeId(null);
                 }
-                // The attachment was consumed by this run. Leaving it set would silently
-                // re-attach the same file to the next message, which is a surprise at best.
-                setAttachment(null);
+                // The attachments were consumed by this run. Leaving them set would silently
+                // re-attach the same files to the next message, which is a surprise at best.
+                setAttachments({});
             } else if (eventType === EXECUTION_EVENT_TYPES.WAITING_FOR_INPUT) {
                 setGraphStatus('waiting');
             } else if (eventType === EXECUTION_EVENT_TYPES.START || eventType === EXECUTION_EVENT_TYPES.NODE_END) {
@@ -1063,8 +1108,11 @@ function App() {
                     defaultProvider={billingSettings.defaultProvider}
                     savedKeyProviders={isLoggedIn ? savedKeyProviders : []}
                     graphUsesServerDefault={renderState.status === 'ready' && graphProviders.length === 0}
+                    graphHasDocumentNode={graphHasDocumentNode}
+                    selectedGraphName={graphs.find(g => g.graphId === selected)?.graphName || ''}
                     onOpenLlmSettings={() => setShowLlmSettings(true)}
-                    attachment={attachment}
+                    documentSlots={documentSlotList}
+                    attachments={attachments}
                     attachmentUploading={attachmentUploading}
                     attachmentError={attachmentError}
                     onPickAttachment={handlePickAttachment}

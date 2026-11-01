@@ -195,6 +195,50 @@ So a graph that uses attachments looks like:
 START → DOCUMENT → ACTION("summarise these rows as JSON {total, top_client}") → END
 ```
 
+### Several documents in one run
+
+A graph that reads **two** files gives each `DOCUMENT` node a slot of its own: the context key
+its file arrives under (`document_ref_key`), the variable its text lands in (`output_variable`)
+and a label. That is the graph's answer to "which file is which" — declared once, not asked of
+the model:
+
+```
+START → DOCUMENT(ref: timesheets_ref → timesheets_text)
+      → DOCUMENT(ref: report_ref     → report_text)
+      → ACTION("Compare report_text against timesheets_text. List discrepancies as JSON …")
+      → END
+```
+
+The contract needs no extra fields for this: the run context is a free-form map, so each slot
+is simply its own key. Upload each file, then name them all:
+
+```bash
+grpcurl -proto external_api.proto -plaintext -H 'x-api-key: <key>' -d '{
+  "graph_id": "discrepancy-agent", "thread_id": "t-3",
+  "input": "Compare the two files and list the discrepancies",
+  "context": { "timesheets_ref": "b2b-3f2a-...", "report_ref": "b2b-9c1d-..." }
+}' localhost:9091 external.v1.LangGraphExternalApi/ExecuteGraph
+```
+
+Two things follow, and both are enforced rather than left to care:
+
+- **every reference is ownership-checked**, whichever key it hides under — a handle is
+  recognised by its shape, so `timesheets_ref` gets exactly the tenant gate that
+  `document_ref` does;
+- **the inline form cannot be combined with any reference**, not just `document_ref`. One
+  `document` field and several slot keys would leave you unable to tell which file the graph
+  would read, so it is `INVALID_ARGUMENT` (§7 *The one-call form*).
+
+If the graph expects a slot the run did not supply, the node reports
+`missing_context:<key>` and the run stops there — half the input of a comparison never
+arrives, so it says so instead of answering from one file. The engine also logs a warning for
+the operator. Conversely, a reference under a key **no node reads** is logged as well: the
+upload, the gate and the run all succeed and nothing fetches the file.
+
+A `DOCUMENT` node also names where its text lands, so a graph with two files has two
+variables — `timesheets_text` and `report_text` above — and each is titled with the node's
+label, which keeps the two apart in a prompt even when the variable names do not.
+
 ### Uploading and quoting a reference
 
 Two calls, because uploading is expensive and running is cheap — one upload can serve many
@@ -218,8 +262,18 @@ grpcurl -proto external_api.proto -plaintext -H 'x-api-key: <key>' -d '{
 }' localhost:9091 external.v1.LangGraphExternalApi/ExecuteGraph
 ```
 
-`context.document_ref` is the **only** channel by which a document reaches a run. The engine
-resolves it while executing a `DOCUMENT` node; nothing else in the contract reads it.
+`context` is the **only** channel by which a document reaches a run — `document_ref` for the
+default single-file case, or whatever key each `DOCUMENT` node names for a graph that reads
+several. The engine resolves them while executing those nodes; nothing else in the contract
+reads them.
+
+A run that names a reference in a graph containing **no `DOCUMENT` node** therefore reads
+nothing: the upload, the ownership check and the run itself all succeed, and the model —
+never shown the file — answers that it has no access to it. The run is *not* failed for that
+(you may legitimately be attaching now for a later message); the engine logs a warning
+instead. Put a `DOCUMENT` node in the graph to have the text extracted. The reference itself
+is never rendered into a model prompt either, under any key — it is a handle, and a model can
+only quote it back.
 
 ### The one-call form
 
@@ -236,9 +290,10 @@ grpcurl -proto external_api.proto -plaintext -H 'x-api-key: <key>' -d '{
 }' localhost:9091 external.v1.LangGraphExternalApi/ExecuteGraph
 ```
 
-**`document` and `context.document_ref` are mutually exclusive.** Sending both is
-`INVALID_ARGUMENT`, not a precedence rule — "which file did I just attach?" must never be a
-guess.
+**`document` and any document reference in the context are mutually exclusive.** Sending both
+is `INVALID_ARGUMENT`, not a precedence rule — "which file did I just attach?" must never be a
+guess. That holds for a slot key as well as `document_ref`: an inline document plus
+`timesheets_ref` is refused too.
 
 ### Chunked upload
 
@@ -260,12 +315,16 @@ as the running total passes the size cap, rather than after the whole file has a
 ### What reaches the model
 
 The extracted text is capped (sheets, rows, cells and total characters) and the caps are
-reported, not silent: a truncated extraction says so in `document_meta`. A wide sheet is
-deliberately cut rather than pasted into a prompt where it would not fit.
+reported, not silent: a truncated extraction says so in the node's metadata variable. A wide
+sheet is deliberately cut rather than pasted into a prompt where it would not fit. Each slot
+lands in its own variable and opens with its own label, so a graph reading two files gives the
+model two labelled blocks rather than one merged one.
 
 Because the text lands in the run's state, **it is checkpointed and it appears in the `state`
 maps** returned by `ExecuteGraph`, `GetGraphState` and `GetExecutionHistory`. The raw
-document is not: only its extracted, capped text ever enters state.
+document is not: only its extracted, capped text ever enters state. The reference does appear
+there (in the run's `context`, and in the metadata variable) — it is not a secret, and you
+sent it — but it is never rendered into a *model* prompt.
 
 ## 8. Copilot (`AskCopilot`)
 

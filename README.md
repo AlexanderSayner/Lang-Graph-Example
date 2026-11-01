@@ -411,9 +411,9 @@ mutation {
 
 #### Attachments
 
-A run may carry a file. The `DOCUMENT` node fetches the document the run names, extracts its
-text as markdown tables, and writes it to `variables.document_text`; an ordinary `ACTION` node
-downstream then reasons over that text as it would any other variable.
+A run may carry one file or several. The `DOCUMENT` node fetches each document the run
+names, extracts its text as markdown tables, and writes it to a state variable; an ordinary
+`ACTION` node downstream then reasons over that text as it would any other variable.
 
 The extraction is **deliberately not an LLM call** — an `.xlsx`/`.docx` is a ZIP of XML whose
 text is already text, so a few lines of library code recover it exactly and for free. What the
@@ -422,20 +422,57 @@ caps, each reported rather than silent, so a 5 000-row sheet is cut to something
 window can hold rather than being truncated mid-answer by the provider.
 
 ```text
-START → DOCUMENT → ACTION("map these rows to {total, top_client}") → END
+START → DOCUMENT("map these rows to {total, top_client}") → ACTION → END
 ```
 
-Two ways to attach, both landing in the run's `context` as `document_ref`:
+##### One file
 
-- **Browser** — the chat panel's attach button uploads to `POST /api/documents`
-  (multipart; a file is binary and base64-in-JSON would inflate every upload by a third).
-- **B2B** — `UploadDocument`, or the inline `document` field on `ExecuteGraph`. See
-  [B2B_INTEGRATION.md §7](B2B_INTEGRATION.md).
+A single `DOCUMENT` node with no configuration is the common case. The run names its file
+under `context.document_ref` and the text lands in `variables.document_text`.
+
+##### Several files — slots
+
+A graph that compares two reports gives each `DOCUMENT` node a **slot** of its own: the
+context key its file arrives under, the variable its text lands in, and a label. That is how
+a graph says *which file is which* — declared once, instead of asked of the model:
+
+```text
+START → DOCUMENT(ref: timesheets_ref → timesheets_text, label "Time sheet (as submitted)")
+      → DOCUMENT(ref: report_ref     → report_text,     label "Filled report")
+      → ACTION("Compare report_text against timesheets_text. List discrepancies as JSON …")
+      → END
+```
+
+The chat panel reads those slots and shows **one labelled 📎 picker per node**, so both files
+are attached before a single run and travel as
+`context: { timesheets_ref: …, report_ref: … }`. Each slot's label also becomes a `#` heading
+on its own extracted text, so even a graph that leaves the variable names at their defaults
+keeps the two files apart in a prompt.
+
+Two mistakes are worth naming, because both are silent until they are not:
+
+- **two nodes sharing a context key read the same file twice.** The panel flags this before
+  the run; the fix is to give each node its own key in the builder;
+- **a run that supplies only some of the slots** stops at the first empty one with
+  `missing_context:<key>`, so half the input of a comparison never arrives. The engine warns
+  about it per run, and the panel never runs a graph with a slot silently unfilled.
+
+Two ways to attach, both landing in the run's `context` under a slot's key:
+
+- **Browser** — the chat panel's 📎 picker uploads to `POST /api/documents`
+  (multipart; a file is binary and base64-in-JSON would inflate every upload by a third), one
+  upload per slot;
+- **B2B** — `UploadDocument`, or the inline `document` field on `ExecuteGraph` for a single
+  file. See [B2B_INTEGRATION.md §7](B2B_INTEGRATION.md).
 
 Both paths funnel into `DocumentService`, so the rules — 8 MB cap, `.xlsx`/`.docx` only,
-owner-bound unguessable id, 7-day retention — are identical whichever door the file comes
-through. Uploaded bytes are never returned by any API: only the engine reads them, over the
-internal port, and only the extracted text ever enters graph state.
+owner-bound unguessable id, 7-day retention, one row per upload — are identical whichever door
+the file comes through, and both gate **every** reference before a run may quote it. A
+reference that is not the caller's own, or that has expired, is refused as
+`DOCUMENT_NOT_FOUND` on both surfaces — so an id can never be probed for, and the bytes are
+never returned by any API: only the engine reads them, over the internal port, and only the
+extracted text ever enters graph state. A handle never reaches a model prompt under any key
+name, only its filename, label and extracted text do.
 
 #### Edge conditions
 

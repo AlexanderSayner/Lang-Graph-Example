@@ -541,3 +541,95 @@ export const layoutGraph = (nodes, edges, rankdir = 'TB') => {
         return { ...n, position: { x: Math.round(box.x), y: Math.round(box.y) } };
     });
 };
+
+// --- Attachment slots ------------------------------------------------------------------
+//
+// A graph reads a document through a DOCUMENT node, and a graph may read several in one run:
+// each node names the context key its file arrives under (`document_ref_key`, default
+// `document_ref`) and the variable its text lands in (`output_variable`, default
+// `document_text`). Those keys ARE the answer to "which file is which" - the graph says so,
+// not the model - so the chat panel asks for a file per slot rather than one file per run.
+
+/** The context key a DOCUMENT node reads, and the engine's default when it names none. */
+export const DEFAULT_DOCUMENT_REF_KEY = 'document_ref';
+
+/**
+ * The attachment slots of a graph, in the order its nodes were declared.
+ *
+ * Two DOCUMENT nodes reading the same key share one slot: they read the same file twice,
+ * which is what a graph with two unnamed nodes looks like. That is reported through
+ * `nodeIds` (length > 1) so the panel can say so instead of offering two pickers that write
+ * to the same reference.
+ *
+ * A graph with no DOCUMENT node has no slots by definition, but the panel still needs
+ * somewhere to put a picked file - the file is uploaded and the reference carried, and the
+ * warning next to it explains that nothing will read it. That case yields one slot marked
+ * `declared: false`.
+ *
+ * @param {{ nodes?: Array<{ nodeId: string, nodeType: string, metadata?: object }> }} view
+ *        the getGraphView payload for the LOADED graph
+ * @returns {Array<{ refKey: string, label: string, outputVariable: string,
+ *                   nodeIds: string[], declared: boolean }>}
+ */
+export const documentSlots = (view) => {
+    const byKey = new Map();
+    (view?.nodes || []).forEach(node => {
+        if (node?.nodeType !== NODE_TYPES.DOCUMENT) return;
+        const meta = node?.metadata || {};
+        const refKey = String(meta.document_ref_key || '').trim() || DEFAULT_DOCUMENT_REF_KEY;
+        const outputVariable = String(meta.output_variable || '').trim() || 'document_text';
+        const label = String(meta.label || '').trim();
+        const existing = byKey.get(refKey);
+        if (existing) {
+            existing.nodeIds.push(node.nodeId);
+            if (label && !existing.label) existing.label = label;
+            return;
+        }
+        byKey.set(refKey, {
+            refKey,
+            label,
+            outputVariable,
+            nodeIds: [node.nodeId],
+            declared: true,
+        });
+    });
+
+    if (byKey.size === 0) {
+        return [{
+            refKey: DEFAULT_DOCUMENT_REF_KEY,
+            label: '',
+            outputVariable: 'document_text',
+            nodeIds: [],
+            declared: false,
+        }];
+    }
+    return Array.from(byKey.values());
+};
+
+/**
+ * The slots more than one DOCUMENT node reads - the graph reads one file twice and can never
+ * hold two. The engine cannot fix this for the caller (both nodes fetch the same reference),
+ * so the panel says it before the run instead of leaving the second file mysteriously absent.
+ *
+ * @param {ReturnType<typeof documentSlots>} slots
+ * @returns {Array<{ refKey: string, nodeIds: string[] }>}
+ */
+export const ambiguousDocumentSlots = (slots) =>
+    (slots || []).filter(slot => slot.nodeIds.length > 1);
+
+/**
+ * What the run's context must carry for the slots that have a file attached.
+ *
+ * @param {ReturnType<typeof documentSlots>} slots every slot of the loaded graph
+ * @param {Record<string, { documentId?: string }>} attachments by refKey
+ * @returns {object|undefined} the context map, or undefined when nothing is attached (so an
+ *          ordinary run keeps sending no context at all rather than an empty object)
+ */
+export const documentContextFor = (slots, attachments) => {
+    const context = {};
+    (slots || []).forEach(slot => {
+        const documentId = attachments?.[slot.refKey]?.documentId;
+        if (documentId) context[slot.refKey] = documentId;
+    });
+    return Object.keys(context).length > 0 ? context : undefined;
+};

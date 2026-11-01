@@ -1,5 +1,6 @@
 import React from 'react';
 import CopilotTab from '../copilot';
+import { renderMarkdown } from '../utils/markdown';
 
 // Helper: Render concise diff summary for history list
 const renderDiffSummary = (diff) => {
@@ -65,17 +66,33 @@ export default function ChatPanel({
     // a saved key.
     graphUsesServerDefault = false,
     onOpenLlmSettings,
-    // --- Attachments ---
-    // The document this run will carry, once the upload has finished. Null means "nothing
-    // attached"; a run with no attachment behaves exactly as before.
-    attachment = null,
-    // True while the chosen file is uploading, so the chip can say so instead of a stale name.
-    attachmentUploading = false,
-    // Set when the upload was refused (too large, wrong type): shown, not swallowed.
-    attachmentError = null,
-    // Chosen a file / pressed the remove button. Both live in app.jsx, which owns the request.
+    // --- Attachments ---------------------------------------------------------------------
+    // One row per SLOT the loaded graph declares (a slot is a DOCUMENT node's context key),
+    // because that is how the graph says which file is which - "Time sheet (as submitted)"
+    // and "Filled report" are labels the graph carries, not guesses the model has to make.
+    // An empty list still means "the graph reads no document": one row is shown so the file
+    // can be picked and the warning below can explain that nothing will read it.
+    documentSlots = [],
+    // refKey -> the server's reference once the upload has landed. Null means "nothing
+    // attached to this slot"; a run with no attachments behaves exactly as before.
+    attachments = {},
+    // refKey -> true while that slot's file is uploading, so the chip can say so instead of
+    // showing a stale name.
+    attachmentUploading = {},
+    // refKey -> why the upload was refused (too large, wrong type). Shown, not swallowed.
+    attachmentError = {},
+    // Chosen a file for a slot / pressed that slot's remove button. Both live in app.jsx,
+    // which owns the request.
     onPickAttachment = () => {},
     onClearAttachment = () => {},
+    // True when the LOADED graph contains a DOCUMENT node - the only node that reads an
+    // attachment. False means the run would carry the reference and nothing would consume
+    // it, which is exactly the case the warning below exists for. Defaults to true so a
+    // caller that does not know stays silent rather than warning about every graph.
+    graphHasDocumentNode = true,
+    // Name of the loaded graph, used to link the builder without renaming the graph by
+    // omission (the builder falls back to "Untitled Graph" when the URL names nothing).
+    selectedGraphName = '',
 }) {
     // Either half being set means the shared key will NOT pay for this run.
     const sharedKeyBlocked = serviceKeyForbidden || !serviceKeyEnabled;
@@ -97,6 +114,18 @@ export default function ChatPanel({
         && graphUsesServerDefault
         && defaultMatchesSavedKey
         && missingKeyProviders.length === 0;
+    // app.jsx always supplies at least one slot (a graph with no DOCUMENT node gets the
+    // single default one, so a file can still be picked and the warning shown), but a caller
+    // that passes nothing must not lose the affordance the panel has always had.
+    const slotsToRender = documentSlots.length > 0 ? documentSlots : [{
+        refKey: 'document_ref', label: '', outputVariable: 'document_text',
+        nodeIds: [], declared: false,
+    }];
+    // Two DOCUMENT nodes reading the same key read one file twice: the graph can never hold
+    // two, and the second file the user attaches would overwrite the first's reference.
+    const sharedSlots = (documentSlots || []).filter(slot => slot.nodeIds.length > 1);
+    const hasAnyAttachment = slotsToRender.some(slot =>
+        attachments[slot.refKey] || attachmentUploading[slot.refKey] || attachmentError[slot.refKey]);
     return (
         <div className="chat-panel" style={{ height: `${panelHeight}px` }} ref={panelRef}>
 
@@ -125,7 +154,13 @@ export default function ChatPanel({
                     <div className="chat-messages">
                         {messages.map((m, i) => (
                             <div key={i} className={`msg msg-${m.type}`}>
-                                {m.text}
+                                {/* A bot answer is model output, so it may carry markdown - a
+                                    fenced JSON block is the common case, and printing it as
+                                    one long line is what makes an answer unreadable. Every
+                                    other kind of message is the user's own text, a system
+                                    notice or an error, and is rendered verbatim (with
+                                    pre-wrap in styles.css) so its line breaks survive. */}
+                                {m.type === 'bot' ? renderMarkdown(m.text) : m.text}
                                 {/* ADDED: Show token spend for bot messages */}
                                 {m.type === 'bot' && m.tokens > 0 && (
                                     <div style={{ fontSize: '10px', color: '#888', marginTop: '4px', fontStyle: 'italic' }}>
@@ -254,32 +289,120 @@ export default function ChatPanel({
                             </span>
                         </div>
                     )}
-                    {/* An attached document rides with the NEXT run: the chip is the whole
-                        affordance, so the file picker is a hidden input the button triggers. */}
-                    {(attachment || attachmentUploading || attachmentError) && (
-                        <div className={`attachment-row ${attachmentError ? 'attachment-row--error' : ''}`}>
-                            <span className="attachment-chip" title={attachmentError || (attachment && attachment.filename)}>
-                                {attachmentUploading ? '⏳ Uploading…'
-                                    : attachmentError ? `⚠ ${attachmentError}`
-                                    : `📎 ${attachment.filename}`}
+                    {/* An attached document rides with the NEXT run: the row below is the whole
+                        affordance, so the file picker sits in it. But the file only reaches a
+                        model through a DOCUMENT node, so a graph without one would accept the
+                        upload, carry the reference, and have nothing to read it - the model
+                        then answers that it has no access to the file, having seen the
+                        reference in its own context. Say that here, before the run. */}
+                    {hasAnyAttachment && !graphHasDocumentNode && (
+                        <div style={{
+                            display: 'flex', alignItems: 'center', gap: '8px',
+                            padding: '6px 12px', fontSize: '11px',
+                            background: '#fff8e1', borderTop: '1px solid #ffe0b2', color: '#e65100',
+                        }}>
+                            <span>
+                                ⚠️ This graph has no 📎 <b>DOCUMENT</b> node, so the attached file
+                                will not be read — the run only carries its reference. Add one in
+                                the builder (START → DOCUMENT → your node) to use attachments.
                             </span>
                             <button
-                                type="button"
-                                className="attachment-remove"
-                                onClick={onClearAttachment}
-                                disabled={loading}
-                                title="Remove the attachment"
-                            >×</button>
+                                onClick={() => window.location.href = 'builder.html'
+                                    + `?graphId=${encodeURIComponent(selected)}`
+                                    + `&graphName=${encodeURIComponent(selectedGraphName)}`}
+                                style={{
+                                    padding: '4px 9px', fontSize: '11px', cursor: 'pointer',
+                                    whiteSpace: 'nowrap', border: '1px solid #ffb74d',
+                                    background: '#ffe0b2', color: '#e65100', borderRadius: '4px',
+                                    fontWeight: '600',
+                                }}
+                            >
+                                Open builder
+                            </button>
                         </div>
                     )}
+                    {/* The one mistake this panel can see BEFORE the run: several DOCUMENT nodes
+                        reading the same context key. They fetch the same reference, so the
+                        graph reads one file twice and can never hold two - whichever second
+                        file the user picks overwrites the first's reference. */}
+                    {sharedSlots.length > 0 && (
+                        <div style={{
+                            display: 'flex', alignItems: 'center', gap: '8px',
+                            padding: '6px 12px', fontSize: '11px',
+                            background: '#fff8e1', borderTop: '1px solid #ffe0b2', color: '#e65100',
+                        }}>
+                            <span>
+                                ⚠️ {sharedSlots[0].nodeIds.length} 📎 <b>DOCUMENT</b> nodes all read{' '}
+                                <code>{sharedSlots[0].refKey}</code>
+                                {sharedSlots.length > 1 && ` (and ${sharedSlots.length - 1} more key(s))`},
+                                so they fetch the same file and this graph can never hold two.
+                                Give each node its own <b>Context key</b> in the builder.
+                            </span>
+                            <button
+                                onClick={() => window.location.href = 'builder.html'
+                                    + `?graphId=${encodeURIComponent(selected)}`
+                                    + `&graphName=${encodeURIComponent(selectedGraphName)}`}
+                                style={{
+                                    padding: '4px 9px', fontSize: '11px', cursor: 'pointer',
+                                    whiteSpace: 'nowrap', border: '1px solid #ffb74d',
+                                    background: '#ffe0b2', color: '#e65100', borderRadius: '4px',
+                                    fontWeight: '600',
+                                }}
+                            >
+                                Open builder
+                            </button>
+                        </div>
+                    )}
+                    {/* One row per slot. The slot's own label is the graph's answer to "which
+                        file is which", so it names the row. The picker is a plain file input
+                        (styled in styles.css) rather than a hidden input behind a button,
+                        which keeps it keyboard-reachable. */}
+                    {slotsToRender.map(slot => {
+                        const attached = attachments[slot.refKey];
+                        const uploading = attachmentUploading[slot.refKey];
+                        const error = attachmentError[slot.refKey];
+                        return (
+                            <div
+                                key={slot.refKey}
+                                className={`attachment-row ${error ? 'attachment-row--error' : ''}`}
+                            >
+                                <span
+                                    className="attachment-slot-label"
+                                    title={`Read from context.${slot.refKey} into ${slot.outputVariable}`}
+                                >
+                                    {slot.label || slot.refKey}
+                                </span>
+                                <input
+                                    type="file"
+                                    className="attachment-file-input"
+                                    accept=".xlsx,.docx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                                    onChange={(e) => onPickAttachment(slot.refKey, e)}
+                                    disabled={loading}
+                                    aria-label={`Attach a file for ${slot.label || slot.refKey}`}
+                                />
+                                {(attached || uploading || error) && (
+                                    <span
+                                        className="attachment-chip"
+                                        title={error || (attached && attached.filename)}
+                                    >
+                                        {uploading ? '⏳ Uploading…'
+                                            : error ? `⚠ ${error}`
+                                            : `📎 ${attached.filename}`}
+                                    </span>
+                                )}
+                                {(attached || error) && (
+                                    <button
+                                        type="button"
+                                        className="attachment-remove"
+                                        onClick={() => onClearAttachment(slot.refKey)}
+                                        disabled={loading}
+                                        title={`Remove ${slot.label || slot.refKey}`}
+                                    >×</button>
+                                )}
+                            </div>
+                        );
+                    })}
                     <div className="chat-input-area">
-                        <input
-                            type="file"
-                            className="attachment-file-input"
-                            accept=".xlsx,.docx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                            onChange={onPickAttachment}
-                            disabled={loading}
-                        />
                         <input className="chat-input" placeholder={ graphStatus === 'finished' ? "💬 Graph finished — send a message to continue, or click 'New' for a fresh thread" : "Send message..." } value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleExecute()} disabled={loading} />
                         {loading ? (
                             /* While a run is in flight the Send button becomes a Cancel button, so
