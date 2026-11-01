@@ -187,5 +187,64 @@ class DocumentServiceTest {
 
         assertThat(service.purgeExpired()).isZero();
     }
+
+    // --- The shape of a handle -----------------------------------------------------------
+    //
+    // `looksLikeDocumentId` is what both facades use to tell a document reference from an
+    // ordinary context value: a graph that passes its own keys (a tenant, a date, a flag) must
+    // never be sent to this store, and a reference hiding under a slot key of its own must
+    // still be gated. It has to agree with `newId`, so the first assertion mints a real one.
+
+    @Test
+    @DisplayName("an id this service minted is recognised - both owner kinds")
+    void anIdTheServiceMintedIsRecognised() {
+        assertThat(DocumentService.looksLikeDocumentId(storeAny().getDocumentId())).isTrue();
+        assertThat(storeAny().getDocumentId()).startsWith("b2b-");
+
+        when(repository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        DocumentEntity fromUi = service.store(DocumentService.OWNER_UI, "user-1", "t-1",
+                "doc.docx", "application/octet-stream", VALID_ZIP);
+
+        assertThat(DocumentService.looksLikeDocumentId(fromUi.getDocumentId())).isTrue();
+    }
+
+    @Test
+    @DisplayName("an ordinary context value is never mistaken for a handle")
+    void anOrdinaryValueIsNotAHandle() {
+        assertThat(DocumentService.looksLikeDocumentId("acme")).isFalse();
+        assertThat(DocumentService.looksLikeDocumentId("2026-Q1")).isFalse();
+        assertThat(DocumentService.looksLikeDocumentId("ui-123")).isFalse();   // too short
+        assertThat(DocumentService.looksLikeDocumentId(null)).isFalse();
+        assertThat(DocumentService.looksLikeDocumentId("   ")).isFalse();
+    }
+
+    @Test
+    @DisplayName("a handle is a handle only when every part is well formed")
+    void everyPartMustBeWellFormed() {
+        String suffix = "a".repeat(32);
+
+        assertThat(DocumentService.looksLikeDocumentId("ui-1-" + suffix)).isTrue();
+        assertThat(DocumentService.looksLikeDocumentId("  ui-1-" + suffix + "  ")).as("trimmed").isTrue();
+        assertThat(DocumentService.looksLikeDocumentId("ui-11111111-" + "a".repeat(31))).isFalse();
+        assertThat(DocumentService.looksLikeDocumentId("ui-11111111-" + "a".repeat(33))).isFalse();
+        assertThat(DocumentService.looksLikeDocumentId("ui-11111111-" + "A".repeat(32))).as("case").isFalse();
+        assertThat(DocumentService.looksLikeDocumentId("ui-11111111-" + "-".repeat(32))).as("charset").isFalse();
+        assertThat(DocumentService.looksLikeDocumentId("ui-11111111")).as("no suffix").isFalse();
+        assertThat(DocumentService.looksLikeDocumentId("ui-" + suffix)).as("no owner hash").isFalse();
+    }
+
+    @Test
+    @DisplayName("the owner hash may be up to 8 hex chars - a negative hashCode produces 8")
+    void aLongOwnerHashIsStillRecognised() {
+        // Integer.toHexString(ownerId.hashCode()) yields 8 characters for any negative hash,
+        // so a rule that assumed "hash is always short" would stop gating real references.
+        when(repository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        DocumentEntity saved = service.store(DocumentService.OWNER_UI,
+                "a-user-id-whose-hash-is-negative", "t-1", "doc.docx",
+                "application/octet-stream", VALID_ZIP);
+
+        assertThat(saved.getDocumentId().split("-")[1]).hasSize(8);
+        assertThat(DocumentService.looksLikeDocumentId(saved.getDocumentId())).isTrue();
+    }
 }
 

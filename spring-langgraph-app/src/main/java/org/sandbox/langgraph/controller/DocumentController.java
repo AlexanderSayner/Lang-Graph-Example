@@ -45,9 +45,11 @@ public class DocumentController {
     /**
      * Store one attachment and return the reference the UI then quotes in a run.
      *
-     * <p>The response is deliberately small: the id, the name, the size and the digest. The
-     * bytes never come back - the UI has them already, and the point of the reference is that
-     * the file is uploaded once and then named.</p>
+     * <p>The response is deliberately small: the id, the name, the size, the digest and the
+     * retention deadline. The bytes never come back - the UI has them already, and the point
+     * of the reference is that the file is uploaded once and then named. The deadline is
+     * included for the same reason the B2B {@code DocumentRef} returns it: a caller should be
+     * able to see how long the reference stays usable instead of inferring it.</p>
      */
     @PreAuthorize("!isAnonymous()")
     @PostMapping(path = "/api/documents", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -103,6 +105,10 @@ public class DocumentController {
         body.put("filename", stored.getFilename());
         body.put("sizeBytes", stored.getSizeBytes());
         body.put("sha256", stored.getSha256());
+        // Retention, so the caller can see how long this reference stays resolvable instead of
+        // having to know the 7-day rule. Empty only when the store left the deadline unset.
+        body.put("expiresAt",
+                stored.getExpiresAt() == null ? "" : stored.getExpiresAt().toString());
         return body;
     }
 }

@@ -490,26 +490,32 @@ public class LangGraphExternalApiService extends LangGraphExternalApiGrpc.LangGr
      *   <li><b>Inline</b> - {@code document} carries the bytes. They are stored here, under
      *       the caller's tenant, and the resulting id is injected into the run context
      *       server-side. The caller never has to learn the id.</li>
-     *   <li><b>By reference</b> - {@code context.document_ref} names a document uploaded
-     *       earlier. It is checked against the caller's tenant, so quoting another tenant's
-     *       id fails rather than attaching their file.</li>
+     *   <li><b>By reference</b> - a context key names a document uploaded earlier - by default
+     *       {@code document_ref}, but a graph that reads several files in one run gives each
+     *       DOCUMENT node a key of its own ({@code timesheets_ref}, {@code report_ref}, …),
+     *       so every context value shaped like a document handle is checked against the
+     *       caller's tenant. Quoting another tenant's id fails rather than attaching their
+     *       file, whichever key it hides under.</li>
      * </ul>
      *
      * <p>Supplying both is INVALID_ARGUMENT rather than a precedence rule: "which file did I
-     * just attach?" must never be a guess.</p>
+     * just attach?" must never be a guess. That applies to the by-reference form as a whole -
+     * an inline document cannot be combined with ANY document reference, or a caller could
+     * never tell which of the two the graph would read.</p>
      *
-     * @return the input to run, with the context possibly carrying {@code document_ref}
-     * @throws IllegalArgumentException when both forms are supplied, or the referenced
+     * @return the input to run, with the context left as the caller sent it
+     * @throws IllegalArgumentException when both forms are supplied, or a referenced
      *                                  document belongs to another tenant
      */
     private ExecuteGraphInput withAttachment(B2BClientContext client, ExecuteGraphRequest request,
                                              String internalThreadId) {
         boolean hasInline = request.getDocument() != null && !request.getDocument().isEmpty();
-        String suppliedRef = suppliedDocumentRef(request);
+        // Every context value that is shaped like a handle, whatever key it arrived under.
+        List<String> suppliedRefs = suppliedDocumentRefs(request);
 
-        if (hasInline && !suppliedRef.isEmpty()) {
+        if (hasInline && !suppliedRefs.isEmpty()) {
             throw new IllegalArgumentException(
-                    "document and context." + DOCUMENT_REF_KEY + " are mutually exclusive; send one");
+                    "document and a document reference in the context are mutually exclusive; send one");
         }
 
         if (hasInline) {
@@ -521,21 +527,41 @@ public class LangGraphExternalApiService extends LangGraphExternalApiGrpc.LangGr
             return mapper.toExecuteGraphInput(request, internalThreadId, stored.getDocumentId());
         }
 
-        if (!suppliedRef.isEmpty()) {
-            // Ownership gate. A foreign or expired id is reported exactly like a missing one,
-            // so a caller cannot probe for documents that exist.
-            documentService.requireOwnedBy(suppliedRef, DocumentService.OWNER_B2B, client.tenantId());
+        // Ownership gate, once per reference. A foreign or expired id is reported exactly like
+        // a missing one, so a caller cannot probe for documents that exist.
+        for (String documentRef : suppliedRefs) {
+            documentService.requireOwnedBy(documentRef, DocumentService.OWNER_B2B, client.tenantId());
         }
         return mapper.toExecuteGraphInput(request, internalThreadId, null);
     }
 
-    /** The {@code document_ref} a caller put in the context, trimmed; empty when absent. */
-    private static String suppliedDocumentRef(ExecuteGraphRequest request) {
+    /**
+     * Every {@code document_ref}-shaped value in the run context, in declaration order.
+     *
+     * <p>{@code document_ref} is included whatever its shape - it is the key the contract has
+     * always had, so a caller who sends a malformed id there is told it is missing rather than
+     * having it silently ignored. The other keys are only treated as handles when their value
+     * really looks like one ({@link DocumentService#looksLikeDocumentId}), because the context
+     * is a free-form map that belongs to the graph: a tenant, a date or a flag must never be
+     * refused for not being a document.</p>
+     */
+    private static List<String> suppliedDocumentRefs(ExecuteGraphRequest request) {
         var fields = request.getContext().getFieldsMap();
-        if (!fields.containsKey(DOCUMENT_REF_KEY)) {
-            return "";
+        List<String> refs = new ArrayList<>();
+        var defaultRef = fields.get(DOCUMENT_REF_KEY);
+        if (defaultRef != null && !defaultRef.getStringValue().trim().isEmpty()) {
+            refs.add(defaultRef.getStringValue().trim());
         }
-        return fields.get(DOCUMENT_REF_KEY).getStringValue().trim();
+        for (var entry : fields.entrySet()) {
+            if (DOCUMENT_REF_KEY.equals(entry.getKey())) {
+                continue;
+            }
+            String value = entry.getValue().getStringValue().trim();
+            if (DocumentService.looksLikeDocumentId(value)) {
+                refs.add(value);
+            }
+        }
+        return refs;
     }
 
     /**

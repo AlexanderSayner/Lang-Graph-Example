@@ -273,5 +273,89 @@ class LangGraphExternalApiServiceDocumentTest {
         verify(documentService, never()).requireOwnedBy(anyString(), anyString(), anyString());
         assertThat(observer.errors).isEmpty();
     }
+
+    // --- Several slots in one run --------------------------------------------------------
+    //
+    // A graph may read more than one file in one run, naming each slot after its role rather
+    // than `document_ref`. The gate must follow, or the second reference is the hole the
+    // first one was closed for - and the inline form must refuse to combine with any of them.
+
+    /** A reference in the shape {@link DocumentService#looksLikeDocumentId} recognises. */
+    private static String realShapedRef(char suffix) {
+        return "b2b-11111111-" + String.valueOf(suffix).repeat(32);
+    }
+
+    private static com.google.protobuf.Struct contextWithTwoSlots(String first, String second) {
+        return com.google.protobuf.Struct.newBuilder()
+                .putFields("timesheets_ref",
+                        com.google.protobuf.Value.newBuilder().setStringValue(first).build())
+                .putFields("report_ref",
+                        com.google.protobuf.Value.newBuilder().setStringValue(second).build())
+                .build();
+    }
+
+    @Test
+    @DisplayName("every slot's reference is ownership-checked, not just document_ref")
+    void everySlotIsOwnershipChecked() {
+        String mine = realShapedRef('a');
+        String alsoMine = realShapedRef('b');
+        when(documentService.requireOwnedBy(anyString(), anyString(), anyString()))
+                .thenAnswer(invocation -> stored(invocation.getArgument(0), "b2b", "orchestra"));
+        allowRun();
+
+        var observer = new RecordingObserver<org.sandbox.langgraph.grpc.external.ExecuteGraphResponse>();
+        call(() -> service.executeGraph(
+                runRequest(contextWithTwoSlots(mine, alsoMine), null), observer));
+
+        verify(documentService).requireOwnedBy(mine, "b2b", "orchestra");
+        verify(documentService).requireOwnedBy(alsoMine, "b2b", "orchestra");
+        assertThat(observer.errors).isEmpty();
+    }
+
+    @Test
+    @DisplayName("a foreign reference under a slot key reads as NOT_FOUND, exactly like the default")
+    void aForeignReferenceUnderASlotKeyIsRefused() {
+        when(documentService.requireOwnedBy(anyString(), anyString(), anyString()))
+                .thenThrow(new DocumentNotFoundException("b2b-theirs"));
+        allowRun();
+
+        var observer = new RecordingObserver<org.sandbox.langgraph.grpc.external.ExecuteGraphResponse>();
+        call(() -> service.executeGraph(
+                runRequest(contextWithTwoSlots(realShapedRef('a'), "b2b-theirs"), null), observer));
+
+        StatusRuntimeException error = errorOf(observer);
+        assertThat(error.getStatus().getCode()).isEqualTo(Status.Code.NOT_FOUND);
+        assertThat(error.getStatus().getDescription()).doesNotContain("tenant");
+        verify(langGraphService, never())
+                .executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class), any());
+    }
+
+    @Test
+    @DisplayName("an inline document cannot be combined with a reference under ANY slot key")
+    void anInlineDocumentRefusesToCombineWithASlotReference() {
+        var observer = new RecordingObserver<org.sandbox.langgraph.grpc.external.ExecuteGraphResponse>();
+        call(() -> service.executeGraph(
+                runRequest(contextWithTwoSlots(realShapedRef('a'), "b2b-b"), XLSX_BYTES), observer));
+
+        StatusRuntimeException error = errorOf(observer);
+        assertThat(error.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT);
+        assertThat(error.getStatus().getDescription()).contains("mutually exclusive");
+        verify(documentService, never()).store(anyString(), anyString(), any(), anyString(), anyString(), any());
+        verify(langGraphService, never())
+                .executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class), any());
+    }
+
+    @Test
+    @DisplayName("a context value that is not a document handle is the graph's own business")
+    void aNonDocumentContextValueIsLeftAlone() {
+        allowRun();
+
+        var observer = new RecordingObserver<org.sandbox.langgraph.grpc.external.ExecuteGraphResponse>();
+        call(() -> service.executeGraph(
+                runRequest(contextWith("tenant", "orchestra"), null), observer));
+
+        verify(documentService, never()).requireOwnedBy(anyString(), anyString(), anyString());
+        assertThat(observer.errors).isEmpty();
+    }
 }
 

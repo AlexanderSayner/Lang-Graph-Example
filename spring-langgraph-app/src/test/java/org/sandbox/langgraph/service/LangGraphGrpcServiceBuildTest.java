@@ -13,6 +13,7 @@ import org.sandbox.langgraph.grpc.BuildGraphResponse;
 import org.sandbox.langgraph.grpc.LangGraphServiceGrpc;
 import org.sandbox.langgraph.mapper.GraphGrpcMapper;
 import org.sandbox.langgraph.security.CurrentUser;
+import org.sandbox.langgraph.service.document.DocumentService;
 import org.sandbox.langgraph.service.llm.LlmRequestCredentials;
 import org.sandbox.langgraph.service.user.UserLlmCredentialService;
 
@@ -44,6 +45,7 @@ class LangGraphGrpcServiceBuildTest {
 
     private final GraphGrpcMapper mapper = mock(GraphGrpcMapper.class);
     private final GraphPostgresService store = mock(GraphPostgresService.class);
+    private final DocumentService documentService = mock(DocumentService.class);
     /**
      * A real (not stubbed) resolver: this test only exercises {@code buildGraph}, and a real
      * one with no authenticated session yields an empty run context - the behaviour every
@@ -71,7 +73,8 @@ class LangGraphGrpcServiceBuildTest {
                 .thenReturn(BuildGraphRequest.newBuilder().setGraphId("g1").build());
         when(mapper.toBuildGraphPayload(any(BuildGraphResponse.class)))
                 .thenReturn(new BuildGraphPayload(true, "g1", "ok"));
-        return new LangGraphGrpcService(stub, mapper, new ObjectMapper(), store, requestCredentials);
+        return new LangGraphGrpcService(stub, mapper, new ObjectMapper(), store, requestCredentials,
+                documentService, new CurrentUser());
     }
 
     @Test

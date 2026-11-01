@@ -155,10 +155,13 @@ A run may carry a document (`UploadDocument`, or the inline `document` field on
 `ExecuteGraph`). Both paths converge on `DocumentService`, which validates, digests and
 stores the bytes in `app.documents` and hands back an opaque `document_id`:
 
-* **Owner-bound.** The id is minted as `<owner_kind>-<owner_hash>-<random>`, so it is both
-  unguessable and tied to the tenant that uploaded it. Quoting another tenant's id is
-  refused and reads exactly like a missing one (`DOCUMENT_NOT_FOUND`) - a caller can never
-  probe for ids that exist.
+* **Owner-bound.** The id is minted as `<owner_kind>-<owner_hash>-<random>`; the random part is
+  32 characters from a CSPRNG (about 165 bits), and the prefix names the owner the reference is
+  checked **against**. Both facades run that check before a reference may name a run:
+  `requireOwnedBy` on the B2B side, and `LangGraphGrpcService.requireOwnedDocument` on the
+  GraphQL side - which additionally refuses an anonymous caller outright, since it can own no
+  document. Quoting somebody else's id is refused and reads exactly like a missing one
+  (`DOCUMENT_NOT_FOUND`, on both surfaces) - a caller can never probe for ids that exist.
 * **Not graph-scoped.** A document belongs to a tenant and a thread, not to a graph
   definition; graphs are persisted and shared, a document is one run's input.
 * **Never returned.** No RPC on the B2B surface serves the bytes back. Only the engine
@@ -168,12 +171,14 @@ stores the bytes in `app.documents` and hands back an opaque `document_id`:
   own parts rather than trusting the declared mime type). `UploadDocumentStream` enforces
   the same cap against the running total, so an over-long stream is cut off as it crosses
   the limit.
-* **Expiring.** Rows carry `expires_at` (7 days by default) and `DocumentService.purgeExpired`
-  frees them. Past the deadline a reference resolves to NOT_FOUND, which the engine reports
-  as a node error rather than a crash.
+* **Expiring.** Rows carry `expires_at` (7 days by default) and `DocumentRetentionSweeper`
+  deletes the rows once it elapses - one pass every `documents.retention.sweep-interval-ms`
+  (1 hour by default, `DOCUMENT_SWEEP_INTERVAL_MS`). Past the deadline a reference resolves to
+  NOT_FOUND, which the engine reports as a node error rather than a crash.
 
-The browser path (multipart upload) enforces the same rules through the same service, so
-the two facades cannot drift.
+The browser path (multipart upload) enforces the same rules through the same service, and the
+GraphQL run path enforces the same *reference* rule as the B2B facade (above), so the two doors
+cannot drift in either direction.
 
 ### Cancelling a run
 

@@ -189,3 +189,15 @@ llm:
     #   Python service, which is the hard guarantee that no path can read the shared key.
     #   Inert while master-key is blank - fail open, like REQUIRE.
     policy: ${LLM_CREDENTIALS_POLICY:FALLBACK}
+
+# Uploaded documents (table app.documents). `expires_at` is stamped at upload (+7 days) by
+# DocumentService; the retention SWEEP below is what actually deletes the rows once it
+# elapses. Before this sweep existed the deadline was enforced on read only - an expired
+# reference resolved to NOT_FOUND but the bytes stayed in the table forever.
+documents:
+  retention:
+    # Milliseconds between sweeps. 1 hour: an hour of extra disk for a document nobody asked
+    # about again is nothing, and one pass an hour clears even a busy deployment. Raise it to
+    # slow the sweep down; there is no switch to turn it off, because retention is a contract
+    # and not an optimisation.
+    sweep-interval-ms: ${DOCUMENT_SWEEP_INTERVAL_MS:3600000}

@@ -62,6 +62,11 @@ public class UserLlmCredentialService {
             "open_router", "openrouter",
             "ds", "deepseek");
 
+    /** Longest {@code apiKey} this endpoint accepts. See {@link #save} for why it exists. */
+    private static final int MAX_API_KEY_LENGTH = 4096;
+    /** The {@code yc_folder_id} column is VARCHAR(255) - refusing here beats a Postgres 500. */
+    private static final int MAX_FOLDER_ID_LENGTH = 255;
+
     private final UserLlmCredentialRepository repository;
     private final SecretCipher secretCipher;
     private final LlmCredentialsProperties properties;
@@ -81,7 +86,20 @@ public class UserLlmCredentialService {
         if (apiKey.isEmpty()) {
             throw new IllegalArgumentException("apiKey must not be blank");
         }
+        if (apiKey.length() > MAX_API_KEY_LENGTH) {
+            // A real key is a few dozen characters. The cap is not a rule about providers - it
+            // exists so a field that reaches a shared LLM client cannot also be used to make
+            // this table grow, and so the caller is told here instead of minutes later.
+            throw new IllegalArgumentException(
+                    "apiKey must be at most " + MAX_API_KEY_LENGTH + " characters long");
+        }
         String folderId = (input.ycFolderId() == null) ? "" : input.ycFolderId().trim();
+        if (folderId.length() > MAX_FOLDER_ID_LENGTH) {
+            // The column is VARCHAR(255): a longer value would reach Postgres and come back to
+            // the caller as a 500 instead of a message naming the field.
+            throw new IllegalArgumentException(
+                    "ycFolderId must be at most " + MAX_FOLDER_ID_LENGTH + " characters long");
+        }
 
         // Bound to (user, provider): the ciphertext cannot be moved onto another row.
         String binding = SecretCipher.binding(userId, provider);

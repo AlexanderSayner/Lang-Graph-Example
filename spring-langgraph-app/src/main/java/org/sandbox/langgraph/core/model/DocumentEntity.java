@@ -3,10 +3,11 @@ package org.sandbox.langgraph.core.model;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
-import jakarta.persistence.Lob;
 import jakarta.persistence.Table;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.Instant;
 
@@ -60,10 +61,20 @@ public class DocumentEntity {
     @Column(name = "sha256", length = 64, nullable = false)
     private String sha256;
 
-    // columnDefinition is load-bearing: `spring.jpa.hibernate.ddl-auto=validate` runs against
-    // the real column type at boot, and a plain byte[] would be validated as blob rather than
-    // the bytea the migration declares.
-    @Lob
+    // No @Lob here, and that is load-bearing. On PostgreSQL the dialect registers
+    // Types.BLOB -> BlobJdbcType.BLOB_BINDING (it maps BLOB to `oid`, a large object), and that
+    // binder calls PreparedStatement.setBlob: pgjdbc answers by creating a server-side large
+    // object and binding its OID with setLong, so the parameter is declared `bigint` and
+    // PostgreSQL refuses it against this `bytea` column:
+    //     ERROR: column "content" is of type bytea but expression is of type bigint
+    // `ddl-auto=validate` cannot catch that: the columnDefinition below fixes the DDL type, so
+    // the mismatch exists only in the bind and surfaces at the first INSERT.
+    //
+    // byte[] without @Lob resolves to SqlTypes.VARBINARY, which the PostgreSQL dialect maps to
+    // `bytea` and binds with setBytes - exactly what the migration declares. The explicit
+    // @JdbcTypeCode keeps a later @Lob from silently reintroducing the oid path; the pinning is
+    // asserted by DocumentEntityMappingTest.
+    @JdbcTypeCode(SqlTypes.VARBINARY)
     @Column(name = "content", columnDefinition = "bytea", nullable = false)
     private byte[] content;
 

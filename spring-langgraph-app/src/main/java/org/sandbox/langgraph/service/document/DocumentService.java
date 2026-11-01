@@ -9,12 +9,12 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Storage and owner-scoped retrieval of uploaded documents (.xlsx / .docx).
@@ -58,6 +58,18 @@ public class DocumentService {
      */
     public static final long MAX_CONTENT_BYTES = 8L * 1024 * 1024;
     private static final String ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
+    /** Characters of {@link #ID_ALPHABET} drawn per id - see {@link #newId}. */
+    private static final int ID_SUFFIX_LENGTH = 32;
+    /**
+     * The suffix of a document id MUST come from a CSPRNG: it is what stops one caller reading
+     * another's document by guessing its reference.
+     *
+     * <p>{@code ThreadLocalRandom} is deliberately NOT used here. It is a fast,
+     * non-cryptographic PRNG with a cheaply seeded, recoverable state - not the "JVM's CSPRNG"
+     * an earlier version of this method claimed. {@link SecureRandom} is, and on Linux it is
+     * backed by {@code /dev/urandom}, so drawing a few dozen bytes per upload costs nothing.</p>
+     */
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
     private final DocumentRepository repository;
 
@@ -153,6 +165,51 @@ public class DocumentService {
 
     // --- Validation -------------------------------------------------------------------
 
+    /**
+     * Whether a value is shaped like an id this service would have minted - see {@link #newId}.
+     *
+     * <p>A run's context is a free-form map, so "which of these values is a document handle?"
+     * cannot be answered by looking at the key alone: a graph that reads several files names
+     * each slot after its role ({@code timesheets_ref}, {@code report_ref}, …) and a caller
+     * may add keys of its own. The shape is the one thing a handle always has -
+     * {@code <owner_kind>-<owner_hash>-<32 chars>}, where the owner kind is one of
+     * {@link #OWNER_B2B} / {@link #OWNER_UI}.</p>
+     *
+     * <p>Both facades use this to decide which context values to put through
+     * {@link #requireOwnedBy} before a run may quote them, so a second slot can never slip
+     * past the gate that the default {@code document_ref} gets.</p>
+     *
+     * <p>Mirrored in the engine by {@code looks_like_document_id}
+     * ({@code app/graph_engine/graph_utils.py}) - keep the two in step.</p>
+     */
+    public static boolean looksLikeDocumentId(String value) {
+        if (value == null) {
+            return false;
+        }
+        String candidate = value.trim();
+        // <owner_kind> '-' <1-8 hex chars of the owner hash> '-' <32 chars of the suffix>
+        int firstDash = candidate.indexOf('-');
+        int secondDash = firstDash < 0 ? -1 : candidate.indexOf('-', firstDash + 1);
+        if (firstDash < 0 || secondDash < 0) {
+            return false;
+        }
+        String ownerKind = candidate.substring(0, firstDash);
+        String ownerHash = candidate.substring(firstDash + 1, secondDash);
+        String suffix = candidate.substring(secondDash + 1);
+        if (!OWNER_B2B.equals(ownerKind) && !OWNER_UI.equals(ownerKind)) {
+            return false;
+        }
+        if (ownerHash.isEmpty() || ownerHash.length() > 8) {
+            return false;
+        }
+        if (suffix.length() != ID_SUFFIX_LENGTH || !suffix.chars().allMatch(c ->
+                (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) {
+            return false;
+        }
+        return ownerHash.chars().allMatch(c ->
+                (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'));
+    }
+
     private void requireValid(String ownerKind, String ownerId, byte[] content, String mimeType) {
         if (!OWNER_B2B.equals(ownerKind) && !OWNER_UI.equals(ownerKind)) {
             throw new IllegalArgumentException("Unknown document owner kind: " + ownerKind);
@@ -185,16 +242,28 @@ public class DocumentService {
     /**
      * An id that cannot be guessed and cannot be moved between owners.
      *
-     * <p>The random part carries the unguessability (128 bits from the JVM's CSPRNG); the
-     * prefix carries the owner, which is what makes a reference bound to one tenant even
-     * after it has been logged or echoed back to a client.</p>
+     * <p>Two properties, and only the second one protects the bytes:</p>
+     *
+     * <p><b>Unguessability.</b> The suffix is 32 characters of {@link #ID_ALPHABET} drawn from
+     * {@link SecureRandom} - about 165 bits, and each character is drawn with
+     * {@link SecureRandom#nextInt(int)}, which is rejection-sampled, so no character of the
+     * alphabet is more likely than another. A plain {@code byte % 36} is <em>not</em> equivalent:
+     * 256 is not a multiple of 36, so the first 8 characters of the alphabet would come up
+     * measurably more often, and a byte array fed from a non-cryptographic PRNG is not
+     * unpredictable in the first place.</p>
+     *
+     * <p><b>Ownership.</b> The {@code <owner_kind>-<owner_hash>} prefix is a <em>hint</em>, not a
+     * control: {@link Integer#hashCode(String)} is a 32-bit, non-cryptographic hash of the owner
+     * id, so it cannot authenticate anything. It exists so an operator reading a log line knows
+     * which door the file came through, and so a reference that has been logged or echoed back
+     * to a client still carries its owner's name. What actually keeps one owner out of another's
+     * document is {@link #requireOwnedBy}, which both facades run before a reference is allowed
+     * to name a run.</p>
      */
     private String newId(String ownerKind, String ownerId) {
-        byte[] random = new byte[16];
-        ThreadLocalRandom.current().nextBytes(random);
-        StringBuilder suffix = new StringBuilder(32);
-        for (byte b : random) {
-            suffix.append(ID_ALPHABET.charAt((b & 0xFF) % ID_ALPHABET.length()));
+        StringBuilder suffix = new StringBuilder(ID_SUFFIX_LENGTH);
+        for (int i = 0; i < ID_SUFFIX_LENGTH; i++) {
+            suffix.append(ID_ALPHABET.charAt(SECURE_RANDOM.nextInt(ID_ALPHABET.length())));
         }
         return ownerKind + "-" + Integer.toHexString(ownerId.hashCode()) + "-" + suffix;
     }

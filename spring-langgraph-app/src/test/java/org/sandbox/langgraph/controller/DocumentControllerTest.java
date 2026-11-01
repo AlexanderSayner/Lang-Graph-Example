@@ -91,6 +91,10 @@ class DocumentControllerTest {
                 .containsEntry("documentId", "ui-1")
                 .containsEntry("filename", "q1.xlsx")
                 .containsEntry("sha256", "abc123");
+        // The retention deadline travels too, so the caller can see how long this reference
+        // stays usable instead of having to know the 7-day rule - the B2B DocumentRef
+        // already returns it, and the two surfaces must not disagree about what a reference is.
+        assertThat(response.getBody().get("expiresAt").toString()).isNotBlank();
         // The bytes are never echoed back: the UI already has them, and the point of a
         // reference is that the file travels exactly once.
         assertThat(response.getBody()).doesNotContainKey("content");

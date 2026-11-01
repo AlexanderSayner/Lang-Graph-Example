@@ -87,8 +87,10 @@ service LangGraphExternalApi {
   // Upload a document (.xlsx / .docx) so a run can attach it.
   //
   // The response is a DocumentRef, which a caller then quotes in a run's context under
-  // the key `document_ref`. A DOCUMENT node reads that reference and extracts the file's
-  // text into the run's state; an ACTION node downstream can then reason over it.
+  // the key `document_ref` - or under the key each DOCUMENT node of the graph names, when
+  // the graph reads several files in one run. A DOCUMENT node reads that reference and
+  // extracts the file's text into the run's state; an ACTION node downstream can then
+  // reason over it. Every such reference is tenant-checked before a run may quote it.
   //
   // Why a reference and not the bytes on ExecuteGraph: a document is business data that a
   // caller may want to attach to several runs, and re-uploading it per run would cost the
@@ -175,9 +177,10 @@ message ExecuteGraphRequest {
   //     engine re-detects the format from the ZIP's own parts.
   //   - A size cap applies (see B2B_INTEGRATION.md). Above it, use UploadDocumentStream.
   //
-  // Mutually exclusive with context.document_ref: supplying BOTH is INVALID_ARGUMENT
-  // rather than a silent precedence rule, because "which file did I just attach?" must
-  // never be a guess.
+  // Mutually exclusive with any document reference in the context - `document_ref`, or a
+  // slot key of a graph that reads several files (`timesheets_ref`, `report_ref`, ...).
+  // Supplying both is INVALID_ARGUMENT rather than a silent precedence rule, because "which
+  // file did I just attach?" must never be a guess.
   bytes document = 6;
   string document_filename = 7;
   string document_mime_type = 8;
@@ -332,7 +335,8 @@ message AskCopilotResponse {
 // Uploading a document and attaching it to a run are two separate steps on purpose: the
 // upload is expensive (the bytes cross the wire once) while a run is cheap, and one upload
 // may serve many runs. A DocumentRef is the handle a caller quotes in a run's context under
-// the key `document_ref`; a DOCUMENT node resolves it and extracts the file's text.
+// the key `document_ref`, or under the key each DOCUMENT node of the graph names when it
+// reads several files in one run; a DOCUMENT node resolves it and extracts the file's text.
 
 message UploadDocumentRequest {
   // The thread this document is being attached to. Scoped to the caller's tenant, exactly
@@ -359,7 +363,8 @@ message DocumentChunk {
 // The handle a caller quotes in a run's context. It is opaque: its shape is the server's
 // to change, and it embeds the owner so a stolen ref is useless to another tenant.
 message DocumentRef {
-  // Pass this as context.document_ref on ExecuteGraph / ExecuteGraphStream.
+  // Pass this as context.document_ref on ExecuteGraph / ExecuteGraphStream - or under
+  // whatever key the graph's DOCUMENT node names, for a graph that reads several files.
   string document_id = 1;
   string filename = 2;
   string mime_type = 3;
@@ -393,10 +398,12 @@ enum NodeType {
   NODE_TYPE_HUMAN = 4;
   NODE_TYPE_GRAPH = 5;
   NODE_TYPE_HTTP_REQUEST = 6;
-  // Fetches the document the run's context names (context.document_ref) and extracts
-  // prompt-ready text from it. Deterministic - it never calls a model - so the extraction is
-  // free and exact, and any semantics ("which column is the amount?") belong to a downstream
-  // ACTION node reading variables.document_text.
+  // Fetches the document the run's context names (context.document_ref by default; a graph
+  // that reads several files names a key per node) and extracts prompt-ready text from it.
+  // Deterministic - it never calls a model - so the extraction is free and exact, and any
+  // semantics ("which column is the amount?") belong to a downstream ACTION node reading
+  // the extracted text. Metadata `document_ref_key` / `output_variable` / `meta_variable`
+  // name the slot; `label` titles the extracted text.
   NODE_TYPE_DOCUMENT = 7;
 }
 

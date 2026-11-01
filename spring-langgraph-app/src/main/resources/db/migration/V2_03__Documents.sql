@@ -8,7 +8,14 @@
 --
 -- `expires_at` is the retention contract. A run started before expiry still works; the
 -- DOCUMENT node reports NOT_FOUND for a row that has been swept, which is a node error and
--- not a crash. See DocumentService.TTL_DAYS for the default.
+-- not a crash. The deadline is DocumentService.RETENTION (7 days) and the rows really are
+-- deleted: DocumentRetentionSweeper calls DocumentService.purgeExpired() every
+-- documents.retention.sweep-interval-ms (one hour by default), so a swept row cannot linger
+-- here taking up space forever.
+
+-- `owner_kind` / `owner_id` are what a reference is CHECKED against: both facades call
+-- requireOwnedBy before a reference may name a run, so a stolen or guessed id is refused for
+-- anyone but its owner (and refused as NOT_FOUND, so existence cannot be probed).
 --
 -- The bytes are NOT encrypted at rest here (unlike app.user_llm_credentials): a document is
 -- business data the operator already accepts storing, and encrypting it would make the
@@ -18,8 +25,10 @@
 CREATE TABLE IF NOT EXISTS app.documents
 (
     document_id VARCHAR(64) PRIMARY KEY,
-    -- "b2b:<tenant>" for the gRPC facade, "ui:<user_id>" for the browser path. This is what
-    -- makes the reference unguessable AND makes a stolen reference useless to another owner.
+    -- "b2b:<tenant>" for the gRPC facade, "ui:<user_id>" for the browser path. The
+    -- unguessable part of a reference is the random SUFFIX of document_id (32 characters
+    -- from a CSPRNG); this prefix is the owner the reference is checked against - see the
+    -- note above. A reference is never a bearer token on its own.
     owner_kind  VARCHAR(16)             NOT NULL,
     owner_id    VARCHAR(128)            NOT NULL,
     -- The thread the document was attached to. Informational: it lets an operator answer

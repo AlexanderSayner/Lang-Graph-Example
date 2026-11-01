@@ -20,6 +20,9 @@ import org.sandbox.langgraph.dto.pagination.PageData;
 import org.sandbox.langgraph.exception.LangGraphException;
 import org.sandbox.langgraph.grpc.*;
 import org.sandbox.langgraph.mapper.GraphGrpcMapper;
+import org.sandbox.langgraph.security.CurrentUser;
+import org.sandbox.langgraph.service.document.DocumentNotFoundException;
+import org.sandbox.langgraph.service.document.DocumentService;
 import org.sandbox.langgraph.service.llm.LlmRequestCredentials;
 import org.sandbox.langgraph.service.llm.RequestOrigin;
 import org.sandbox.langgraph.util.JsonDiffUtil;
@@ -33,6 +36,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 @Service
@@ -66,6 +70,15 @@ public class LangGraphGrpcService {
     private final ObjectMapper objectMapper;
     private final GraphPostgresService graphPostgresService;
     private final LlmRequestCredentials requestCredentials;
+    /**
+     * The GraphQL half of the attachment ownership gate. Injected here rather than used from the
+     * controller because this method is the ONE choke point every GraphQL run passes through -
+     * the blocking mutation and the streaming subscription both call it, and neither of them
+     * owns anything.
+     */
+    private final DocumentService documentService;
+    /** Who is calling, for the same gate. Anonymous callers may own no document. */
+    private final CurrentUser currentUser;
 
     public @NonNull BuildGraphPayload buildGraph(BuildGraphInput input) {
         log.debug("Building graph: {}", input.graphId());
@@ -119,11 +132,16 @@ public class LangGraphGrpcService {
      * thread and is not propagated into the subscription that actually drives the gRPC call.
      * Resolving inside the {@code Flux.create} body would silently drop them and bill the
      * shared service key instead - the exact surprise this feature exists to prevent.</p>
+     *
+     * <p>This method is also where an attached document is checked against the caller, so that
+     * the blocking mutation and the streaming subscription enforce one rule - see
+     * {@link #requireOwnedDocument(ExecuteGraphInput, RequestOrigin)}.</p>
      */
     public Flux<@NonNull GraphExecutionEventPayload> executeGraphStream(ExecuteGraphInput input, boolean stream,
                                                                         RequestOrigin origin,
                                                                         String suppliedCredentialsJson) {
         Map<String, String> runContext = requestCredentials.forRequest(origin, suppliedCredentialsJson);
+        requireOwnedDocument(input, origin);
 
         ExecuteGraphRequest request = stream
                 ? mapper.toStreamExecuteGraphRequest(input, runContext)
@@ -153,6 +171,95 @@ public class LangGraphGrpcService {
                 emitter.error(new LangGraphException.GraphExecutionException("Unexpected error: " + t.getMessage(), t));
             }
         });
+    }
+
+    /**
+     * The GraphQL side of the attachment ownership gate - the same rule the B2B facade runs in
+     * {@code withAttachment()}, so neither door can attach a reference that is not the caller's own.
+     *
+     * <p>{@code DocumentService.fetch} deliberately trusts the id it is handed, on the stated
+     * ground that "the engine is inside the trust boundary and is handed the id by whichever
+     * facade already authorised the run". That is only true when <em>every</em> facade checks
+     * first. The B2B one does ({@code requireOwnedBy}, tenant-scoped); this path used not to,
+     * so any GraphQL caller could put an arbitrary {@code context.document_ref} in front of a
+     * graph containing a DOCUMENT node and receive that document's extracted text in the run
+     * output. The mutation carries no {@code @PreAuthorize} and {@code /graphql} is
+     * {@code permitAll}, so "any caller" meant anonymous ones too.</p>
+     *
+     * <p>The reference must therefore resolve to a document the caller owns as
+     * {@link DocumentService#OWNER_UI} - the owner kind {@code POST /api/documents} mints - or
+     * it is refused. A foreign or expired reference is reported exactly like a missing one
+     * ({@link DocumentNotFoundException} - the handler answers {@code NOT_FOUND} with code
+     * {@code DOCUMENT_NOT_FOUND}), the indistinguishable refusal the B2B facade already gives:
+     * a caller must never learn that an id exists.</p>
+     *
+     * <p>An anonymous caller is refused with an instruction rather than a bare
+     * {@code UNAUTHENTICATED}, for the same reason {@code LlmRequestCredentials} words its own
+     * refusal: they can own no document, so a reference can only be a guess at somebody else's,
+     * and the message says how to fix that (sign in and attach from the chat panel).</p>
+     *
+     * <p>Checked <b>before</b> the request is built and before the engine is contacted: the
+     * reference is only ever read by the DOCUMENT node, so refusing here costs nothing but the
+     * run that was never going to be allowed to read the file.</p>
+     *
+     * <p>A graph may read <b>several</b> documents in one run: each DOCUMENT node names its
+     * own context key, so {@code document_ref} is only the default spelling and a second slot
+     * arrives as {@code timesheets_ref} / {@code report_ref} / whatever the graph declared.
+     * Every context value shaped like a document handle therefore goes through the same
+     * {@link DocumentService#requireOwnedBy} - a reference the caller does not own is refused
+     * the same way whichever key it hides under. Values that are not handles (a tenant, a
+     * date, a flag) are left alone: the context is a free-form map and belongs to the graph.</p>
+     *
+     * <p>An anonymous caller is refused with an instruction rather than a bare
+     * {@code UNAUTHENTICATED}, for the same reason {@code LlmRequestCredentials} words its own
+     * refusal: they can own no document, so a reference can only be a guess at somebody else's,
+     * and the message says how to fix that (sign in and attach from the chat panel).</p>
+     *
+     * @throws IllegalArgumentException when the caller is anonymous but sent a reference
+     * @throws DocumentNotFoundException when a reference is expired or belongs to another owner
+     */
+    private void requireOwnedDocument(ExecuteGraphInput input, RequestOrigin origin) {
+        if (origin != RequestOrigin.GRAPHQL) {
+            // B2B brings its own gate, in LangGraphExternalApiService.withAttachment() - and it
+            // runs before the ExecuteGraphInput exists, so the check cannot be moved here.
+            return;
+        }
+        Map<String, Object> context = input.context();
+        if (context == null || context.isEmpty()) {
+            return;
+        }
+
+        // `document_ref` first and regardless of its value, so a malformed handle under the
+        // default key is still reported as a missing document rather than silently ignored.
+        List<String> references = new ArrayList<>();
+        Object defaultRef = context.get("document_ref");
+        String firstRef = defaultRef == null ? "" : String.valueOf(defaultRef).trim();
+        if (!firstRef.isEmpty()) {
+            references.add(firstRef);
+        }
+        for (Map.Entry<String, Object> entry : context.entrySet()) {
+            if (entry.getKey() == null || "document_ref".equals(entry.getKey())) {
+                continue;
+            }
+            String value = entry.getValue() == null ? "" : String.valueOf(entry.getValue()).trim();
+            if (DocumentService.looksLikeDocumentId(value)) {
+                references.add(value);
+            }
+        }
+        if (references.isEmpty()) {
+            return;
+        }
+
+        UUID userId = currentUser.id().orElse(null);
+        if (userId == null) {
+            throw new IllegalArgumentException(
+                    "A document attachment belongs to the account that uploaded it, and you are "
+                            + "not signed in. Sign in, attach the file with the 📎 button in the "
+                            + "chat panel, and run again.");
+        }
+        for (String documentRef : references) {
+            documentService.requireOwnedBy(documentRef, DocumentService.OWNER_UI, userId.toString());
+        }
     }
 
     public @NonNull GraphStatePayload getGraphState(String graphId, String threadId) {
