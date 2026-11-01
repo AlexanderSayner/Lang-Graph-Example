@@ -13,6 +13,7 @@ import pytest
 from docx import Document
 
 from app.graph_engine.document_parser import (
+    CorruptDocumentError,
     DocumentLimits,
     TRUNCATION_MARKER,
     UnsupportedDocumentError,
@@ -47,6 +48,38 @@ def make_docx(paragraphs=(), table_rows=()):
                 table.rows[row_index].cells[col_index].text = cell
     buffer = io.BytesIO()
     document.save(buffer)
+    return buffer.getvalue()
+
+
+def make_xlsx_with_colour(colour="FF44546A"):
+    """A workbook whose header font carries an explicit aRGB colour.
+
+    openpyxl writes that colour into ``xl/styles.xml`` verbatim, which is what gives the
+    stylesheet-repair tests a real ``rgb`` attribute to mangle - openpyxl itself only ever
+    writes valid ones.
+    """
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "Q1"
+    sheet.append(["client", "amount"])
+    sheet.append(["ACME", 1250.0])
+    sheet["A1"].font = openpyxl.styles.Font(bold=True, color=colour)
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def retype_stylesheet(xlsx: bytes, old: bytes, new: bytes) -> bytes:
+    """Rewrite one value in the workbook's stylesheet, leaving every other byte alone."""
+    import zipfile
+
+    source = zipfile.ZipFile(io.BytesIO(xlsx))
+    styles = source.read("xl/styles.xml").replace(old, new)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as target:
+        for info in source.infolist():
+            payload = styles if info.filename == "xl/styles.xml" else source.read(info.filename)
+            target.writestr(info, payload)
     return buffer.getvalue()
 
 
@@ -141,6 +174,92 @@ def test_cells_cannot_break_out_of_their_row():
     assert "has\\|pipe" in parsed.text
 
 
+# --- Stylesheets Excel accepts but openpyxl refuses ------------------------------------
+#
+# openpyxl validates every rgb="..." attribute against the 8-digit aRGB form and refuses
+# the WHOLE workbook otherwise. Exported spreadsheets do emit shorter values, and those
+# files open fine in Excel, so losing every row over a colour is the wrong answer. These
+# tests pin the repair pass, which touches the stylesheet only and only when the first
+# load already failed.
+
+
+def test_a_seven_digit_colour_is_repaired_and_the_rows_survive():
+    # The exact malformation seen in a real exported timesheet: "F44546A" - an RGB triplet
+    # whose alpha pair was written once.
+    content = retype_stylesheet(
+        make_xlsx_with_colour(), b'rgb="FF44546A"', b'rgb="F44546A"')
+
+    parsed = parse_document(content, filename="q1.xlsx")
+
+    assert parsed.kind == "xlsx"
+    assert parsed.truncated is False
+    assert "| client | amount |" in parsed.text
+    assert "| ACME | 1250 |" in parsed.text
+
+
+def test_a_colour_that_is_not_hex_is_replaced_rather_than_dropped():
+    content = retype_stylesheet(
+        make_xlsx_with_colour(), b'rgb="FF44546A"', b'rgb="auto"')
+
+    parsed = parse_document(content)
+
+    # The colour falls back to openpyxl's own default, the data is untouched.
+    assert "| ACME | 1250 |" in parsed.text
+
+
+def test_an_invalid_palette_entry_does_not_break_the_repair():
+    """``<rgbColor>`` entries REQUIRE the attribute, so it must be replaced, never dropped.
+
+    Dropping it would leave openpyxl raising on the repaired workbook - turning a file the
+    repair could have saved back into a refusal.
+    """
+    # Every openpyxl workbook carries the 56-entry indexed palette, which contains
+    # rgb="00FF0000" twice (entries 2 and 10).
+    content = retype_stylesheet(
+        make_xlsx_with_colour(), b'rgb="00FF0000"', b'rgb="zzz"')
+
+    parsed = parse_document(content)
+
+    assert "| ACME | 1250 |" in parsed.text
+
+
+def test_a_well_formed_workbook_is_never_rewritten():
+    from app.graph_engine.document_parser import _repair_xlsx_styles
+
+    # Nothing to repair -> None, so the caller keeps its ORIGINAL error and a clean file
+    # is passed through untouched.
+    assert _repair_xlsx_styles(make_xlsx_with_colour()) is None
+    assert _repair_xlsx_styles(make_xlsx({"S": [["a"]]})) is None
+    assert _repair_xlsx_styles(b"not a zip at all") is None
+    # Six hex digits are something openpyxl accepts on its own (it prepends the alpha), so
+    # they are not a reason to rewrite the archive either.
+    six_digits = retype_stylesheet(
+        make_xlsx_with_colour(), b'rgb="FF44546A"', b'rgb="44546A"')
+    assert _repair_xlsx_styles(six_digits) is None
+
+
+def test_a_still_unreadable_workbook_reports_the_error_the_caller_saw(monkeypatch):
+    """The retry must not swallow a failure that was never about the stylesheet."""
+    content = retype_stylesheet(
+        make_xlsx_with_colour(), b'rgb="FF44546A"', b'rgb="F44546A"')
+    calls = []
+
+    def fake_load_workbook(*args, **kwargs):
+        calls.append(1)
+        raise ValueError(f"failure number {len(calls)}")
+
+    monkeypatch.setattr("openpyxl.load_workbook", fake_load_workbook)
+
+    with pytest.raises(CorruptDocumentError) as excinfo:
+        parse_document(content, filename="q1.xlsx")
+
+    # The repair ran (two attempts), the message is the FIRST failure, and the retry's own
+    # failure stays reachable as the cause.
+    assert len(calls) == 2
+    assert "failure number 1" in str(excinfo.value)
+    assert "failure number 2" in str(excinfo.value.__cause__)
+
+
 # --- Word documents -------------------------------------------------------------------
 
 
@@ -197,7 +316,6 @@ def test_corrupt_xlsx_reports_a_parse_error():
     with pytest.raises(Exception) as excinfo:
         parse_document(content)
 
-    from app.graph_engine.document_parser import CorruptDocumentError
     assert isinstance(excinfo.value, (CorruptDocumentError, UnsupportedDocumentError))
 
 

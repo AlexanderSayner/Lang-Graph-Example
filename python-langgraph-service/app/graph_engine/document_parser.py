@@ -10,14 +10,21 @@ truncated mid-answer by the provider. The caps below make that truncation explic
 Anything semantic ("which column is the amount?") stays an ordinary ACTION node downstream:
 the extracted text lands in ``variables.document_text``, and the engine's existing
 ``extract_json_from_response`` + ``merge_dicts`` reducers do the mapping.
+
+A file that Excel accepts is accepted here too. The one thing openpyxl is strict about is
+the shape of a colour (aRGB hex in the stylesheet), and exported spreadsheets do emit
+malformed ones - so a workbook that fails to load is retried once with that part repaired
+in memory (see ``_repair_xlsx_styles``). The repair is confined to the stylesheet, so the
+number formats that turn date cells into dates survive it.
 """
 
 import io
 import logging
+import re
 import zipfile
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +150,98 @@ def _detect_kind(content: bytes) -> Optional[str]:
 
 
 
+# --- Tolerating a stylesheet Excel accepts but openpyxl refuses ------------------------
+# openpyxl validates colour values strictly: every ``rgb`` attribute must be aRGB hex of
+# exactly 8 (or 6) digits. Exported spreadsheets are not always written that way - a
+# generator that emits the RGB triplet with the alpha pair written once ("F44546A"), or a
+# name like "auto", still opens in Excel - and rejecting the WHOLE workbook over a colour
+# would throw away every row of a perfectly readable file. The stylesheet is therefore
+# repaired in memory (see _repair_xlsx_styles), and only after the first load has already
+# failed, so a well-formed workbook is never touched and a genuinely damaged one still
+# reports its own original error.
+
+_XLSX_STYLES_PART = "xl/styles.xml"
+_RGB_ATTRIBUTE = re.compile(rb'(?<![A-Za-z])rgb\s*=\s*"([^"]*)"')
+# openpyxl's own acceptance rule (openpyxl.styles.colors.aRGB_REGEX): 8 or 6 hex digits.
+# Six is accepted as it stands (openpyxl prepends a transparent alpha), so such a value is
+# not something to repair.
+_ACCEPTABLE_COLOUR = re.compile(rb"^[0-9A-Fa-f]{8}$|^[0-9A-Fa-f]{6}$")
+_HEX_7 = re.compile(rb"^[0-9A-Fa-f]{7}$")
+# openpyxl.styles.colors.BLACK - what openpyxl itself writes for a <color> with no rgb
+# attribute at all, and therefore a value it always accepts.
+_FALLBACK_COLOUR = b"00000000"
+
+
+def _normalise_colour(value: bytes) -> Optional[bytes]:
+    """A spelling openpyxl accepts, or ``None`` when the value may stay as it is.
+
+    Eight- and six-hex-digit values are accepted as they stand, so ``None`` means "leave
+    this one alone" (cleaning still applies: a "#"-prefixed value is valid once the hash is
+    gone, and is then reported as a fix). Seven hex digits read as an RGB triplet whose
+    alpha pair was written once - padded, that is the colour the author saw. Anything else
+    is replaced with openpyxl's own default rather than dropped: ``<rgbColor>`` entries of
+    the indexed palette REQUIRE the attribute, so removing it would turn a repairable
+    workbook into an unreadable one. Either way the value only decides whether the file
+    loads at all - a colour never changes a cell's text, which is all this parser reads.
+    """
+    cleaned = value.strip().lstrip(b"#").replace(b" ", b"")
+    if _ACCEPTABLE_COLOUR.match(cleaned):
+        return None if cleaned == value else cleaned
+    if _HEX_7.match(cleaned):
+        return b"F" + cleaned
+    return _FALLBACK_COLOUR
+
+
+def _fix_rgb_attributes(styles_xml: bytes) -> Tuple[bytes, int]:
+    """The stylesheet with every ``rgb`` attribute openpyxl would refuse corrected."""
+    fixed = 0
+
+    def replace(match: "re.Match[bytes]") -> bytes:
+        nonlocal fixed
+        normalised = _normalise_colour(match.group(1))
+        if normalised is None:
+            return match.group(0)  # already valid, left byte-for-byte as it was
+        fixed += 1
+        return b'rgb="' + normalised + b'"'
+
+    return _RGB_ATTRIBUTE.sub(replace, styles_xml), fixed
+
+
+def _repair_xlsx_styles(content: bytes) -> Optional[bytes]:
+    """The same workbook with a repaired stylesheet, or ``None`` when nothing to repair.
+
+    ``None`` is also the answer for a package without a stylesheet or one that cannot be
+    opened at all - the caller then re-raises its ORIGINAL failure, so a repair attempt
+    never masks a different, real problem. Every entry is copied through its own
+    ``ZipInfo``, so the container keeps its own compression method and order; only the
+    stylesheet's bytes differ. Operates on bytes throughout: the XML is not decoded, so
+    a workbook carrying non-UTF-8 elsewhere is passed through untouched.
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as source:
+            try:
+                styles_xml = source.read(_XLSX_STYLES_PART)
+            except KeyError:
+                return None  # no stylesheet to repair (unusual, but legal)
+
+            repaired, fixed = _fix_rgb_attributes(styles_xml)
+            if fixed == 0:
+                return None
+
+            output = io.BytesIO()
+            with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as target:
+                for info in source.infolist():
+                    payload = repaired if info.filename == _XLSX_STYLES_PART \
+                        else source.read(info.filename)
+                    target.writestr(info, payload)
+    except (zipfile.BadZipFile, OSError, RuntimeError) as exc:
+        logger.warning("Could not repair the workbook stylesheet: %s", exc)
+        return None
+
+    logger.info("Repaired %d malformed colour value(s) in the workbook stylesheet", fixed)
+    return output.getvalue()
+
+
 def _parse_xlsx(content: bytes, limits: DocumentLimits) -> ParsedDocument:
     # read_only + data_only: stream the rows instead of materialising the sheet, and take the
     # CACHED computed values - a formula string would be noise to a model asked about numbers.
@@ -151,7 +250,22 @@ def _parse_xlsx(content: bytes, limits: DocumentLimits) -> ParsedDocument:
     try:
         workbook = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
     except Exception as exc:  # openpyxl raises a zoo of types for a damaged package
-        raise CorruptDocumentError(f"Could not read the spreadsheet: {exc}") from exc
+        # One retry, with the stylesheet normalised: openpyxl's strict colour validation is
+        # the single most common reason a file that opens fine in Excel is refused here, and
+        # the repair is confined to that part so number formats (and with them every date
+        # cell) survive. The repaired workbook is loaded with the SAME read_only/data_only
+        # flags, so the extraction below is identical whichever attempt succeeded.
+        repaired = _repair_xlsx_styles(content)
+        if repaired is None:
+            raise CorruptDocumentError(f"Could not read the spreadsheet: {exc}") from exc
+        try:
+            workbook = openpyxl.load_workbook(io.BytesIO(repaired), read_only=True,
+                                              data_only=True)
+        except Exception as repaired_exc:
+            # The stylesheet was not the real problem after all: report the failure the
+            # caller saw, chained to what the retry found, so nothing is hidden.
+            raise CorruptDocumentError(f"Could not read the spreadsheet: {exc}") \
+                from repaired_exc
 
     warnings: List[str] = []
     sections: List[str] = []
