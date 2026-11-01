@@ -10,12 +10,15 @@ import {
     fetchGraphQL, LIST_QUERY, VIEW_QUERY, HISTORY_QUERY,
     BALANCE_QUERY, EXECUTE_MUTATION, CANCEL_EXECUTION_MUTATION, SAVE_MUTATION,
     DELETE_MUTATION, REWIND_MUTATION, COPILOT_MUTATION,
-    CLAIM_THREADS_MUTATION,
-    layoutGraph, NODE_TYPES, EXECUTION_EVENT_TYPES, nodeClassName
+    CLAIM_THREADS_MUTATION, LLM_CREDENTIALS_QUERY, LLM_BILLING_SETTINGS_QUERY,
+    collectGraphProviders, collectGraphLlm, normalizeProviderId,
+    documentSlots, documentContextFor, layoutGraph, NODE_TYPES, EXECUTION_EVENT_TYPES,
+    nodeClassName, uploadDocument
 } from './constants';
 import CopilotTab from './copilot';
 import Sidebar from './components/Sidebar';
 import ChatPanel from './components/ChatPanel';
+import LlmSettings from './components/LlmSettings';
 import StateModal from './components/StateModal';
 import { Toast, useToast } from './components/Toast';
 
@@ -24,6 +27,11 @@ import { Toast, useToast } from './components/Toast';
 function App() {
     const [graphs, setGraphs] = useState([]);
     const [selected, setSelected] = useState(null);
+
+    // Catalogue state, so the canvas can tell "the list is still arriving" / "the list is
+    // empty" apart from "a graph is being loaded" - see the canvasPlaceholder below.
+    const [graphsStatus, setGraphsStatus] = useState('loading'); // 'loading' | 'ready' | 'error'
+    const [graphsError, setGraphsError] = useState(null);
 
     // --- Graph rendering state ---
     // status: 'idle' | 'loading' | 'ready' | 'error'.
@@ -55,6 +63,17 @@ function App() {
     const [input, setInput] = useState("");
     const [threadId, setThreadId] = useState(Date.now().toString());
     const [loading, setLoading] = useState(false);
+    // The documents this run will carry, one per slot the loaded graph declares (a slot is a
+    // DOCUMENT node's context key, see documentSlots in constants.js). All three are keyed by
+    // that ref key: `attachments` holds the server's reference once the upload lands,
+    // `attachmentUploading` and `attachmentError` describe the request itself, so a refused
+    // file is shown rather than silently dropped.
+    const [attachments, setAttachments] = useState({});
+    const [attachmentUploading, setAttachmentUploading] = useState({});
+    const [attachmentError, setAttachmentError] = useState({});
+    // The slots of the LOADED graph, captured from the same raw view that carries each node's
+    // metadata - not derived from the React Flow projection, which throws the metadata away.
+    const [documentSlotList, setDocumentSlotList] = useState([]);
     const chatEndRef = useRef(null);
     // AbortController of the in-flight ExecuteGraph request, so the Cancel button can stop it.
     const abortControllerRef = useRef(null);
@@ -65,6 +84,95 @@ function App() {
     const [modalViewMode, setModalViewMode] = useState('diff'); // 'diff' | 'full'
 
     const [graphStatus, setGraphStatus] = useState('idle'); // Values: 'idle' | 'running' | 'waiting' | 'finished'
+
+    // --- Personal LLM keys -----------------------------------------------------------
+    // The browser never sees a key (it is encrypted server-side on save and only a masked
+    // hint comes back); it only needs to know WHICH providers the account holds a key for,
+    // so a run that is about to bill the shared service key can say so before it happens.
+    const [isLoggedIn, setIsLoggedIn] = useState(false);
+    const [savedKeyProviders, setSavedKeyProviders] = useState([]);
+    const [graphProviders, setGraphProviders] = useState([]);
+    // What the graph itself declares as its LLM (graph config + per-node overrides), kept in
+    // step with `graphProviders` so the canvas badge can never describe a previous graph.
+    const [graphLlm, setGraphLlm] = useState({ provider: '', model: '', nodeOverrides: [] });
+    const [showLlmSettings, setShowLlmSettings] = useState(false);
+
+    const loadSavedKeys = async () => {
+        try {
+            const data = await fetchGraphQL(LLM_CREDENTIALS_QUERY);
+            setSavedKeyProviders((data?.llmCredentials || []).map(c => c.provider));
+        } catch (err) {
+            // Anonymous, feature disabled, or a transient failure: an empty list just means
+            // "no personal keys", which is the pre-migration behaviour.
+            setSavedKeyProviders([]);
+        }
+    };
+
+    // Loaded only once the session is known: for an anonymous visitor the query is refused,
+    // which would write an AccessDenied stack trace to the server log on every page load.
+    // Signing out clears the list, so one account's provider names are never shown - even
+    // briefly - to the next visitor of this tab.
+    useEffect(() => {
+        if (isLoggedIn) loadSavedKeys();
+        else setSavedKeyProviders([]);
+    }, [isLoggedIn]);
+
+    // Providers this graph explicitly asks for; only meaningful once we know the account's keys.
+    const missingKeyProviders = graphProviders.filter(p => !savedKeyProviders.includes(p));
+
+    // Whether the LOADED graph contains a DOCUMENT node - the only thing that reads an
+    // attached file (the engine's _process_document). Without one a run carries the
+    // reference and nothing consumes it, so the chat panel can say so before the run
+    // instead of leaving the model to explain that it cannot read the file.
+    //
+    // Two things this must get right:
+    // - The node type lives at `data.nodeType` (see the mapping below in loadGraph), NOT
+    //   `data.type` - that field name is the builder's own convention (builder.jsx builds
+    //   its nodes with `data.type`); the viewer has never written it. Reading `data.type`
+    //   here was always `undefined`, so this check answered "no" for every ready graph
+    //   and the banner showed even on a graph that had a DOCUMENT node.
+    // - Until the graph is actually 'ready' the answer is UNKNOWN, not "no". ChatPanel's
+    //   own default is `true` (unknown => stay silent); because we always pass the prop
+    //   explicitly, `false` for 'idle'/'loading'/'error' would read as "this graph has no
+    //   DOCUMENT node" and flash the banner while a graph was still loading.
+    //
+    // Derived from the attachment slots rather than by scanning the canvas nodes: they are
+    // built from the same view, and `declared` is exactly this question ("did the graph
+    // declare a node that reads a document?"), so the two can never disagree.
+    const graphHasDocumentNode =
+        renderState.status !== 'ready' || documentSlotList.some(slot => slot.declared);
+
+    // How a run with no personal key resolves, and what a graph that selects no provider of
+    // its own runs on: `serviceKeyForbidden` (policy refuses it), `serviceKeyEnabled` (the
+    // engine's kill switch - false means no path may read the shared key) and
+    // `defaultProvider` (the engine's LLM_PROVIDER, named so the hint can say it out loud).
+    // Read once, without a session - deployment facts, not user data.
+    const [billingSettings, setBillingSettings] = useState({
+        policy: 'FALLBACK',
+        personalKeysEnabled: true,
+        serviceKeyForbidden: false,
+        defaultProvider: '',
+        // The model that same default provider resolves to (empty until the engine answers,
+        // and staying empty when it cannot be reached - never a guess). It is what the canvas
+        // badge shows for a graph that pins no model of its own.
+        defaultModel: '',
+        serviceKeyEnabled: true,
+    });
+    useEffect(() => {
+        let alive = true;
+        (async () => {
+            try {
+                const data = await fetchGraphQL(LLM_BILLING_SETTINGS_QUERY);
+                if (alive && data?.llmBillingSettings) {
+                    setBillingSettings(prev => ({ ...prev, ...data.llmBillingSettings }));
+                }
+            } catch {
+                // Unknown backend (older version / no proxy): keep the FALLBACK defaults,
+                // which are also the deployment defaults.
+            }
+        })();
+        return () => { alive = false; };
+    }, []);
 
     // --- Copilot State ---
     const [copilotMessages, setCopilotMessages] = useState([]);
@@ -143,10 +251,25 @@ function App() {
         document.addEventListener('mouseup', stopResizing);
     }, []);
 
-    // Load Graph List
-    useEffect(() => {
-        fetchGraphQL(LIST_QUERY).then(d => setGraphs(d.listGraphs.graphs)).catch(console.error);
+    // Load Graph List. The catalogue state is tracked explicitly because the canvas
+    // placeholder distinguishes "the list is still arriving" (or failed to arrive) from
+    // "a graph is being loaded" - see the canvasPlaceholder state machine below.
+    const loadGraphList = useCallback(() => {
+        setGraphsStatus('loading');
+        setGraphsError(null);
+        fetchGraphQL(LIST_QUERY)
+            .then(d => {
+                setGraphs(d.listGraphs.graphs);
+                setGraphsStatus('ready');
+            })
+            .catch(err => {
+                console.error("❌ Failed to load the graph list:", err);
+                setGraphsError(err.message);
+                setGraphsStatus('error');
+            });
     }, []);
+
+    useEffect(() => { loadGraphList(); }, [loadGraphList]);
 
     // Scroll chat to bottom
     useEffect(() => {
@@ -233,6 +356,16 @@ function App() {
         setSelectedEdge(null);
         setNodes([]);
         setEdges([]);
+        // Cleared before the fetch: otherwise a failed load (or a fast switch) would keep
+        // showing the PREVIOUS graph's providers in the "no personal key" banner.
+        setGraphProviders([]);
+        setGraphLlm({ provider: '', model: '', nodeOverrides: [] });
+        setDocumentSlotList([]);
+        // A file is attached for a specific graph's slots; carrying one across a switch would
+        // send it to a graph that may not read it at all. Cleared with everything else above.
+        setAttachments({});
+        setAttachmentUploading({});
+        setAttachmentError({});
         setRenderState({ graphId: id, seq, status: 'loading', error: null, fitMode: 'all' });
 
         fetchGraphQL(VIEW_QUERY, { graphId: id })
@@ -246,6 +379,14 @@ function App() {
 
                 const view = d.getGraphView;
 
+                // Which providers this graph will ask for (node metadata > graph config),
+                // captured here because the raw view - not the React Flow projection - is
+                // what carries `config` and each node's `metadata`.
+                setGraphProviders(collectGraphProviders(view));
+                setGraphLlm(collectGraphLlm(view));
+                // The attachment slots this graph declares - one per DOCUMENT node key, which
+                // is how the graph says "this file is the timesheet, that one is the report".
+                setDocumentSlotList(documentSlots(view));
                 // Create Label Map
                 const labels = {};
                 view.nodes.forEach(n => { if(n.metadata?.label) labels[n.nodeId] = n.metadata.label; });
@@ -339,6 +480,51 @@ function App() {
     const fitViewOptions = renderState.fitMode === 'readable'
         ? { padding: 0.2, duration: 250, maxZoom: 1, minZoom: 0.45 }
         : { padding: 0.2, duration: 250, maxZoom: 1 };
+
+    // Placeholder shown while no graph is mounted. 'idle' must NOT read as "loading": a visitor
+    // who has not picked a graph (or has none) is not waiting for anything.
+    const canvasPlaceholder = renderState.status === 'error'   ? 'error'
+        : renderState.status === 'loading'                     ? 'loading-graph'
+        : graphsStatus === 'loading'                           ? 'loading-list'
+        : graphsStatus === 'error'                             ? 'list-error'
+        : graphs.length === 0                                  ? 'empty'
+        :                                                        'none-selected';
+
+    // --- The canvas badge: which LLM a run of THIS graph will use --------------------
+    // The engine's own precedence is applied here (resolve_llm_config in
+    // python-langgraph-service/app/clients/llm.py): the graph's llm_provider / llm_model when
+    // it declares them, otherwise the engine's default provider and the model that provider
+    // resolves to (`defaultModel`, i.e. LLM_MODEL / <PROVIDER>_MODEL / the preset).
+    //
+    // The one subtlety: that default model belongs to the engine's default provider. A graph
+    // that pins a DIFFERENT provider inherits that provider's own default model instead, and
+    // the browser has no way to name it - so it says "Provider default" rather than printing
+    // a model name belonging to an unrelated provider (e.g. a Groq node showing "yandexgpt").
+    const engineDefaultProvider = normalizeProviderId(billingSettings.defaultProvider);
+    const followsEngineModel = !graphLlm.provider
+        || !engineDefaultProvider
+        || graphLlm.provider === engineDefaultProvider;
+    const llmBadgeModel = graphLlm.model
+        || (followsEngineModel ? billingSettings.defaultModel : '')
+        || '';
+    const llmBadgeProvider = graphLlm.provider || billingSettings.defaultProvider;
+
+    // Everything the chip can not fit, spelled out: what is pinned where, where the model
+    // came from, and which nodes depart from it.
+    const llmBadgeTooltip = [
+        graphLlm.model
+            ? `Model: ${graphLlm.model} (pinned in this graph's settings).`
+            : llmBadgeModel
+                ? `Model: ${llmBadgeModel} - this graph pins no model, so it runs on the engine's default.`
+                : `Model: not pinned - the selected provider falls back to its own default model.`,
+        graphLlm.provider
+            ? `Provider: ${graphLlm.provider} (pinned in this graph's settings).`
+            : billingSettings.defaultProvider
+                ? `Provider: ${billingSettings.defaultProvider} - this graph pins none, so the engine's default is used.`
+                : `Provider: the server default (the engine did not report which one).`,
+        ...graphLlm.nodeOverrides.map(node =>
+            `${node.nodeId}: ${[node.provider, node.model].filter(Boolean).join(' / ')} (overrides the graph default).`),
+    ].join('\n');
 
     // Re-apply node and edge styles when selection or execution state changes
     useEffect(() => {
@@ -435,6 +621,45 @@ function App() {
         return () => clearTimeout(timer);
     }, [collapsed]);
 
+    // --- Attachments -------------------------------------------------------------------
+    //
+    // The file is uploaded the moment it is chosen, not when the run starts: the user gets
+    // an immediate "too large / wrong type" answer instead of discovering it after writing
+    // their message, and the run itself then travels as ordinary context. One upload per
+    // SLOT, because that is how a graph says which file is which - a graph that reads two
+    // files asks for two, and each lands under its own context key.
+    const handlePickAttachment = async (refKey, event) => {
+        const file = event.target.files && event.target.files[0];
+        // Reset the picker so choosing the SAME file twice still fires a change event.
+        event.target.value = '';
+        if (!file) return;
+
+        setAttachments(prev => ({ ...prev, [refKey]: null }));
+        setAttachmentError(prev => ({ ...prev, [refKey]: null }));
+        setAttachmentUploading(prev => ({ ...prev, [refKey]: true }));
+        try {
+            const result = await uploadDocument(file, threadId);
+            setAttachments(prev => ({ ...prev, [refKey]: result }));
+        } catch (err) {
+            setAttachmentError(prev => ({ ...prev, [refKey]: err.message || 'The upload failed.' }));
+        } finally {
+            setAttachmentUploading(prev => ({ ...prev, [refKey]: false }));
+        }
+    };
+
+    const handleClearAttachment = (refKey) => {
+        setAttachments(prev => {
+            const next = { ...prev };
+            delete next[refKey];
+            return next;
+        });
+        setAttachmentError(prev => {
+            const next = { ...prev };
+            delete next[refKey];
+            return next;
+        });
+    };
+
     const handleExecute = async () => {
         if (!input.trim() || !selected) return;
 
@@ -451,8 +676,13 @@ function App() {
         abortControllerRef.current = controller;
 
         try {
+            // Every attachment travels as run context, one entry per slot the graph declares,
+            // which is the only channel the engine's DOCUMENT nodes read. Each is quoted on
+            // the NEXT run and cleared after a successful one, so a follow-up message does not
+            // silently re-attach the same files.
+            const runContext = documentContextFor(documentSlotList, attachments);
             const data = await fetchGraphQL(EXECUTE_MUTATION, {
-                input: { graphId: selected, threadId: threadId, input: userText }
+                input: { graphId: selected, threadId: threadId, input: userText, context: runContext }
             }, { signal: controller.signal });
 
             // A newer run started (or a cancel cleared this one) while we were waiting.
@@ -483,7 +713,14 @@ function App() {
             } else if (errorText) {
                 setMessages(prev => [...prev, { type: 'error', text: errorText }]);
             } else {
-                setMessages(prev => [...prev, { type: 'bot', text: outputText, tokens: result.totalTokens || -1  }]);
+                // llmBilling says who paid for this run: "user" (a personal key), "service"
+                // (the shared key) or "mixed". Recorded on the message so the chat can say so.
+                setMessages(prev => [...prev, {
+                    type: 'bot',
+                    text: outputText,
+                    tokens: result.totalTokens || -1,
+                    llmBilling: result.llmBilling || ''
+                }]);
             }
 
             if (eventType === EXECUTION_EVENT_TYPES.END) {
@@ -491,6 +728,9 @@ function App() {
                 if (rewindOriginNodeId) {
                     setRewindOriginNodeId(null);
                 }
+                // The attachments were consumed by this run. Leaving them set would silently
+                // re-attach the same files to the next message, which is a surprise at best.
+                setAttachments({});
             } else if (eventType === EXECUTION_EVENT_TYPES.WAITING_FOR_INPUT) {
                 setGraphStatus('waiting');
             } else if (eventType === EXECUTION_EVENT_TYPES.START || eventType === EXECUTION_EVENT_TYPES.NODE_END) {
@@ -580,6 +820,23 @@ function App() {
         if(!window.confirm("Delete?")) return;
         await fetchGraphQL(DELETE_MUTATION, { graphId: id });
         setGraphs(prev => prev.filter(g => g.graphId !== id));
+
+        // The deleted graph may be the one on the canvas: clear it, otherwise the canvas keeps
+        // showing (and offering to save / auto-layout) a graph that no longer exists.
+        if (selected === id) setSelected(null);
+        if (renderState.graphId === id) {
+            loadSeqRef.current += 1;           // drop any in-flight answer for the deleted graph
+            viewportsRef.current.delete(id);   // its remembered viewport is meaningless now
+            setNodes([]);
+            setEdges([]);
+            setSelectedNodeId(null);
+            setSelectedEdge(null);
+            setActiveNodeIds(new Set());
+            setRewindOriginNodeId(null);
+            setGraphProviders([]);
+            setGraphLlm({ provider: '', model: '', nodeOverrides: [] });
+            setRenderState(prev => ({ ...prev, graphId: null, status: 'idle', error: null }));
+        }
     };
 
     const resetThread = () => {
@@ -673,8 +930,13 @@ function App() {
 
             const result = data.askCopilot;
             if (result.success) {
-                // Add AI response to local state
-                setCopilotMessages(prev => [...prev, { role: 'ai', text: result.aiResponse, tokens: result.totalTokens || -1 }]);
+                // llmBilling records who paid: "user" (their personal key) or "service".
+                setCopilotMessages(prev => [...prev, {
+                    role: 'ai',
+                    text: result.aiResponse,
+                    tokens: result.totalTokens || -1,
+                    llmBilling: result.llmBilling || ''
+                }]);
             } else {
                 setCopilotMessages(prev => [...prev, { role: 'error', text: result.errorMessage }]);
             }
@@ -705,11 +967,37 @@ function App() {
                 copyGraphId={copyGraphId} copiedGraph={copiedGraph} handleDelete={handleDelete}
                 realBalance={realBalance}
                 onUserLoggedIn={handleUserLoggedIn}
+                onAuthStateChange={setIsLoggedIn}
+                onOpenLlmSettings={() => setShowLlmSettings(true)}
+                hasPersonalKeys={savedKeyProviders.length > 0}
+            />
+
+            {/* Personal LLM key manager - one modal, opened from the sidebar and from the
+                chat's "you are about to bill the shared key" hint. */}
+            <LlmSettings
+                open={showLlmSettings}
+                onClose={() => setShowLlmSettings(false)}
+                onChanged={loadSavedKeys}
             />
 
             {/* Main Content */}
             <div className="main-area">
                 <div className="canvas-container">
+                    {/* Which LLM a run of the loaded graph will use. Read-only, and shown only
+                        while a graph is actually mounted - the placeholder states below speak
+                        for themselves when the canvas is empty. */}
+                    {renderState.status === 'ready' && (
+                        <div className="canvas-llm-badge" title={llmBadgeTooltip}>
+                            <span aria-hidden="true">🧠</span>
+                            <b>{llmBadgeModel || 'Provider default'}</b>
+                            <span className="canvas-llm-provider">{llmBadgeProvider || 'server default'}</span>
+                            {graphLlm.nodeOverrides.length > 0 && (
+                                <span className="canvas-llm-overrides">
+                                    +{graphLlm.nodeOverrides.length} node override{graphLlm.nodeOverrides.length === 1 ? '' : 's'}
+                                </span>
+                            )}
+                        </div>
+                    )}
                     <div className="canvas-actions">
                         <button className="save-layout-btn" onClick={handleSaveLayout} disabled={!canvasKey}>Save Layout</button>
                         <div className="layout-dir" role="group" aria-label="Auto layout direction">
@@ -764,15 +1052,35 @@ function App() {
                             <Controls />
                         </ReactFlow>
                     ) : (
-                        <div className={`canvas-message${renderState.status === 'error' ? ' error' : ''}`}>
-                            {renderState.status === 'error' ? (
+                        <div className={`canvas-message${canvasPlaceholder === 'error' || canvasPlaceholder === 'list-error' ? ' error' : ''}`}>
+                            {canvasPlaceholder === 'error' && (
                                 <>
                                     <strong>Failed to load the graph.</strong>
                                     <span className="canvas-message-detail">{renderState.error}</span>
                                     <button onClick={() => loadGraph(renderState.graphId)}>Retry</button>
                                 </>
-                            ) : (
-                                <span>Loading graph…</span>
+                            )}
+                            {canvasPlaceholder === 'loading-graph' && <span>Loading graph…</span>}
+                            {canvasPlaceholder === 'loading-list' && <span>Loading graph list…</span>}
+                            {canvasPlaceholder === 'list-error' && (
+                                <>
+                                    <strong>Failed to load the graph list.</strong>
+                                    <span className="canvas-message-detail">{graphsError}</span>
+                                    <button onClick={loadGraphList}>Retry</button>
+                                </>
+                            )}
+                            {canvasPlaceholder === 'empty' && (
+                                <>
+                                    <strong>No graphs yet.</strong>
+                                    <span className="canvas-message-detail">Create a graph to open it here.</span>
+                                    <button onClick={() => window.location.href = 'builder.html?isNew=true'}>+ New Graph</button>
+                                </>
+                            )}
+                            {canvasPlaceholder === 'none-selected' && (
+                                <>
+                                    <strong>No graph selected.</strong>
+                                    <span className="canvas-message-detail">Pick a graph in the sidebar to open it.</span>
+                                </>
                             )}
                         </div>
                     )}
@@ -794,6 +1102,21 @@ function App() {
                     handleCopilotSend={handleCopilotSend}
                     copilotLLM={copilotLLM} setCopilotLLM={setCopilotLLM}
                     formatTimestamp={formatTimestamp}
+                    missingKeyProviders={isLoggedIn ? missingKeyProviders : []}
+                    serviceKeyForbidden={billingSettings.serviceKeyForbidden}
+                    serviceKeyEnabled={billingSettings.serviceKeyEnabled}
+                    defaultProvider={billingSettings.defaultProvider}
+                    savedKeyProviders={isLoggedIn ? savedKeyProviders : []}
+                    graphUsesServerDefault={renderState.status === 'ready' && graphProviders.length === 0}
+                    graphHasDocumentNode={graphHasDocumentNode}
+                    selectedGraphName={graphs.find(g => g.graphId === selected)?.graphName || ''}
+                    onOpenLlmSettings={() => setShowLlmSettings(true)}
+                    documentSlots={documentSlotList}
+                    attachments={attachments}
+                    attachmentUploading={attachmentUploading}
+                    attachmentError={attachmentError}
+                    onPickAttachment={handlePickAttachment}
+                    onClearAttachment={handleClearAttachment}
                 />
             </div>
         </React.Fragment>

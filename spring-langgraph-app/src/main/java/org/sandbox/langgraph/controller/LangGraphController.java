@@ -96,7 +96,10 @@ public class LangGraphController {
                             ExecutionEventType.ERROR,
                             null,
                             0,
-                            "Execution failed: " + e.getMessage()
+                            "Execution failed: " + e.getMessage(),
+                            // Unknown: the run failed before/during a model call, so we
+                            // cannot honestly claim an owner for its tokens.
+                            null
                     ));
                 });
     }

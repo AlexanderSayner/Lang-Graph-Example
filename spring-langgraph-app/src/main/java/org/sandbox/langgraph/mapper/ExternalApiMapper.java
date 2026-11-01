@@ -55,13 +55,23 @@ public final class ExternalApiMapper {
     /**
      * @param internalThreadId the tenant-scoped thread id, resolved by
      *                         {@code B2BThreadScope} before this mapping runs
+     * @param documentRef      a document this run attaches, resolved and tenant-checked by
+     *                         the facade; null means "no attachment". It is injected into
+     *                         the context here rather than passed to the engine separately,
+     *                         because {@code context.document_ref} IS the whole contract -
+     *                         the engine's DOCUMENT node reads it straight out of the run
+     *                         context, exactly as a caller-uploaded reference does.
      */
     public ExecuteGraphInput toExecuteGraphInput(org.sandbox.langgraph.grpc.external.ExecuteGraphRequest request,
-                                                  String internalThreadId) {
+                                                 String internalThreadId, String documentRef) {
+        Map<String, Object> context = new LinkedHashMap<>(ProtoJson.toMap(request.getContext()));
+        if (documentRef != null && !documentRef.isBlank()) {
+            context.put("document_ref", documentRef);
+        }
         return new ExecuteGraphInput(
                 request.getGraphId(),
                 request.getInput(),
-                ProtoJson.toMap(request.getContext()),
+                context,
                 internalThreadId
         );
     }
@@ -107,6 +117,7 @@ public final class ExternalApiMapper {
             case NODE_TYPE_HUMAN -> org.sandbox.langgraph.core.model.NodeType.HUMAN;
             case NODE_TYPE_GRAPH -> org.sandbox.langgraph.core.model.NodeType.GRAPH;
             case NODE_TYPE_HTTP_REQUEST -> org.sandbox.langgraph.core.model.NodeType.HTTP_REQUEST;
+            case NODE_TYPE_DOCUMENT -> org.sandbox.langgraph.core.model.NodeType.DOCUMENT;
             // Protobuf enums carry an extra UNRECOGNIZED sentinel for values the
             // client sent with a newer contract; it is as invalid as UNSPECIFIED.
             case NODE_TYPE_UNSPECIFIED, UNRECOGNIZED ->
@@ -305,6 +316,26 @@ public final class ExternalApiMapper {
                 .setAiResponse(nullToEmpty(payload.aiResponse()))
                 .setTotalTokens(payload.totalTokens() == null ? 0 : payload.totalTokens())
                 .setErrorMessage(nullToEmpty(payload.errorMessage()))
+                .build();
+    }
+
+    /**
+     * A stored document becomes the handle an integrator quotes in a run's context.
+     *
+     * <p>The bytes are deliberately absent: this is the ONLY shape a caller ever sees, and
+     * the whole point of a reference is that the file travels once, into storage, and never
+     * again. {@code expires_at} is rendered ISO-8601 so a caller can tell "will this still
+     * resolve next week?" without a second call.</p>
+     */
+    public org.sandbox.langgraph.grpc.external.DocumentRef toDocumentRef(
+            org.sandbox.langgraph.core.model.DocumentEntity document) {
+        return org.sandbox.langgraph.grpc.external.DocumentRef.newBuilder()
+                .setDocumentId(nullToEmpty(document.getDocumentId()))
+                .setFilename(nullToEmpty(document.getFilename()))
+                .setMimeType(nullToEmpty(document.getMimeType()))
+                .setSizeBytes(document.getSizeBytes())
+                .setSha256(nullToEmpty(document.getSha256()))
+                .setExpiresAt(document.getExpiresAt() == null ? "" : document.getExpiresAt().toString())
                 .build();
     }
 

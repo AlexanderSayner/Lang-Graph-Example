@@ -162,6 +162,8 @@ def test_a_rejected_definition_surfaces_the_reason_as_invalid_argument():
     behind an internal-error page."""
     async def scenario():
         servicer = LangGraphServiceServicer.__new__(LangGraphServiceServicer)
+        # Read by the attachment guard in ExecuteGraph; empty = nothing built here = quiet.
+        servicer._document_ref_keys = {}
 
         async def _load(_graph_id):
             raise ValueError("Malformed condition 'output = true' on node 'judge'")

@@ -32,6 +32,10 @@ service LangGraphService {
   // List the models a provider offers (drives the UI's model suggestions)
   rpc ListLlmModels (ListLlmModelsRequest) returns (ListLlmModelsResponse);
 
+  // Service-wide LLM settings the backend exposes to the UI: which provider a graph that
+  // selects none actually runs on, and whether the shared service key may be spent at all.
+  rpc GetLlmSettings (GetLlmSettingsRequest) returns (GetLlmSettingsResponse);
+
   // Cancel a graph execution that is currently running (mid-node, mid-LLM call).
   rpc CancelGraphExecution (CancelGraphExecutionRequest) returns (CancelGraphExecutionResponse);
 }
@@ -46,10 +50,29 @@ service HttpRequestService {
 
 service JavaGraphProvider {
   rpc GetGraphDefinition (GetGraphDefinitionRequest) returns (GetGraphDefinitionResponse);
+  // Fetches an uploaded document's raw bytes so the engine's DOCUMENT node can parse it.
+  //
+  // Internal only (it is served on spring.grpc.server.port, which the Python engine already
+  // calls back into for graph definitions): the engine is trusted here, and the caller that
+  // supplied the reference was already authorised by whichever facade stored the document.
+  // A missing or expired id is NOT_FOUND, which the DOCUMENT node reports as a node error.
+  rpc GetDocument (GetDocumentRequest) returns (GetDocumentResponse);
 }
 
 message GetGraphDefinitionRequest {string graph_id = 1;}
 message GetGraphDefinitionResponse {string definition_json = 1;}
+
+message GetDocumentRequest {
+  // Opaque, tenant- or user-scoped id handed back by UploadDocument (or derived by the
+  // facade from an inline document on ExecuteGraph).
+  string document_id = 1;
+}
+
+message GetDocumentResponse {
+  bytes content = 1;
+  string filename = 2;
+  string mime_type = 3;
+}
 
 // Message for building a graph
 message BuildGraphRequest {
@@ -96,6 +119,11 @@ message ExecuteGraphResponse {
   int64 timestamp = 5;
   string error_message = 6;
   int32 total_tokens = 7;
+  // Who paid for this node's model call: "user" (a personal key from the account
+  // database), "service" (the shared config-based key) or "" (the node called no model).
+  // Surfaced in the UI as "served by the shared service key" so a subsidised run is
+  // never invisible. Never carries a credential.
+  string llm_billing = 8;
 }
 
 // Message for getting graph state
@@ -218,6 +246,21 @@ message CopilotRequest {
   // COPILOT_MODEL, falling back to the service default (LLM_PROVIDER / LLM_MODEL).
   string copilot_provider = 7;
   string copilot_model = 8;
+  // Per-user credentials resolved server-side by Spring from the account database, as a
+  // JSON object keyed by provider id:
+  //   {"openai": {"api_key": "sk-...", "folder_id": ""}, "yandex": {...}}
+  // One map (rather than a single key) because a graph resolves its provider per NODE:
+  // node metadata beats graph config, so a single run can touch several providers.
+  // Empty means "use the service settings" (the legacy config-based mode).
+  string llm_credentials_json = 9;
+  // "1" when llm.credentials.policy=REQUIRE: refuse the question instead of falling back
+  // to the shared service key. Without it the copilot would be a hole in the policy.
+  string require_user_key = 10;
+  // Who is asking: ""/"user" for an interactive GraphQL session, "b2b" for the B2B facade.
+  // It only picks the wording of the "no key for this provider" failure - an integrator
+  // must be told to send llm_credentials_json, not to click the 🔑 Keys button in a UI it
+  // never sees. Never billed, never persisted, never rendered into a prompt.
+  string caller_kind = 11;
 }
 
 message CopilotResponse {
@@ -225,6 +268,9 @@ message CopilotResponse {
   string ai_response = 2;
   string error_message = 3;
   int32 total_tokens = 4;
+  // "user" when the answer came from a personal key, "service" from the shared key.
+  // Never carries a credential.
+  string llm_billing = 5;
 }
 
 // ==========================================
@@ -245,6 +291,18 @@ message ListLlmModelsResponse {
   repeated LlmModel models = 2;
   string source = 3;         // "live" when fetched from the provider, "curated" as a fallback
   string error_message = 4;  // Set when the live list failed and we fell back to curated
+}
+
+// ==========================================
+// Service-wide LLM settings (UI honesty)
+// ==========================================
+
+message GetLlmSettingsRequest {}
+
+message GetLlmSettingsResponse {
+  string default_provider = 1;  // LLM_PROVIDER: what a node/graph without a provider resolves to
+  string default_model = 2;     // the model that same default provider will use
+  bool service_key_enabled = 3; // LLM_SERVICE_KEY_ENABLED: false = no path may spend the shared key
 }
 
 // ==========================================

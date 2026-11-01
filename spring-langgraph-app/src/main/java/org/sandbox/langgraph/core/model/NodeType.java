@@ -18,7 +18,13 @@ public enum NodeType {
     ACTION,
     HUMAN,
     GRAPH,
-    HTTP_REQUEST;
+    HTTP_REQUEST,
+    /**
+     * Deterministic document extraction. Fetches the file the run's context names and writes
+     * the extracted text to {@code variables.document_text} - it never calls a model, so it is
+     * deliberately absent from the AI node types in the UI and in the engine's {@code uses_llm}.
+     */
+    DOCUMENT;
 
     /**
      * Lenient parser used on the <b>read</b> path (persisted graph definitions coming
@@ -46,6 +52,9 @@ public enum NodeType {
             case "HUMAN", "HUMAN_INPUT", "INTERRUPT" -> HUMAN;
             case "GRAPH", "SUBGRAPH" -> GRAPH;
             case "HTTP_REQUEST", "HTTP" -> HTTP_REQUEST;
+            // A document is attached per RUN (context.document_ref), so a DOCUMENT node in a
+            // persisted graph is a placeholder that reads whatever the caller sends.
+            case "DOCUMENT", "FILE", "ATTACHMENT" -> DOCUMENT;
             // Pre-rename name of the very same node type (an outbound HTTP requester).
             // Read path only: definitions persisted before the rename still carry TOOL.
             case "TOOL" -> HTTP_REQUEST;

@@ -13,5 +13,10 @@ public record ExecuteGraphPayload(
         ExecutionEventType eventType,
         Map<String, Object> state,
         Integer totalTokens,
-        String errorMessage
+        String errorMessage,
+        /**
+         * Whole-run billing: "user", "service", "mixed" (a run spanning both) or null when no
+         * node called a model at all. Folded by {@code GraphExecutionAggregator}.
+         */
+        String llmBilling
 ) {}

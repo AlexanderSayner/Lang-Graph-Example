@@ -9,7 +9,9 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Folds an execution event stream into the single {@link ExecuteGraphPayload} a
@@ -47,7 +49,7 @@ public class GraphExecutionAggregator {
      * @return an empty run: success, no output, no event type, no state, zero tokens, no error
      */
     public static ExecuteGraphPayload emptyPayload() {
-        return new ExecuteGraphPayload(true, null, null, null, 0, null);
+        return new ExecuteGraphPayload(true, null, null, null, 0, null, null);
     }
 
     /**
@@ -65,6 +67,12 @@ public class GraphExecutionAggregator {
         private String errorMessage;
         private boolean hasError;
         private Integer totalTokens = 0;
+        /**
+         * Every billing marker seen in the run. Node events carry per-node owners while the
+         * final END event already carries the engine's run-level verdict, so the fold has to
+         * accept both shapes and still land on one honest word.
+         */
+        private final Set<String> billing = new HashSet<>();
 
         Accumulator accumulate(GraphExecutionEventPayload event) {
             if (event.output() != null && !event.output().isEmpty()) {
@@ -81,6 +89,9 @@ public class GraphExecutionAggregator {
             if (event.totalTokens() != null && event.totalTokens() > this.totalTokens) {
                 this.totalTokens = event.totalTokens();
             }
+            if (event.llmBilling() != null && !event.llmBilling().isBlank()) {
+                this.billing.add(event.llmBilling());
+            }
             return this;
         }
 
@@ -91,8 +102,33 @@ public class GraphExecutionAggregator {
                     eventType,
                     state.isEmpty() ? null : state,
                     totalTokens,
-                    errorMessage
+                    errorMessage,
+                    foldBilling(billing)
             );
         }
+    }
+
+    /**
+     * {@code null} when no node spent tokens at all; {@code mixed} as soon as a run touched
+     * both a personal key and the shared one - a user owning an OpenAI key but not an
+     * Anthropic one will hit that, and the UI must not overstate who paid.
+     */
+    private static String foldBilling(Set<String> seen) {
+        if (seen.isEmpty() || seen.stream().allMatch(String::isBlank)) {
+            return null;
+        }
+        if (seen.contains("mixed")) {
+            return "mixed";
+        }
+        if (seen.contains("user") && seen.contains("service")) {
+            return "mixed";
+        }
+        if (seen.contains("user")) {
+            return "user";
+        }
+        if (seen.contains("service")) {
+            return "service";
+        }
+        return null;
     }
 }

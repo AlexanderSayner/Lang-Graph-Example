@@ -26,3 +26,8 @@ uvloop>=0.21.0; platform_system != "Windows"
 httpx>=0.28.1
 booktype
 cachetools
+
+# Document parsing for the DOCUMENT node (deterministic extraction - no OCR, no LLM).
+# .xlsx and .docx are ZIP containers whose text is already text; these two libraries read it.
+openpyxl>=3.1
+python-docx>=1.1

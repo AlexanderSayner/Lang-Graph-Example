@@ -83,6 +83,29 @@ service LangGraphExternalApi {
 
   // Ask the graph copilot about a graph/thread.
   rpc AskCopilot (AskCopilotRequest) returns (AskCopilotResponse);
+
+  // Upload a document (.xlsx / .docx) so a run can attach it.
+  //
+  // The response is a DocumentRef, which a caller then quotes in a run's context under
+  // the key `document_ref` - or under the key each DOCUMENT node of the graph names, when
+  // the graph reads several files in one run. A DOCUMENT node reads that reference and
+  // extracts the file's text into the run's state; an ACTION node downstream can then
+  // reason over it. Every such reference is tenant-checked before a run may quote it.
+  //
+  // Why a reference and not the bytes on ExecuteGraph: a document is business data that a
+  // caller may want to attach to several runs, and re-uploading it per run would cost the
+  // same bytes every time. `ExecuteGraph` still accepts an inline document for callers
+  // that prefer one round trip (see ExecuteGraphRequest.document).
+  //
+  // The reference is scoped to the caller's tenant, so quoting another tenant's ref in a
+  // run is rejected rather than silently attached. Uploaded bytes are never returned by
+  // any RPC on this service: only the engine, over the internal port, can read them.
+  rpc UploadDocument (UploadDocumentRequest) returns (DocumentRef);
+
+  // The same upload, as a client-streaming call, for documents larger than a single
+  // message can carry. The final UploadDocumentChunk must repeat filename/mime_type; the
+  // server concatenates the data chunks in arrival order.
+  rpc UploadDocumentStream (stream DocumentChunk) returns (DocumentRef);
 }
 
 // ============================== Graph building ==============================
@@ -128,6 +151,39 @@ message ExecuteGraphRequest {
   string thread_id = 2;
   string input = 3;
   google.protobuf.Struct context = 4;
+  // The caller's own LLM keys, as one JSON object keyed by provider id:
+  //   {"openai": {"api_key": "sk-...", "folder_id": ""}, "yandex": {...}}
+  // Optional. When present the run spends THOSE keys (per provider, per node;
+  // llm_billing reports "user"); when absent the run resolves through the
+  // deployment's own rules and a deployment that does not run on its shared
+  // key rejects the call with x-error-code LLM_KEY_REQUIRED instead.
+  // Never logged, never persisted, never echoed back - it travels as
+  // server-built run context (a key smuggled through `context` is stripped).
+  // A key here is the SAME secret as any API key: enable b2b.grpc.ssl.* on
+  // any port reachable beyond the cluster before sending one.
+  string llm_credentials_json = 5;
+
+  // --- Attachments (inline form) ---
+  //
+  // A caller that prefers ONE round trip can send the document bytes here instead of
+  // calling UploadDocument first. The facade stores them and injects the resulting
+  // reference into the run's context itself - exactly the way it already derives
+  // llm_credentials_json server-side - so a DOCUMENT node still resolves a reference and
+  // the caller never has to learn an id.
+  //
+  // Rules, all enforced before the bytes are stored:
+  //   - `document` empty means "no attachment"; the other two fields are then ignored.
+  //   - Only .xlsx and .docx are accepted, and `document_mime_type` is advisory - the
+  //     engine re-detects the format from the ZIP's own parts.
+  //   - A size cap applies (see B2B_INTEGRATION.md). Above it, use UploadDocumentStream.
+  //
+  // Mutually exclusive with any document reference in the context - `document_ref`, or a
+  // slot key of a graph that reads several files (`timesheets_ref`, `report_ref`, ...).
+  // Supplying both is INVALID_ARGUMENT rather than a silent precedence rule, because "which
+  // file did I just attach?" must never be a guess.
+  bytes document = 6;
+  string document_filename = 7;
+  string document_mime_type = 8;
 }
 
 message ExecuteGraphResponse {
@@ -261,6 +317,10 @@ message AskCopilotRequest {
   string selected_edge_json = 6;
   string copilot_provider = 7;
   string copilot_model = 8;
+  // The caller's own LLM keys, same shape and same rules as
+  // ExecuteGraphRequest.llm_credentials_json (the copilot must not be a way
+  // around a deployment that will not spend its shared key).
+  string llm_credentials_json = 9;
 }
 
 message AskCopilotResponse {
@@ -268,6 +328,53 @@ message AskCopilotResponse {
   string ai_response = 2;
   int32 total_tokens = 3;
   string error_message = 4;
+}
+
+// ================================ Documents ===============================
+//
+// Uploading a document and attaching it to a run are two separate steps on purpose: the
+// upload is expensive (the bytes cross the wire once) while a run is cheap, and one upload
+// may serve many runs. A DocumentRef is the handle a caller quotes in a run's context under
+// the key `document_ref`, or under the key each DOCUMENT node of the graph names when it
+// reads several files in one run; a DOCUMENT node resolves it and extracts the file's text.
+
+message UploadDocumentRequest {
+  // The thread this document is being attached to. Scoped to the caller's tenant, exactly
+  // like ExecuteGraphRequest.thread_id, and recorded for the audit trail.
+  string thread_id = 1;
+  string filename = 2;
+  // Advisory. The engine re-detects the format from the file's own ZIP parts, so a wrong
+  // value is tolerated - but an UNKNOWN value (not one of the two supported types, nor
+  // application/octet-stream) is rejected here rather than discovered later.
+  string mime_type = 3;
+  bytes content = 4;
+}
+
+// One frame of UploadDocumentStream. The same shape as UploadDocumentRequest; the server
+// concatenates `content` across frames in arrival order and takes filename/mime_type from
+// the LAST frame, so a client may repeat them on every chunk without harm.
+message DocumentChunk {
+  string thread_id = 1;
+  string filename = 2;
+  string mime_type = 3;
+  bytes content = 4;
+}
+
+// The handle a caller quotes in a run's context. It is opaque: its shape is the server's
+// to change, and it embeds the owner so a stolen ref is useless to another tenant.
+message DocumentRef {
+  // Pass this as context.document_ref on ExecuteGraph / ExecuteGraphStream - or under
+  // whatever key the graph's DOCUMENT node names, for a graph that reads several files.
+  string document_id = 1;
+  string filename = 2;
+  string mime_type = 3;
+  int64 size_bytes = 4;
+  // Hex SHA-256 of the stored bytes. Lets a caller confirm what it uploaded and lets an
+  // operator correlate a reference with a file, without ever returning the bytes.
+  string sha256 = 5;
+  // ISO-8601 retention deadline. After it the reference stops resolving; quoting it in a
+  // run is then a node error rather than a crash.
+  string expires_at = 6;
 }
 
 // ================================= Enums ===================================
@@ -291,6 +398,13 @@ enum NodeType {
   NODE_TYPE_HUMAN = 4;
   NODE_TYPE_GRAPH = 5;
   NODE_TYPE_HTTP_REQUEST = 6;
+  // Fetches the document the run's context names (context.document_ref by default; a graph
+  // that reads several files names a key per node) and extracts prompt-ready text from it.
+  // Deterministic - it never calls a model - so the extraction is free and exact, and any
+  // semantics ("which column is the amount?") belong to a downstream ACTION node reading
+  // the extracted text. Metadata `document_ref_key` / `output_variable` / `meta_variable`
+  // name the slot; `label` titles the extracted text.
+  NODE_TYPE_DOCUMENT = 7;
 }
 
 enum ExecutionEventType {

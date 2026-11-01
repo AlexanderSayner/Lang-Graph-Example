@@ -76,6 +76,48 @@ export const fetchGraphQL = async (query, variables, options = {}) => {
     throw new Error(`GraphQL request failed. Tried: ${problems.join(' | ')}`);
 };
 
+// --- Document upload ---------------------------------------------------------------
+//
+// Attachments are REST/multipart, not GraphQL: the file is binary and base64-in-JSON would
+// inflate every upload by a third and hit the GraphQL message limit. Same origin rules as
+// fetchGraphQL above - the same-origin /api path first (it goes through the dev server's
+// proxy and nginx's), the absolute backend URL as the fallback when the UI is served
+// without one.
+export const DOCUMENT_UPLOAD_URL = `${window.location.origin}/api/documents`;
+
+/**
+ * Upload one file and return `{ documentId, filename, sizeBytes, sha256 }`.
+ *
+ * @param {File}   file     the chosen file; the browser sets its own content type
+ * @param {string} threadId the thread it will be attached to (audit only; may be blank)
+ * @param {object} options  optional AbortSignal, so a stuck upload can be cancelled
+ * @returns {Promise<object>} the reference to quote as context.document_ref on the next run
+ */
+export const uploadDocument = async (file, threadId, options = {}) => {
+    const form = new FormData();
+    form.append('file', file);
+    if (threadId) form.append('threadId', threadId);
+
+    const response = await fetch(DOCUMENT_UPLOAD_URL, {
+        method: 'POST',
+        credentials: 'include',
+        signal: options.signal,
+        body: form,
+    });
+
+    const contentType = response.headers.get('content-type') || '';
+    const text = await response.text();
+    if (!contentType.includes('json')) {
+        // Same SPA-fallback failure as fetchGraphQL: no /api proxy, so index.html came back.
+        throw new Error(`no JSON from ${DOCUMENT_UPLOAD_URL} (HTTP ${response.status})`);
+    }
+    const json = JSON.parse(text);
+    if (!response.ok || json.success === false) {
+        throw new Error(json.errorMessage || `Upload failed (HTTP ${response.status})`);
+    }
+    return json;
+};
+
 // --- Auth Queries & Mutations ---
 export const GET_CURRENT_USER_QUERY = `
     query {
@@ -120,6 +162,56 @@ export const REGISTER_MUTATION = `
 
 export const LOGOUT_MUTATION = `mutation { logout }`;
 
+// --- Personal LLM API keys ---
+//
+// The key itself only ever travels browser -> server: it is encrypted server-side (AES-256-GCM,
+// bound to user+provider) and never comes back. Listing returns a MASKED hint built at save
+// time, so rendering this list cannot decrypt anything.
+
+export const LLM_CREDENTIALS_QUERY = `
+    query {
+        llmCredentials {
+            provider
+            maskedKey
+            ycFolderId
+            updatedAt
+        }
+    }
+`;
+
+// Deployment-level billing facts: decides whether the chat's pre-run hint may promise "these
+// nodes will run on the shared service key" (FALLBACK / REQUIRE) or must warn that the run
+// will be REFUSED instead (PERSONAL_ONLY). Needs no session - it is not user data.
+export const LLM_BILLING_SETTINGS_QUERY = `
+    query {
+        llmBillingSettings {
+            policy
+            personalKeysEnabled
+            serviceKeyForbidden
+            defaultProvider
+            defaultModel
+            serviceKeyEnabled
+        }
+    }
+`;
+
+export const SAVE_LLM_CREDENTIAL_MUTATION = `
+    mutation SaveLlmCredential($input: SaveLlmCredentialInput!) {
+        saveLlmCredential(input: $input) {
+            provider
+            maskedKey
+            ycFolderId
+            updatedAt
+        }
+    }
+`;
+
+export const DELETE_LLM_CREDENTIAL_MUTATION = `
+    mutation DeleteLlmCredential($provider: String!) {
+        deleteLlmCredential(provider: $provider)
+    }
+`;
+
 // --- Existing Queries/Mutations ---
 export const LIST_QUERY = `query { listGraphs(pageSize: 100) { graphs { graphId graphName nodeCount } } }`;
 export const VIEW_QUERY = `query Get($graphId: String!) { getGraphView(graphId: $graphId) { config nodes { nodeId nodeType metadata position { x y } } edges { source target condition } } }`;
@@ -131,7 +223,7 @@ export const HISTORY_QUERY = `query History($graphId: String!, $threadId: String
     }
 }`;
 export const BALANCE_QUERY = `query { getYandexBalance { success balance currency errorMessage } }`;
-export const EXECUTE_MUTATION = `mutation Exec($input: ExecuteGraphInput!) { executeGraph(input: $input) { output eventType state totalTokens errorMessage } }`;
+export const EXECUTE_MUTATION = `mutation Exec($input: ExecuteGraphInput!) { executeGraph(input: $input) { output eventType state totalTokens errorMessage llmBilling } }`;
 
 // Stops a running graph execution immediately (mid-node, mid-LLM call) server-side, so token
 // spend halts without waiting for the node to finish. `cancelled=false` just means the run
@@ -140,7 +232,7 @@ export const CANCEL_EXECUTION_MUTATION = `mutation CancelExec($graphId: String!,
 export const SAVE_MUTATION = `mutation Save($graphId: String!, $positions: [NodePositionInput!]!) { saveGraphCoordinates(graphId: $graphId, positions: $positions) { success } }`;
 export const DELETE_MUTATION = `mutation Del($graphId: String!) { deleteGraph(graphId: $graphId) { success } }`;
 export const REWIND_MUTATION = `mutation Rewind($graphId: String!, $threadId: String!, $stateJson: String!, $targetNodeId: String) { rewindGraph(graphId: $graphId, threadId: $threadId, stateJson: $stateJson, targetNodeId: $targetNodeId) { success message } }`;
-export const COPILOT_MUTATION = `mutation AskCopilot($graphId: String!, $threadId: String!, $message: String!, $chatHistory: String!, $selectedNodeId: String, $selectedEdgeJson: String) { askCopilot(graphId: $graphId, threadId: $threadId, message: $message, copilotChatHistoryJson: $chatHistory, selectedNodeId: $selectedNodeId, selectedEdgeJson: $selectedEdgeJson) { success aiResponse totalTokens errorMessage } }`;
+export const COPILOT_MUTATION = `mutation AskCopilot($graphId: String!, $threadId: String!, $message: String!, $chatHistory: String!, $selectedNodeId: String, $selectedEdgeJson: String) { askCopilot(graphId: $graphId, threadId: $threadId, message: $message, copilotChatHistoryJson: $chatHistory, selectedNodeId: $selectedNodeId, selectedEdgeJson: $selectedEdgeJson) { success aiResponse totalTokens errorMessage llmBilling } }`;
 
 // --- Strict enum contract (mirrors the GraphQL enums in spring-langgraph-app schema.graphqls) ---
 // The GraphQL gateway now types nodeType / eventType / method / status as enums, so these values are
@@ -154,6 +246,9 @@ export const NODE_TYPES = Object.freeze({
     HUMAN: 'HUMAN',
     GRAPH: 'GRAPH',
     HTTP_REQUEST: 'HTTP_REQUEST',
+    // Deterministic document extraction: reads the file the run's context names and writes
+    // the text to variables.document_text. Never calls a model - see AI_NODE_TYPES below.
+    DOCUMENT: 'DOCUMENT',
 });
 
 // Multi-provider LLM selection. Keep the values in sync with
@@ -168,6 +263,78 @@ export const LLM_PROVIDER_OPTIONS = Object.freeze([
     { value: 'openrouter', label: 'OpenRouter' },
     { value: 'anthropic', label: 'Anthropic (Claude)' },
 ]);
+
+// What an account can actually STORE a personal key for: the same list without "Inherit",
+// because inheriting is a graph-level decision, not a credential.
+export const LLM_CREDENTIAL_PROVIDERS = Object.freeze(
+    LLM_PROVIDER_OPTIONS.filter(option => option.value !== '')
+);
+
+// --- Provider id normalisation -----------------------------------------------------
+// Mirrors PROVIDER_ALIASES in python-langgraph-service/app/clients/llm.py so a graph that
+// says "claude" is matched against a credential stored under "anthropic".
+const PROVIDER_ALIASES = Object.freeze({
+    claude: 'anthropic',
+    'open-router': 'openrouter',
+    open_router: 'openrouter',
+    ds: 'deepseek',
+});
+
+export const normalizeProviderId = (value) => {
+    const id = String(value || '').trim().toLowerCase();
+    return PROVIDER_ALIASES[id] || id;
+};
+
+/**
+ * Which providers a graph will actually ask for, applying the engine's own precedence:
+ * node metadata beats graph config. Only EXPLICIT choices count - a graph that inherits
+ * everywhere runs on the server default, which the browser deliberately cannot see, so
+ * there is nothing to warn about (and nothing to attribute).
+ *
+ * @param {{ config?: object, nodes?: Array<{metadata?: object}> }} view getGraphView payload
+ * @returns {string[]} canonical provider ids, deduplicated
+ */
+export const collectGraphProviders = (view) => {
+    const providers = new Set();
+    const add = (value) => {
+        const id = normalizeProviderId(value);
+        if (id) providers.add(id);
+    };
+    add(view?.config?.llm_provider);
+    (view?.nodes || []).forEach(node => add(node?.metadata?.llm_provider));
+    return Array.from(providers);
+};
+
+/**
+ * What the viewer's canvas badge needs to name the model a run of this graph will use:
+ * the graph-level default plus every node that departs from it. Same precedence the engine
+ * applies (see `resolve_llm_config` in python-langgraph-service/app/clients/llm.py):
+ * node metadata beats graph config, and an empty provider/model means "inherit" - which the
+ * viewer then resolves against the engine's own default rather than guessing a name.
+ *
+ * Only REAL differences are reported as overrides: a node that declares nothing, or exactly
+ * what the graph already declares, changes nothing a reader of the badge would care about.
+ *
+ * @param {{ config?: object, nodes?: Array<{nodeId?: string, metadata?: object}> }} view getGraphView payload
+ * @returns {{provider: string, model: string, nodeOverrides: Array<{nodeId: string, provider: string, model: string}>}}
+ */
+export const collectGraphLlm = (view) => {
+    const text = (value) => String(value ?? '').trim();
+    const config = view?.config || {};
+    const provider = normalizeProviderId(config.llm_provider);
+    const model = text(config.llm_model);
+    const nodeOverrides = [];
+
+    (view?.nodes || []).forEach(node => {
+        const nodeProvider = normalizeProviderId(node?.metadata?.llm_provider);
+        const nodeModel = text(node?.metadata?.llm_model);
+        if ((nodeProvider && nodeProvider !== provider) || (nodeModel && nodeModel !== model)) {
+            nodeOverrides.push({ nodeId: text(node?.nodeId) || '(unknown)', provider: nodeProvider, model: nodeModel });
+        }
+    });
+
+    return { provider, model, nodeOverrides };
+};
 
 // Copilot provider options: the same choices as the graph/node selectors, but the empty value
 // means "inherit the server-side COPILOT_* / LLM_* default". The copilot is a UI assistant, not
@@ -211,9 +378,10 @@ export const fetchLlmModels = async (provider) => {
 };
 
 // Node types whose system prompt is actually sent to a model (NodeHandler.process).
-// Every type except HTTP_REQUEST and GRAPH runs the model when it carries a system_prompt, so
-// START/HUMAN nodes qualify too - only HTTP_REQUEST and GRAPH never do (unless they are routers,
-// which builder.jsx adds back via nodeUsesLlm).
+// Every type except HTTP_REQUEST, DOCUMENT and GRAPH runs the model when it carries a
+// system_prompt, so START/HUMAN nodes qualify too - those three never do (unless they are
+// routers, which builder.jsx adds back via nodeUsesLlm). DOCUMENT is the clearest case: it
+// only reads bytes and extracts text, so giving it a prompt would be a silent no-op.
 // Keep in sync with `uses_llm` in python-langgraph-service/app/services/langgraph_servicer.py.
 export const AI_NODE_TYPES = Object.freeze([NODE_TYPES.START, NODE_TYPES.END, NODE_TYPES.ACTION, NODE_TYPES.HUMAN]);
 
@@ -228,6 +396,7 @@ const NODE_CLASS_SUFFIXES = Object.freeze({
     [NODE_TYPES.HUMAN]: 'human',
     [NODE_TYPES.GRAPH]: 'graph',
     [NODE_TYPES.HTTP_REQUEST]: 'http-request',
+    [NODE_TYPES.DOCUMENT]: 'document',
 });
 
 /** React Flow node class for a node type, e.g. HTTP_REQUEST -> "node-http-request". */
@@ -371,4 +540,96 @@ export const layoutGraph = (nodes, edges, rankdir = 'TB') => {
         const box = boxes.get(n.id);
         return { ...n, position: { x: Math.round(box.x), y: Math.round(box.y) } };
     });
+};
+
+// --- Attachment slots ------------------------------------------------------------------
+//
+// A graph reads a document through a DOCUMENT node, and a graph may read several in one run:
+// each node names the context key its file arrives under (`document_ref_key`, default
+// `document_ref`) and the variable its text lands in (`output_variable`, default
+// `document_text`). Those keys ARE the answer to "which file is which" - the graph says so,
+// not the model - so the chat panel asks for a file per slot rather than one file per run.
+
+/** The context key a DOCUMENT node reads, and the engine's default when it names none. */
+export const DEFAULT_DOCUMENT_REF_KEY = 'document_ref';
+
+/**
+ * The attachment slots of a graph, in the order its nodes were declared.
+ *
+ * Two DOCUMENT nodes reading the same key share one slot: they read the same file twice,
+ * which is what a graph with two unnamed nodes looks like. That is reported through
+ * `nodeIds` (length > 1) so the panel can say so instead of offering two pickers that write
+ * to the same reference.
+ *
+ * A graph with no DOCUMENT node has no slots by definition, but the panel still needs
+ * somewhere to put a picked file - the file is uploaded and the reference carried, and the
+ * warning next to it explains that nothing will read it. That case yields one slot marked
+ * `declared: false`.
+ *
+ * @param {{ nodes?: Array<{ nodeId: string, nodeType: string, metadata?: object }> }} view
+ *        the getGraphView payload for the LOADED graph
+ * @returns {Array<{ refKey: string, label: string, outputVariable: string,
+ *                   nodeIds: string[], declared: boolean }>}
+ */
+export const documentSlots = (view) => {
+    const byKey = new Map();
+    (view?.nodes || []).forEach(node => {
+        if (node?.nodeType !== NODE_TYPES.DOCUMENT) return;
+        const meta = node?.metadata || {};
+        const refKey = String(meta.document_ref_key || '').trim() || DEFAULT_DOCUMENT_REF_KEY;
+        const outputVariable = String(meta.output_variable || '').trim() || 'document_text';
+        const label = String(meta.label || '').trim();
+        const existing = byKey.get(refKey);
+        if (existing) {
+            existing.nodeIds.push(node.nodeId);
+            if (label && !existing.label) existing.label = label;
+            return;
+        }
+        byKey.set(refKey, {
+            refKey,
+            label,
+            outputVariable,
+            nodeIds: [node.nodeId],
+            declared: true,
+        });
+    });
+
+    if (byKey.size === 0) {
+        return [{
+            refKey: DEFAULT_DOCUMENT_REF_KEY,
+            label: '',
+            outputVariable: 'document_text',
+            nodeIds: [],
+            declared: false,
+        }];
+    }
+    return Array.from(byKey.values());
+};
+
+/**
+ * The slots more than one DOCUMENT node reads - the graph reads one file twice and can never
+ * hold two. The engine cannot fix this for the caller (both nodes fetch the same reference),
+ * so the panel says it before the run instead of leaving the second file mysteriously absent.
+ *
+ * @param {ReturnType<typeof documentSlots>} slots
+ * @returns {Array<{ refKey: string, nodeIds: string[] }>}
+ */
+export const ambiguousDocumentSlots = (slots) =>
+    (slots || []).filter(slot => slot.nodeIds.length > 1);
+
+/**
+ * What the run's context must carry for the slots that have a file attached.
+ *
+ * @param {ReturnType<typeof documentSlots>} slots every slot of the loaded graph
+ * @param {Record<string, { documentId?: string }>} attachments by refKey
+ * @returns {object|undefined} the context map, or undefined when nothing is attached (so an
+ *          ordinary run keeps sending no context at all rather than an empty object)
+ */
+export const documentContextFor = (slots, attachments) => {
+    const context = {};
+    (slots || []).forEach(slot => {
+        const documentId = attachments?.[slot.refKey]?.documentId;
+        if (documentId) context[slot.refKey] = documentId;
+    });
+    return Object.keys(context).length > 0 ? context : undefined;
 };

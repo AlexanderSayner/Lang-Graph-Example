@@ -47,6 +47,18 @@ class ExternalApiMapperTest {
     }
 
     @Test
+    @DisplayName("a DOCUMENT node maps through - it is a first-class node type, not a special case")
+    void mapsDocumentNodeType() {
+        NodeInput node = mapper.toNodeInput(org.sandbox.langgraph.grpc.external.NodeDefinition.newBuilder()
+                .setNodeId("attach_1")
+                .setNodeType(org.sandbox.langgraph.grpc.external.NodeType.NODE_TYPE_DOCUMENT)
+                .setHandlerName("attach1Handler")
+                .build());
+
+        assertThat(node.nodeType()).isEqualTo(org.sandbox.langgraph.core.model.NodeType.DOCUMENT);
+    }
+
+    @Test
     @DisplayName("an UNSPECIFIED node type is rejected at the edge")
     void rejectsUnspecifiedNodeType() {
         assertThatIllegalArgumentException()
@@ -85,7 +97,7 @@ class ExternalApiMapperTest {
     @DisplayName("an execution event keeps its state, tokens and timestamp")
     void mapsExecutionEvent() {
         GraphExecutionEventPayload payload = new GraphExecutionEventPayload(
-                ExecutionEventType.NODE_END, "node_1", "done", Map.of("answer", "42"), 123L, 7, null);
+                ExecutionEventType.NODE_END, "node_1", "done", Map.of("answer", "42"), 123L, 7, null, null);
 
         var event = mapper.toExecutionEvent(payload);
 
@@ -102,7 +114,7 @@ class ExternalApiMapperTest {
     @DisplayName("an event without tokens maps to 0 instead of failing the frame")
     void mapsNullTokensToZero() {
         var event = mapper.toExecutionEvent(new GraphExecutionEventPayload(
-                ExecutionEventType.END, null, null, null, 1L, null, null));
+                ExecutionEventType.END, null, null, null, 1L, null, null, null));
 
         assertThat(event.getTotalTokens()).isZero();
         assertThat(event.getOutput()).isEmpty();
@@ -116,7 +128,7 @@ class ExternalApiMapperTest {
         // event type is null; the wire type cannot be null.
         var response = mapper.toExecuteGraphResponse(
                 new org.sandbox.langgraph.dto.graphql.payload.ExecuteGraphPayload(
-                        true, "", null, null, null, null));
+                        true, "", null, null, null, null, null));
 
         assertThat(response.getEventType())
                 .isEqualTo(org.sandbox.langgraph.grpc.external.ExecutionEventType

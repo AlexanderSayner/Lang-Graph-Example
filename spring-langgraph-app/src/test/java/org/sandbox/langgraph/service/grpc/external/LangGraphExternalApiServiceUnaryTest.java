@@ -1,5 +1,6 @@
 package org.sandbox.langgraph.service.grpc.external;
 
+import org.sandbox.langgraph.service.llm.RequestOrigin;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -65,7 +66,8 @@ class LangGraphExternalApiServiceUnaryTest {
     private final CopilotService copilotService = mock(CopilotService.class);
     private final LangGraphExternalApiService service = new LangGraphExternalApiService(
             langGraphService, copilotService, new GraphExecutionAggregator(),
-            new ExternalApiMapper(), new B2BThreadScope(), new B2BGraphScope(), mock(Validator.class));
+            new ExternalApiMapper(), new B2BThreadScope(), new B2BGraphScope(),
+            mock(Validator.class), mock(org.sandbox.langgraph.service.document.DocumentService.class));
 
     /** Granted every graph, so the delegation tests below are not about the scope. */
     private static final B2BClientContext CLIENT =
@@ -100,7 +102,7 @@ class LangGraphExternalApiServiceUnaryTest {
     @Test
     @DisplayName("an ExecuteGraph run with no events is an empty success, not an error")
     void executeGraphWithEmptyRun() {
-        when(langGraphService.executeGraphStream(any(), anyBoolean())).thenReturn(Flux.empty());
+        when(langGraphService.executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class), any())).thenReturn(Flux.empty());
         var observer = new RecordingObserver<ExecuteGraphResponse>();
 
         call(() -> service.executeGraph(ExecuteGraphRequest.newBuilder()
@@ -115,9 +117,9 @@ class LangGraphExternalApiServiceUnaryTest {
     @Test
     @DisplayName("a blocking run is folded into one response")
     void executeGraphAggregatesTheRun() {
-        when(langGraphService.executeGraphStream(any(), anyBoolean())).thenReturn(Flux.just(
-                new GraphExecutionEventPayload(ExecutionEventType.NODE_END, "n", "answer", null, 1L, 5, null),
-                new GraphExecutionEventPayload(ExecutionEventType.END, "n", "", null, 2L, 5, null)));
+        when(langGraphService.executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class), any())).thenReturn(Flux.just(
+                new GraphExecutionEventPayload(ExecutionEventType.NODE_END, "n", "answer", null, 1L, 5, null, null),
+                new GraphExecutionEventPayload(ExecutionEventType.END, "n", "", null, 2L, 5, null, null)));
         var observer = new RecordingObserver<ExecuteGraphResponse>();
 
         call(() -> service.executeGraph(ExecuteGraphRequest.newBuilder()
@@ -163,8 +165,9 @@ class LangGraphExternalApiServiceUnaryTest {
     @Test
     @DisplayName("an empty copilot chat history reaches the copilot service as null, not \"\"")
     void normalisesBlankCopilotFields() {
-        when(copilotService.askCopilot(any(), any(), any(), any(), any(), any(), any(), any()))
-                .thenReturn(new CopilotGraphPayload(true, "hi", 1, null));
+        when(copilotService.askCopilot(any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any()))
+                .thenReturn(new CopilotGraphPayload(true, "hi", 1, null, null));
         var observer = new RecordingObserver<AskCopilotResponse>();
 
         call(() -> service.askCopilot(AskCopilotRequest.newBuilder()
@@ -174,7 +177,33 @@ class LangGraphExternalApiServiceUnaryTest {
         // Blank must become null so the copilot service keeps its own "[]" default:
         // an empty string is not valid JSON and would fail in the engine.
         verify(copilotService).askCopilot(eq("g1"), eq("orchestra:abc"), eq("question"),
-                isNull(), isNull(), isNull(), isNull(), isNull());
+                isNull(), isNull(), isNull(), isNull(), isNull(),
+                eq(RequestOrigin.B2B), isNull());
+    }
+
+    @Test
+    @DisplayName("the caller's own LLM keys reach both the run and the copilot with their origin")
+    void carriesTheCallersOwnLlmCredentials() {
+        String keys = "{\"openai\":{\"api_key\":\"sk-b2b\",\"folder_id\":\"\"}}";
+        when(langGraphService.executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class), any()))
+                .thenReturn(Flux.empty());
+        when(copilotService.askCopilot(any(), any(), any(), any(), any(), any(), any(), any(),
+                any(), any()))
+                .thenReturn(new CopilotGraphPayload(true, "hi", 1, null, null));
+
+        call(() -> service.executeGraph(ExecuteGraphRequest.newBuilder()
+                .setGraphId("g1").setThreadId("abc").setInput("hi")
+                .setLlmCredentialsJson(keys).build(), new RecordingObserver<>()));
+        call(() -> service.askCopilot(AskCopilotRequest.newBuilder()
+                .setGraphId("g1").setThreadId("abc").setMessage("q")
+                .setLlmCredentialsJson(keys).build(), new RecordingObserver<>()));
+
+        // Never through `context` (that is stripped downstream) - always as its own field,
+        // tagged with the B2B origin so the service layer knows whom to hold to the policy.
+        verify(langGraphService).executeGraphStream(any(), anyBoolean(),
+                eq(RequestOrigin.B2B), eq(keys));
+        verify(copilotService).askCopilot(any(), any(), any(), any(), any(), any(), any(), any(),
+                eq(RequestOrigin.B2B), eq(keys));
     }
 
     @Test
@@ -295,7 +324,8 @@ class LangGraphExternalApiServiceUnaryTest {
     void rejectsARequestTheGraphQlEdgeWouldReject() {
         LangGraphExternalApiService validated = new LangGraphExternalApiService(
                 langGraphService, copilotService, new GraphExecutionAggregator(),
-                new ExternalApiMapper(), new B2BThreadScope(), new B2BGraphScope(), realValidator());
+                new ExternalApiMapper(), new B2BThreadScope(), new B2BGraphScope(), realValidator(),
+                mock(org.sandbox.langgraph.service.document.DocumentService.class));
         var observer = new RecordingObserver<ExecuteGraphResponse>();
 
         call(() -> validated.executeGraph(ExecuteGraphRequest.newBuilder()
@@ -307,7 +337,7 @@ class LangGraphExternalApiServiceUnaryTest {
             assertThat(error.getTrailers().get(GrpcErrors.ERROR_CODE)).isEqualTo("VALIDATION_ERROR");
             assertThat(error.getStatus().getDescription()).contains("Validation failed");
         });
-        verify(langGraphService, never()).executeGraphStream(any(), anyBoolean());
+        verify(langGraphService, never()).executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class), any());
     }
 
     /** A real Hibernate Validator, for the one test that is about bean validation. */
@@ -334,7 +364,7 @@ class LangGraphExternalApiServiceUnaryTest {
             // The caller is told nothing about the internal reason; only the log has it.
             assertThat(error.getStatus().getDescription()).isEqualTo("internal error");
         });
-        verify(langGraphService, never()).executeGraphStream(any(), anyBoolean());
+        verify(langGraphService, never()).executeGraphStream(any(), anyBoolean(), any(RequestOrigin.class), any());
     }
 
     /**

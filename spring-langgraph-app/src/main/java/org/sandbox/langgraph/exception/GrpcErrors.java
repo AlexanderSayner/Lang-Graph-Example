@@ -4,6 +4,7 @@ import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.validation.ConstraintViolationException;
+import org.sandbox.langgraph.service.document.DocumentNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -78,6 +79,15 @@ public final class GrpcErrors {
                     validation.getMessage() != null ? validation.getMessage() : "invalid request");
         }
 
+        // A document reference that does not resolve: never uploaded, past its retention
+        // deadline, or owned by another tenant (requireOwnedBy reports those identically, so
+        // a caller cannot probe for ids). NOT_FOUND rather than INTERNAL - it is a condition
+        // of the caller's request, not a fault, and the engine's DOCUMENT node words it the
+        // same way when the run eventually reaches it.
+        if (unwrapped instanceof DocumentNotFoundException notFound) {
+            return withCode(Status.NOT_FOUND, "DOCUMENT_NOT_FOUND", notFound.getMessage());
+        }
+
         if (unwrapped instanceof ConstraintViolationException violations) {
             // Bean validation of the mapped DTOs (the B2B path validates what the GraphQL
             // edge validates), with the message the GraphQL handler would have sent.
@@ -132,6 +142,12 @@ public final class GrpcErrors {
         if (error instanceof LangGraphException.GraphBuildException
                 || error instanceof LangGraphException.GraphStateException) {
             return Status.INVALID_ARGUMENT;
+        }
+        if (error instanceof LangGraphException.LlmKeyRequiredException) {
+            // A precondition of THIS deployment, not a malformed request: FAILED_PRECONDITION
+            // with the detail intact (the branch below only redacts INTERNAL), so an
+            // integrator reads "send llm_credentials_json" instead of hunting for a shape bug.
+            return Status.FAILED_PRECONDITION;
         }
         return Status.INTERNAL;
     }

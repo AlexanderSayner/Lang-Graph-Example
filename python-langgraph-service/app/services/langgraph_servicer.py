@@ -5,7 +5,8 @@ import json
 import logging
 import time
 from collections import defaultdict
-from typing import Dict, Any, Callable
+from dataclasses import replace
+from typing import Dict, Any, Callable, Optional, Set, Tuple
 
 import grpc
 import redis.asyncio as redis
@@ -15,13 +16,24 @@ from langgraph.constants import END
 from langgraph.graph import StateGraph
 
 from app.clients.java_client import JavaGraphClient
-from app.clients.llm import LLMClientRegistry, resolve_llm_config
+from app.clients.llm import LLMClientRegistry, LLMCredentialSet, \
+    missing_user_key_message, resolve_llm_config
 from app.clients.model_catalog import list_models
 from app.config import settings
 from app.copilot.copilot_agent import CopilotAgent
 from app.generated import langgraph_pb2_grpc, langgraph_pb2
-from app.graph_engine.graph_utils import parse_conditions, resolve_route, GraphState
-from app.graph_engine.node_handlers import NodeHandler
+from app.graph_engine.graph_utils import parse_conditions, resolve_route, GraphState, DOCUMENT_REF_KEY, \
+    document_variables_of, looks_like_document_id
+from app.graph_engine.node_handlers import (
+    BILLING_SERVICE,
+    BILLING_USER,
+    CONFIG_CALLER_KIND,
+    CONFIG_DOCUMENT_REF_KEYS,
+    CONFIG_LLM_CREDENTIALS,
+    CONFIG_REQUIRE_USER_KEY,
+    CONFIG_USER_ID,
+    NodeHandler,
+)
 from app.models import GraphDefinition
 from app.services.execution_registry import ExecutionRegistry, run_key
 
@@ -75,6 +87,107 @@ def _serialize_state(state: Dict[str, Any]) -> Dict[str, str]:
     return {str(k): _to_proto_str(v) for k, v in state.items()}
 
 
+# Every key the backend uses to describe the RUN (who is calling, whose key to use) rather
+# than the graph's own input. They are lifted out of the request context before it becomes
+# GraphState: anything left in `state["context"]` gets checkpointed to Postgres, echoed back
+# to the browser in the START event, and - for credentials - rendered into the model prompt
+# by NodeHandler._process_action, which would send a user's API key to their LLM provider.
+RUN_CONTEXT_KEYS = frozenset({
+    CONFIG_LLM_CREDENTIALS, CONFIG_REQUIRE_USER_KEY, CONFIG_USER_ID, CONFIG_CALLER_KIND,
+    # Legacy single-key form. A graph picks its provider per NODE, so a bare key cannot be
+    # attributed to one; it is dropped rather than guessed at, and never kept in the state.
+    "llm_api_key", "yc_folder_id",
+    # Resolved by the servicer from the definition, never taken from a client: it decides
+    # which context keys a prompt must hide, so a caller must not be able to widen it.
+    CONFIG_DOCUMENT_REF_KEYS,
+})
+
+
+def _split_run_context(request_context: Any) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Split a gRPC request context into ``(state context, configurable extras)``.
+
+    Credentials and attribution belong to ``RunnableConfig.configurable``, which reaches
+    the nodes without being persisted or displayed; the remainder stays graph input.
+    Never raises - a caller that sends no context at all simply gets two empty dicts, so
+    the service behaves exactly as it did before per-user keys existed.
+    """
+    raw = dict(request_context) if hasattr(request_context, "items") else {}
+
+    state_context = {k: v for k, v in raw.items() if k not in RUN_CONTEXT_KEYS}
+    configurable: Dict[str, Any] = {}
+
+    credentials_json = raw.get(CONFIG_LLM_CREDENTIALS)
+    if credentials_json:
+        configurable[CONFIG_LLM_CREDENTIALS] = str(credentials_json)
+    if str(raw.get(CONFIG_REQUIRE_USER_KEY, "") or "").strip() == "1":
+        configurable[CONFIG_REQUIRE_USER_KEY] = "1"
+    user_id = str(raw.get(CONFIG_USER_ID, "") or "").strip()
+    if user_id:
+        configurable[CONFIG_USER_ID] = user_id
+    # Who is asking, so a later refusal addresses the right audience. Set by the backend
+    # (B2B facade) and stripped from anything a client sends, like every run key above.
+    caller_kind = str(raw.get(CONFIG_CALLER_KIND, "") or "").strip()
+    if caller_kind:
+        configurable[CONFIG_CALLER_KIND] = caller_kind
+
+    if "llm_api_key" in raw or "yc_folder_id" in raw:
+        logger.warning(
+            "Dropping legacy single-key context (llm_api_key/yc_folder_id): a graph picks "
+            "its provider per node, so send llm_credentials_json keyed by provider."
+        )
+    return state_context, configurable
+
+
+def document_slots_of(graph_data: GraphDefinition) -> Optional[Dict[str, str]]:
+    """The ``ref_key -> output_variable`` slots this definition's DOCUMENT nodes read.
+
+    Mirrors ``NodeHandler._process_document``: a DOCUMENT node reads
+    ``context[metadata["document_ref_key"]]`` and writes ``variables[metadata["output_variable"]]``,
+    both through ``document_variables_of`` so the two can never disagree about the defaults.
+    Knowing the slots is what lets the servicer notice a run that names a reference nothing in
+    the graph will fetch - the failure behind "I don't have access to the file content", where
+    the upload, the ownership gate and the run itself all succeed and only the reading step is
+    missing - and its mirror image, a graph that expects a slot the run never supplied.
+
+    ``None`` means "cannot be known from here": a GRAPH node runs a second definition, and
+    whatever reads its context is not visible in this one.
+    """
+    slots: Dict[str, str] = {}
+    for node in graph_data.nodes:
+        if node.node_type == "GRAPH":
+            return None
+        if node.node_type != "DOCUMENT":
+            continue
+        ref_key, output_variable, _meta_variable, _label = document_variables_of(node.metadata)
+        slots[ref_key] = output_variable
+    return slots
+
+
+def document_ref_keys_of(graph_data: GraphDefinition) -> Optional[Set[str]]:
+    """The context keys this definition's DOCUMENT nodes actually read.
+
+    ``None`` means "cannot be known from here" (see :func:`document_slots_of`); otherwise the
+    set of ref keys, possibly empty.
+    """
+    slots = document_slots_of(graph_data)
+    return None if slots is None else set(slots)
+
+
+def _aggregate_billing(seen: Any) -> str:
+    """Fold the per-node billing markers of one run into a single run-level value.
+
+    ``""`` when no node called a model at all (pure routing/HTTP runs), ``"mixed"`` when a
+    run genuinely spanned a personal key and the shared one - a user owning an OpenAI key
+    but not an Anthropic one will hit that, and the UI must not overstate who paid.
+    """
+    values = {value for value in seen if value in (BILLING_USER, BILLING_SERVICE)}
+    if not values:
+        return ""
+    if len(values) == 1:
+        return next(iter(values))
+    return "mixed"
+
+
 def _normalize_graph_definition(raw_graph_dict: Dict[str, Any]) -> Dict[str, Any]:
     """Normalizes camelCase from Java/Proto to snake_case for Pydantic validation."""
     return {
@@ -110,6 +223,10 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
 
         max_cache_size = getattr(settings, "MAX_CACHED_GRAPHS", 100)
         self._compiled_graphs: LRUCache = LRUCache(maxsize=max_cache_size)
+        # Which context keys each cached graph's DOCUMENT nodes read, written together with
+        # the compiled graph (see _remember_compiled_graph) so the "nobody will read this
+        # attachment" guard never has to fetch a definition it already compiled.
+        self._document_ref_keys: LRUCache = LRUCache(maxsize=max_cache_size)
         self._compile_lock = asyncio.Lock()
 
         self._checkpointer = checkpointer
@@ -132,14 +249,93 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
 
         # Pass the unified loader to NodeHandler for subgraph resolution. Nodes resolve their
         # own client at compile time (see _build_langgraph); this is only the fallback.
+        #
+        # The document fetcher is the Java callback the DOCUMENT node uses to pull an uploaded
+        # attachment's bytes. It is passed as a bound method so the handler never needs to know
+        # about channels or stubs - it just awaits one callable (document_id) -> bytes.
         self.node_handler = NodeHandler(
             self._load_and_compile_graph,
             default_llm_factory=lambda: self._llm_registry.lazy(resolve_llm_config({}, {})),
+            document_fetcher=self.java_client.get_document,
         )
 
         # Live ExecuteGraph streams register here so a runaway run can be cancelled
         # (CancelGraphExecution) without waiting for the node/LLM call to finish.
         self._active_runs = ExecutionRegistry()
+
+    def _remember_compiled_graph(self, graph_id: str, graph_data: GraphDefinition,
+                                 compiled: Runnable) -> None:
+        """Cache a compiled graph together with what a run needs to know about it.
+
+        Both caches are written here and nowhere else (an in-process build and a lazy load),
+        so they can never disagree about which definition a ``graph_id`` names.
+        """
+        self._compiled_graphs[graph_id] = compiled
+        self._document_ref_keys[graph_id] = document_slots_of(graph_data)
+
+    def _warn_if_document_never_read(self, graph_id: str, state_context: Dict[str, Any]) -> None:
+        """Log when a run and a graph disagree about which documents it carries.
+
+        An attachment reaches a model only through a DOCUMENT node. Two ways of getting that
+        wrong are both silent by construction, and both end the same way - with the model
+        answering that it has no access to a file, or with half the inputs of a comparison
+        missing, having seen nothing that would say so:
+
+        1. the run names a reference under a key no DOCUMENT node reads (a graph without one,
+           or one that reads a different key). The upload, the ownership check and the run all
+           succeed and only the reading step is missing;
+        2. the graph reads more slots than the run supplied (the two-document case: a caller
+           attaches one file to a graph that expects two). The second node reports
+           ``missing_context`` and stops the run.
+
+        Either way it is a graph-design or calling mistake rather than a server fault, so this
+        is a warning and not a refusal: a caller may legitimately attach a file now and use it
+        in a later message.
+
+        Nothing is said when this process cannot know the answer: an evicted or never-built
+        definition, or one containing a GRAPH node, whose own subgraph may well hold the
+        DOCUMENT node. A warning must rest on what the engine knows, never on a guess.
+        """
+        slots = self._document_ref_keys.get(graph_id)
+        if slots is None:
+            return
+        # A dict of ref_key -> output_variable (what this servicer writes). Tolerated as a
+        # set too: that is what `document_ref_keys_of` returned before slots existed, and a
+        # cache seeded by a test or surviving a hot reload must not break the guard.
+        readable: Set[str] = set(slots or ())
+
+        supplied = {str(k): v for k, v in (state_context or {}).items() if str(v or "").strip()}
+
+        # 1 & 2 - a reference nothing will read.
+        for key, value in supplied.items():
+            if key in readable:
+                continue
+            if key != DOCUMENT_REF_KEY and not looks_like_document_id(value):
+                # An ordinary context value (a tenant, a date, a flag). The one key the
+                # contract has always used is reported whatever its value, so a caller who
+                # sends a malformed id under it is still told nothing will read it.
+                continue
+            logger.warning(
+                "graph %s was run with a document reference under context key %r, but no "
+                "DOCUMENT node in this graph reads that key (it reads: %s). The attachment is "
+                "uploaded and the reference authorised, and nothing will fetch it - add a "
+                "DOCUMENT node that reads this key, or give the node the key this run uses.",
+                graph_id, key, ", ".join(sorted(readable)) or "no document keys",
+            )
+
+        # 3 - a slot the run never supplied. Only a run that filled at least ONE of this
+        # graph's slots is reported: a caller that attached nothing is simply using the graph
+        # for a question, and attaching later is legitimate.
+        filled = readable & set(supplied)
+        if filled:
+            missing = sorted(readable - filled)
+            if missing:
+                logger.warning(
+                    "graph %s reads documents from context key(s) %s, but this run only "
+                    "supplied %s. The DOCUMENT node(s) will report missing_context and stop "
+                    "the run - attach a file for every slot before running.",
+                    graph_id, ", ".join(missing), ", ".join(sorted(filled)),
+                )
 
     async def _load_and_compile_graph(self, graph_id: str) -> Runnable:
         """Unified method to fetch, normalize, and compile a graph (prevents thundering herd)."""
@@ -171,7 +367,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             compiled = self._build_langgraph(validated)
 
             # 4. Cache in memory
-            self._compiled_graphs[graph_id] = compiled
+            self._remember_compiled_graph(graph_id, validated, compiled)
             logger.info(f"Graph {graph_id} compiled and cached locally")
             return compiled
 
@@ -218,11 +414,12 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             # eagerly, so an unknown/typo'd provider still fails the build fast and loud.
             # The client itself is LAZY (LazyLLMClient): only nodes that really call the model
             # get one - router nodes always do, the rest only when they carry a system_prompt
-            # (pass-through, HTTP_REQUEST and GRAPH nodes never touch the LLM) - and a missing API key
-            # surfaces on the node's first model call instead of failing the whole build.
+            # (pass-through, HTTP_REQUEST, DOCUMENT and GRAPH nodes never touch the LLM) - and a
+            # missing API key surfaces on the node's first model call instead of failing the build.
             node_type_val = node.node_type
             uses_llm = is_router or (
-                node_type_val not in ("HTTP_REQUEST", "GRAPH") and bool(metadata.get("system_prompt"))
+                node_type_val not in ("HTTP_REQUEST", "GRAPH", "DOCUMENT")
+                and bool(metadata.get("system_prompt"))
             )
             llm_client = (
                 self._llm_registry.lazy(resolve_llm_config(metadata, graph_data.config))
@@ -330,7 +527,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         compiled_graph = self._build_langgraph(validated_graph_data)
 
         # Update caches
-        self._compiled_graphs[graph_id] = compiled_graph
+        self._remember_compiled_graph(graph_id, validated_graph_data, compiled_graph)
         await self.redis_client.setex(f"graph:def:{graph_id}", 3600, json.dumps(graph_dict))
         await self.redis_client.publish("graph:invalidation", graph_id)
 
@@ -363,9 +560,31 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             await context.abort(grpc.StatusCode.INTERNAL, f"Failed to load graph: {e}")
             return
 
+        # Per-user credentials and attribution arrive in the request context and are lifted
+        # into `configurable` - NEVER into GraphState. Doing this before the first
+        # `aget_state` matters: the START event serialises `stream_input`, so a key left in
+        # there would be shipped straight back to the browser.
+        state_context, run_configurable = _split_run_context(getattr(request, "context", None))
+
+        # A document reaches a model only through a DOCUMENT node, so a run that names a
+        # reference nothing in this graph reads would upload, validate and then quietly do
+        # nothing with it - and the model, never shown the file, would answer that it has no
+        # access to it. Said out loud here, once per run, where an operator will see it.
+        self._warn_if_document_never_read(graph_id, state_context)
+
+        # Which context keys hold a document reference, for this graph and this run. The
+        # ACTION node hides them from the prompt: a custom-named handle is exactly as useless
+        # to a model as the default one, and being shown it is what makes a model announce it
+        # cannot open a file a DOCUMENT node has already turned into text. Resolved from the
+        # DEFINITION, never from the caller - it is configurable, so it reaches subgraphs too.
+        document_ref_keys = self._document_ref_keys.get(graph_id)
+        if document_ref_keys:
+            run_configurable[CONFIG_DOCUMENT_REF_KEYS] = ",".join(sorted(document_ref_keys))
+
         config: RunnableConfig = {
             "configurable": {
-                "thread_id": getattr(request, "thread_id", None) or "default_session"
+                "thread_id": getattr(request, "thread_id", None) or "default_session",
+                **run_configurable,
             }
         }
 
@@ -392,7 +611,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             else:
                 stream_input = {
                     "input": request.input,
-                    "context": dict(request.context) if hasattr(request, "context") else {},
+                    "context": state_context,
                     "timestamp": time.time()
                 }
                 start_event = langgraph_pb2.ExecuteGraphResponse(
@@ -409,6 +628,10 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             # the queue and reports a clean CANCELLED event instead of a crash.
             run_id = run_key(graph_id, config["configurable"]["thread_id"])
             queue: asyncio.Queue = asyncio.Queue()
+            # Who paid for each model call this run made. "mixed" is a real outcome: a user
+            # can own an OpenAI key but not an Anthropic one, so one run legitimately spans
+            # both - and the UI must not claim the whole run was billed to them.
+            run_billing: set = set()
 
             async def _produce():
                 """Drive the graph and publish every event to the queue."""
@@ -419,14 +642,19 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                     async for event in compiled_graph.astream(stream_input, config=config, stream_mode="updates"):
                         for node_name, updates in event.items():
                             node_tokens = 0
+                            node_billing = ""
                             if isinstance(updates, dict):
                                 output_content = str(updates.get("output", ""))
                                 serialized_state = _serialize_state(updates)
                                 node_tokens = updates.get("total_tokens", 0)
+                                node_billing = str(updates.get("llm_billing", "") or "")
                             else:
                                 logger.warning(f"Node '{node_name}' returned non-dict update (type: {type(updates).__name__})")
                                 output_content = str(updates)
                                 serialized_state = _serialize_state({"raw_output": updates})
+
+                            if node_billing in (BILLING_USER, BILLING_SERVICE):
+                                run_billing.add(node_billing)
 
                             await queue.put(langgraph_pb2.ExecuteGraphResponse(
                                 event_type="NODE_END",
@@ -434,12 +662,29 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                                 output=output_content,
                                 state=serialized_state,
                                 timestamp=int(time.time() * 1000),
-                                total_tokens=node_tokens
+                                total_tokens=node_tokens,
+                                llm_billing=node_billing
                             ))
 
                     final_snapshot = await compiled_graph.aget_state(config)
                     final_next = getattr(final_snapshot, "next", None) or []
                     final_values = getattr(final_snapshot, "values", {}) or {}
+
+                    # One greppable line per run: the whole point of the FALLBACK policy is
+                    # that a subsidised run must be visible to the operator afterwards.
+                    # x_user_id is what makes the line attributable (metering / support).
+                    run_billing_value = _aggregate_billing(run_billing)
+                    run_owner = config["configurable"].get(CONFIG_USER_ID) or "anonymous"
+                    if run_billing_value == BILLING_SERVICE:
+                        logger.warning(
+                            "run %s user=%s thread=%s tokens=%s billing=service "
+                            "(no personal key used)",
+                            run_id, run_owner, config["configurable"]["thread_id"],
+                            final_values.get("total_tokens", 0))
+                    else:
+                        logger.info("run %s user=%s thread=%s tokens=%s billing=%s",
+                                    run_id, run_owner, config["configurable"]["thread_id"],
+                                    final_values.get("total_tokens", 0), run_billing_value)
 
                     if final_next:
                         waiting_node = final_next[0] if isinstance(final_next, (list, tuple)) and final_next else final_next
@@ -449,7 +694,8 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                             node_id=waiting_node,
                             output="Action required. Waiting for user input.",
                             state=_serialize_state(final_values),
-                            timestamp=int(time.time() * 1000)
+                            timestamp=int(time.time() * 1000),
+                            llm_billing=run_billing_value
                         ))
                     else:
                         await queue.put(langgraph_pb2.ExecuteGraphResponse(
@@ -457,7 +703,8 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                             output=str(final_values.get("output", "")),
                             state=_serialize_state(final_values),
                             timestamp=int(time.time() * 1000),
-                            total_tokens=final_values.get("total_tokens", 0)
+                            total_tokens=final_values.get("total_tokens", 0),
+                            llm_billing=run_billing_value
                         ))
                 except asyncio.CancelledError:
                     logger.info(f"Graph run {run_id} was cancelled")
@@ -623,11 +870,49 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         # service-wide LLM_PROVIDER / LLM_MODEL default - the same chain the constructor used
         # to bake into the startup client. resolve_llm_config is cheap and the registry caches
         # one client per distinct config, so reusing providers across questions stays warm.
-        client = self._llm_registry.lazy(resolve_llm_config(
+        resolved = resolve_llm_config(
             {},
             {"llm_provider": request.copilot_provider or settings.COPILOT_PROVIDER,
              "llm_model": request.copilot_model or settings.COPILOT_MODEL}
-        ))
+        )
+
+        # The copilot has no graph config to inherit from, but the SAME provider chain just
+        # resolved above, so the personal key for that exact provider can be selected here
+        # rather than guessed at by the backend. No entry for the provider leaves the config
+        # credential-free and the service key pays - reported through llm_billing either way.
+        credential_set = LLMCredentialSet.from_json(
+            getattr(request, "llm_credentials_json", "") or "")
+        credential = credential_set.for_provider(resolved.provider)
+
+        # The copilot must not be a hole in policy=REQUIRE: the same instruction the graph
+        # node would give is returned here instead of quietly spending the shared key.
+        # A normal failure response rather than an RPC abort, because the UI renders
+        # CopilotResponse.error_message while a gRPC status becomes a generic "Internal
+        # server error" at the gateway - which would hide the ONE instruction (where to
+        # add the key) that makes policy=REQUIRE actionable. The same reasoning applies
+        # when the shared key itself is switched off (LLM_SERVICE_KEY_ENABLED=false): the
+        # engine would refuse at client build time anyway (see LLMClient._api_key), but
+        # that raise happens deep inside copilot.ask and would surface as that generic
+        # gateway error instead of the instruction.
+        require_user_key = str(getattr(request, "require_user_key", "") or "").strip() == "1"
+        service_key_disabled = not settings.LLM_SERVICE_KEY_ENABLED
+        if credential is None and (require_user_key or service_key_disabled):
+            # caller_kind makes the wording match the audience: an integrator is told which
+            # field to fill, a browser user where the key manager lives.
+            caller_kind = str(getattr(request, "caller_kind", "") or "").strip()
+            message = missing_user_key_message(resolved.provider, caller_kind)
+            logger.warning("Copilot refused (%s): %s",
+                           "service key disabled" if service_key_disabled else "policy=REQUIRE",
+                           message)
+            return langgraph_pb2.CopilotResponse(
+                success=False, error_message=message, llm_billing="")
+
+        if credential is not None and not credential.is_empty():
+            resolved = replace(resolved, credentials=credential)
+
+        client = self._llm_registry.lazy(resolved)
+        billing = resolved.billing_owner
+
         ai_response = await self.copilot.ask(
             user_message=request.user_message,
             graph_context_json=request.graph_context_json,
@@ -638,10 +923,14 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             llm=client
         )
 
+        logger.info("Copilot answered: %s tokens billing=%s",
+                    getattr(ai_response, "usage", {}).get("total_tokens", -1), billing)
+
         return langgraph_pb2.CopilotResponse(
             success=True,
             ai_response=ai_response,
-            total_tokens=ai_response.usage.get('total_tokens', -1) if hasattr(ai_response, 'usage') else -1
+            total_tokens=ai_response.usage.get('total_tokens', -1) if hasattr(ai_response, 'usage') else -1,
+            llm_billing=billing
         )
 
     @handle_grpc_errors
@@ -658,6 +947,26 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             models=[langgraph_pb2.LlmModel(id=model_id, label=label) for model_id, label in result.models],
             source=result.source,
             error_message=result.error_message,
+        )
+
+    @handle_grpc_errors
+    async def GetLlmSettings(self, request, context):
+        """The service-wide settings a UI needs before it can describe a run honestly.
+
+        The backend asks this once per page load so its chat panel can say *which* provider a
+        graph that selects none actually runs on (``LLM_PROVIDER``), and whether the shared
+        key may be spent at all (``LLM_SERVICE_KEY_ENABLED``).
+
+        The provider goes through :func:`resolve_llm_config` instead of being read from
+        ``settings.LLM_PROVIDER`` directly, so the answer is EXACTLY what a node that
+        inherits will build - same alias normalisation, same ``yandex`` fallback - rather
+        than a second copy of that rule which could drift away from it.
+        """
+        resolved = resolve_llm_config({}, {})
+        return langgraph_pb2.GetLlmSettingsResponse(
+            default_provider=resolved.provider,
+            default_model=resolved.model,
+            service_key_enabled=settings.LLM_SERVICE_KEY_ENABLED,
         )
 
     @property

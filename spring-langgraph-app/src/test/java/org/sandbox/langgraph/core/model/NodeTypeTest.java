@@ -28,6 +28,7 @@ class NodeTypeTest {
             "HUMAN, HUMAN",
             "GRAPH, GRAPH",
             "HTTP_REQUEST, HTTP_REQUEST",
+            "DOCUMENT, DOCUMENT",
     })
     void parsesCanonicalEnumNames(String raw, NodeType expected) {
         assertThat(NodeType.fromString(raw)).isEqualTo(expected);
@@ -43,6 +44,8 @@ class NodeTypeTest {
             "HUMAN_INPUT, HUMAN",
             "INTERRUPT, HUMAN",
             "SUBGRAPH, GRAPH",
+            "FILE, DOCUMENT",          // a document is attached per run, not per graph
+            "ATTACHMENT, DOCUMENT",
     })
     void keepsDeprecatedAliasesWorking(String raw, NodeType expected) {
         assertThat(NodeType.fromString(raw)).isEqualTo(expected);
@@ -54,6 +57,7 @@ class NodeTypeTest {
         assertThat(NodeType.fromString("  http_request ")).isEqualTo(NodeType.HTTP_REQUEST);
         assertThat(NodeType.fromString("tool")).isEqualTo(NodeType.HTTP_REQUEST);
         assertThat(NodeType.fromString("human_input")).isEqualTo(NodeType.HUMAN);
+        assertThat(NodeType.fromString("  document ")).isEqualTo(NodeType.DOCUMENT);
     }
 
     @Test

@@ -20,6 +20,11 @@ import org.sandbox.langgraph.dto.pagination.PageData;
 import org.sandbox.langgraph.exception.LangGraphException;
 import org.sandbox.langgraph.grpc.*;
 import org.sandbox.langgraph.mapper.GraphGrpcMapper;
+import org.sandbox.langgraph.security.CurrentUser;
+import org.sandbox.langgraph.service.document.DocumentNotFoundException;
+import org.sandbox.langgraph.service.document.DocumentService;
+import org.sandbox.langgraph.service.llm.LlmRequestCredentials;
+import org.sandbox.langgraph.service.llm.RequestOrigin;
 import org.sandbox.langgraph.util.JsonDiffUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,6 +36,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 @Service
@@ -52,12 +58,27 @@ public class LangGraphGrpcService {
 
     private static final Logger log = LoggerFactory.getLogger(LangGraphGrpcService.class);
     private static final int TIMEOUT = 30;
+    /**
+     * Deadline for the settings probe: it runs on every page load, so a hung engine may cost the
+     * UI its banner, never thirty seconds of spinner.
+     */
+    private static final int SETTINGS_TIMEOUT = 3;
     private static final TimeUnit TIMEOUT_UNIT = TimeUnit.SECONDS;
 
     private final LangGraphServiceGrpc.LangGraphServiceBlockingStub blockingStub;
     private final GraphGrpcMapper mapper;
     private final ObjectMapper objectMapper;
     private final GraphPostgresService graphPostgresService;
+    private final LlmRequestCredentials requestCredentials;
+    /**
+     * The GraphQL half of the attachment ownership gate. Injected here rather than used from the
+     * controller because this method is the ONE choke point every GraphQL run passes through -
+     * the blocking mutation and the streaming subscription both call it, and neither of them
+     * owns anything.
+     */
+    private final DocumentService documentService;
+    /** Who is calling, for the same gate. Anonymous callers may own no document. */
+    private final CurrentUser currentUser;
 
     public @NonNull BuildGraphPayload buildGraph(BuildGraphInput input) {
         log.debug("Building graph: {}", input.graphId());
@@ -89,11 +110,46 @@ public class LangGraphGrpcService {
     }
 
     public Flux<@NonNull GraphExecutionEventPayload> executeGraphStream(ExecuteGraphInput input, boolean stream) {
-        ExecuteGraphRequest request = stream
-                ? mapper.toStreamExecuteGraphRequest(input)
-                : mapper.toExecuteGraphRequest(input);
+        // The blocking GraphQL mutation runs on the servlet thread, so GRAPHQL is the right
+        // default for every caller that does not say otherwise.
+        return executeGraphStream(input, stream, RequestOrigin.GRAPHQL);
+    }
 
-        log.debug("Executing graph: {} (stream={})", input.graphId(), stream);
+    public Flux<@NonNull GraphExecutionEventPayload> executeGraphStream(ExecuteGraphInput input, boolean stream,
+                                                                        RequestOrigin origin) {
+        return executeGraphStream(input, stream, origin, null);
+    }
+
+    /**
+     * @param origin decides whose LLM keys (if any) ride along with this run
+     * @param suppliedCredentialsJson the keys a B2B caller attached to THIS request (its own
+     *                                {@code llm_credentials_json} field), or null. Only ever
+     *                                non-null on the B2B path - the GraphQL path never lets a
+     *                                client pick a credential channel
+     *
+     * <p>The credentials are resolved <b>here, synchronously</b>, before the Flux exists:
+     * they come from the ThreadLocal security context, which is only present on the calling
+     * thread and is not propagated into the subscription that actually drives the gRPC call.
+     * Resolving inside the {@code Flux.create} body would silently drop them and bill the
+     * shared service key instead - the exact surprise this feature exists to prevent.</p>
+     *
+     * <p>This method is also where an attached document is checked against the caller, so that
+     * the blocking mutation and the streaming subscription enforce one rule - see
+     * {@link #requireOwnedDocument(ExecuteGraphInput, RequestOrigin)}.</p>
+     */
+    public Flux<@NonNull GraphExecutionEventPayload> executeGraphStream(ExecuteGraphInput input, boolean stream,
+                                                                        RequestOrigin origin,
+                                                                        String suppliedCredentialsJson) {
+        Map<String, String> runContext = requestCredentials.forRequest(origin, suppliedCredentialsJson);
+        requireOwnedDocument(input, origin);
+
+        ExecuteGraphRequest request = stream
+                ? mapper.toStreamExecuteGraphRequest(input, runContext)
+                : mapper.toExecuteGraphRequest(input, runContext);
+
+        log.debug("Executing graph: {} (stream={}, origin={}, personalKeys={})",
+                input.graphId(), stream, origin, runContext.containsKey(
+                        LlmRequestCredentials.CREDENTIALS_JSON));
 
         return Flux.create(emitter -> {
             try {
@@ -115,6 +171,95 @@ public class LangGraphGrpcService {
                 emitter.error(new LangGraphException.GraphExecutionException("Unexpected error: " + t.getMessage(), t));
             }
         });
+    }
+
+    /**
+     * The GraphQL side of the attachment ownership gate - the same rule the B2B facade runs in
+     * {@code withAttachment()}, so neither door can attach a reference that is not the caller's own.
+     *
+     * <p>{@code DocumentService.fetch} deliberately trusts the id it is handed, on the stated
+     * ground that "the engine is inside the trust boundary and is handed the id by whichever
+     * facade already authorised the run". That is only true when <em>every</em> facade checks
+     * first. The B2B one does ({@code requireOwnedBy}, tenant-scoped); this path used not to,
+     * so any GraphQL caller could put an arbitrary {@code context.document_ref} in front of a
+     * graph containing a DOCUMENT node and receive that document's extracted text in the run
+     * output. The mutation carries no {@code @PreAuthorize} and {@code /graphql} is
+     * {@code permitAll}, so "any caller" meant anonymous ones too.</p>
+     *
+     * <p>The reference must therefore resolve to a document the caller owns as
+     * {@link DocumentService#OWNER_UI} - the owner kind {@code POST /api/documents} mints - or
+     * it is refused. A foreign or expired reference is reported exactly like a missing one
+     * ({@link DocumentNotFoundException} - the handler answers {@code NOT_FOUND} with code
+     * {@code DOCUMENT_NOT_FOUND}), the indistinguishable refusal the B2B facade already gives:
+     * a caller must never learn that an id exists.</p>
+     *
+     * <p>An anonymous caller is refused with an instruction rather than a bare
+     * {@code UNAUTHENTICATED}, for the same reason {@code LlmRequestCredentials} words its own
+     * refusal: they can own no document, so a reference can only be a guess at somebody else's,
+     * and the message says how to fix that (sign in and attach from the chat panel).</p>
+     *
+     * <p>Checked <b>before</b> the request is built and before the engine is contacted: the
+     * reference is only ever read by the DOCUMENT node, so refusing here costs nothing but the
+     * run that was never going to be allowed to read the file.</p>
+     *
+     * <p>A graph may read <b>several</b> documents in one run: each DOCUMENT node names its
+     * own context key, so {@code document_ref} is only the default spelling and a second slot
+     * arrives as {@code timesheets_ref} / {@code report_ref} / whatever the graph declared.
+     * Every context value shaped like a document handle therefore goes through the same
+     * {@link DocumentService#requireOwnedBy} - a reference the caller does not own is refused
+     * the same way whichever key it hides under. Values that are not handles (a tenant, a
+     * date, a flag) are left alone: the context is a free-form map and belongs to the graph.</p>
+     *
+     * <p>An anonymous caller is refused with an instruction rather than a bare
+     * {@code UNAUTHENTICATED}, for the same reason {@code LlmRequestCredentials} words its own
+     * refusal: they can own no document, so a reference can only be a guess at somebody else's,
+     * and the message says how to fix that (sign in and attach from the chat panel).</p>
+     *
+     * @throws IllegalArgumentException when the caller is anonymous but sent a reference
+     * @throws DocumentNotFoundException when a reference is expired or belongs to another owner
+     */
+    private void requireOwnedDocument(ExecuteGraphInput input, RequestOrigin origin) {
+        if (origin != RequestOrigin.GRAPHQL) {
+            // B2B brings its own gate, in LangGraphExternalApiService.withAttachment() - and it
+            // runs before the ExecuteGraphInput exists, so the check cannot be moved here.
+            return;
+        }
+        Map<String, Object> context = input.context();
+        if (context == null || context.isEmpty()) {
+            return;
+        }
+
+        // `document_ref` first and regardless of its value, so a malformed handle under the
+        // default key is still reported as a missing document rather than silently ignored.
+        List<String> references = new ArrayList<>();
+        Object defaultRef = context.get("document_ref");
+        String firstRef = defaultRef == null ? "" : String.valueOf(defaultRef).trim();
+        if (!firstRef.isEmpty()) {
+            references.add(firstRef);
+        }
+        for (Map.Entry<String, Object> entry : context.entrySet()) {
+            if (entry.getKey() == null || "document_ref".equals(entry.getKey())) {
+                continue;
+            }
+            String value = entry.getValue() == null ? "" : String.valueOf(entry.getValue()).trim();
+            if (DocumentService.looksLikeDocumentId(value)) {
+                references.add(value);
+            }
+        }
+        if (references.isEmpty()) {
+            return;
+        }
+
+        UUID userId = currentUser.id().orElse(null);
+        if (userId == null) {
+            throw new IllegalArgumentException(
+                    "A document attachment belongs to the account that uploaded it, and you are "
+                            + "not signed in. Sign in, attach the file with the 📎 button in the "
+                            + "chat panel, and run again.");
+        }
+        for (String documentRef : references) {
+            documentService.requireOwnedBy(documentRef, DocumentService.OWNER_UI, userId.toString());
+        }
     }
 
     public @NonNull GraphStatePayload getGraphState(String graphId, String threadId) {
@@ -245,6 +390,48 @@ public class LangGraphGrpcService {
         } catch (StatusRuntimeException e) {
             // The catalog itself never fails; this is only for a transport/service outage.
             throw wrapGrpcError(e);
+        }
+    }
+
+    /**
+     * The engine's own LLM settings, so the UI can describe a run honestly <em>before</em> it
+     * happens - which provider a graph that selects none will use, and whether the shared key
+     * may be spent at all.
+     *
+     * <p>Deliberately fail-soft on a short deadline: this is fetched once per page load, so an
+     * engine that is down or hung must not break the whole query. {@link LlmEngineSettings#unknown()}
+     * means "nothing is known about the default", which the UI renders as a vaguer note - never
+     * as a promise it cannot keep.</p>
+     */
+    public @NonNull LlmEngineSettings getLlmSettings() {
+        try {
+            GetLlmSettingsResponse response = blockingStub
+                    .withDeadlineAfter(SETTINGS_TIMEOUT, TIMEOUT_UNIT)
+                    .getLlmSettings(GetLlmSettingsRequest.getDefaultInstance());
+            return new LlmEngineSettings(response.getDefaultProvider(), response.getDefaultModel(),
+                    response.getServiceKeyEnabled());
+        } catch (StatusRuntimeException e) {
+            log.warn("Cannot read LLM settings from the engine ({}); reporting them as unknown",
+                    e.getStatus());
+            return LlmEngineSettings.unknown();
+        }
+    }
+
+    /**
+     * Engine-side facts the UI must not overstate: what an inheriting node actually resolves to
+     * and whether the operator's shared key may still be spent.
+     *
+     * @param defaultProvider   the engine's resolved default ({@code LLM_PROVIDER}); empty = unknown
+     * @param defaultModel      the model that default provider will use; empty = its preset
+     * @param serviceKeyEnabled {@code false} when {@code LLM_SERVICE_KEY_ENABLED} makes the shared
+     *                          key unspendable, so a run without a personal key fails instead of
+     *                          billing the operator
+     */
+    public record LlmEngineSettings(String defaultProvider, String defaultModel, boolean serviceKeyEnabled) {
+
+        /** What an unreachable engine reports: default unknown, shared key assumed spendable. */
+        public static LlmEngineSettings unknown() {
+            return new LlmEngineSettings("", "", true);
         }
     }
 

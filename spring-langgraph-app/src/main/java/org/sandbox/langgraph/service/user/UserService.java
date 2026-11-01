@@ -12,9 +12,8 @@ import org.sandbox.langgraph.dto.graphql.payload.user.ClaimThreadsPayload;
 import org.sandbox.langgraph.dto.graphql.payload.user.UserPayload;
 import org.sandbox.langgraph.dto.graphql.payload.user.UserThread;
 import org.sandbox.langgraph.exception.LangGraphException;
-import org.springframework.security.access.AccessDeniedException;
+import org.sandbox.langgraph.security.CurrentUser;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
-import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -35,6 +34,7 @@ public class UserService {
     private final UserRepository userRepository;
     private final UserThreadRepository threadRepository;
     private final PasswordEncoder passwordEncoder;
+    private final CurrentUser currentUser;
 
     public AuthPayload register(String username, String password) {
         if (userRepository.findByUsername(username).isPresent()) {
@@ -152,19 +152,12 @@ public class UserService {
 
     /**
      * Centralized, safe extraction of the user's UUID from the Security Context.
+     *
+     * <p>Delegates to {@link CurrentUser}, the shared accessor also used by the LLM-credential
+     * resolution on the execute path - one definition of "who is calling" for the whole app.</p>
      */
     private UUID getCurrentUserId() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-
-        if (authentication == null || !authentication.isAuthenticated() || "anonymousUser".equals(authentication.getName())) {
-            throw new AccessDeniedException("Failed to get user id from auth context");
-        }
-
-        try {
-            return UUID.fromString(authentication.getName());
-        } catch (IllegalArgumentException e) {
-            throw new AccessDeniedException("Invalid user ID format in auth context: " + authentication.getName());
-        }
+        return currentUser.requireId();
     }
 
     private UserThread mapToUserThread(UserThreadEntity entity) {
