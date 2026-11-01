@@ -49,7 +49,8 @@ class LangGraphExternalApiServiceStreamingTest {
     private final CopilotService copilotService = mock(CopilotService.class);
     private final LangGraphExternalApiService service = new LangGraphExternalApiService(
             langGraphService, copilotService, new GraphExecutionAggregator(),
-            new ExternalApiMapper(), new B2BThreadScope(), new B2BGraphScope(), mock(Validator.class));
+            new ExternalApiMapper(), new B2BThreadScope(), new B2BGraphScope(),
+            mock(Validator.class), mock(org.sandbox.langgraph.service.document.DocumentService.class));
 
     /** Granted every graph, so the tests below are not about the graph scope. */
     private static final B2BClientContext CLIENT =

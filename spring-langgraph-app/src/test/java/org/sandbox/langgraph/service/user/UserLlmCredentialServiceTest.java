@@ -104,6 +104,34 @@ class UserLlmCredentialServiceTest {
     }
 
     @Test
+    @DisplayName("an absurdly long key is refused at the field, not by Postgres later")
+    void rejectsAnOversizedApiKey() {
+        stubMissingRow();
+
+        // Without the cap this would be encrypted, inserted and only then found to be far
+        // larger than any real key - the caller learns nothing about what went wrong.
+        assertThatThrownBy(() -> service.save(USER,
+                new SaveLlmCredentialInput("openai", "k".repeat(4097), null)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("4096");
+
+        verify(repository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("a folder id longer than its column is refused as a field error, not a 500")
+    void rejectsAnOversizedFolderId() {
+        stubMissingRow();
+
+        assertThatThrownBy(() -> service.save(USER,
+                new SaveLlmCredentialInput("yandex", "sk-key", "f".repeat(256))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("255");
+
+        verify(repository, never()).save(any());
+    }
+
+    @Test
     @DisplayName("an unknown provider is rejected by naming the supported set")
     void rejectsUnknownProvider() {
         stubMissingRow();

@@ -438,7 +438,7 @@ input BuildGraphInput {
 
 input NodeInput {
     nodeId: String!
-    nodeType: NodeType!      # START | END | ACTION | HUMAN | GRAPH | HTTP_REQUEST
+    nodeType: NodeType!      # START | END | ACTION | HUMAN | GRAPH | HTTP_REQUEST | DOCUMENT
     handlerName: String!
     metadata: JSON
     # Optional UI coordinates per node: written into the `coordinates` column together with the
@@ -475,6 +475,7 @@ enum NodeType {
     HUMAN
     GRAPH
     HTTP_REQUEST
+    DOCUMENT
 }
 
 enum ExecutionEventType {
@@ -626,7 +627,16 @@ spring:
   
   lifecycle:
     timeout-per-shutdown-phase: 30s
-  
+
+  # Document attachments (POST /api/documents). Boot's defaults are 1 MB / 10 MB, which
+  # would reject an ordinary spreadsheet before the application's own 8 MB cap ran.
+  # A reverse proxy in front must allow the same size - nginx defaults to 1 MB and answers
+  # 413 without ever reaching Spring.
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 12MB
+
   graphql:
     http:
       enabled: true
@@ -2075,7 +2085,8 @@ spring-langgraph-app/
 │   │   ├── GrpcConfig.java
 │   │   └── MapperConfig.java
 │   ├── controller/
-│   │   └── LangGraphController.java
+│   │   ├── LangGraphController.java
+│   │   └── DocumentController.java      # POST /api/documents (multipart) - attachments
 │   ├── dto/
 │   │   └── graphql/
 │   │       ├── input/

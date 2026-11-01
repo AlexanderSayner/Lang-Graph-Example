@@ -66,7 +66,8 @@ class LangGraphExternalApiServiceUnaryTest {
     private final CopilotService copilotService = mock(CopilotService.class);
     private final LangGraphExternalApiService service = new LangGraphExternalApiService(
             langGraphService, copilotService, new GraphExecutionAggregator(),
-            new ExternalApiMapper(), new B2BThreadScope(), new B2BGraphScope(), mock(Validator.class));
+            new ExternalApiMapper(), new B2BThreadScope(), new B2BGraphScope(),
+            mock(Validator.class), mock(org.sandbox.langgraph.service.document.DocumentService.class));
 
     /** Granted every graph, so the delegation tests below are not about the scope. */
     private static final B2BClientContext CLIENT =
@@ -323,7 +324,8 @@ class LangGraphExternalApiServiceUnaryTest {
     void rejectsARequestTheGraphQlEdgeWouldReject() {
         LangGraphExternalApiService validated = new LangGraphExternalApiService(
                 langGraphService, copilotService, new GraphExecutionAggregator(),
-                new ExternalApiMapper(), new B2BThreadScope(), new B2BGraphScope(), realValidator());
+                new ExternalApiMapper(), new B2BThreadScope(), new B2BGraphScope(), realValidator(),
+                mock(org.sandbox.langgraph.service.document.DocumentService.class));
         var observer = new RecordingObserver<ExecuteGraphResponse>();
 
         call(() -> validated.executeGraph(ExecuteGraphRequest.newBuilder()

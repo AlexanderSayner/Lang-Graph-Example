@@ -7,10 +7,13 @@ contract, including the regression that made ``output == true`` unreachable - no
 so the run ended at the END sentinel without ever executing an END node.
 """
 
+import json
+
 import pytest
 
 from app.graph_engine.graph_utils import (
     coerce_bool,
+    format_state_context,
     parse_condition,
     parse_conditions,
     parse_literal,
@@ -210,5 +213,205 @@ def test_coerce_bool_reads_common_spellings():
     assert coerce_bool("maybe") is None
     assert coerce_bool(2) is None
     assert coerce_bool(None) is None
+
+
+# --- What a prompt may see ----------------------------------------------------------------
+#
+# `format_state_context` turns the graph state into the text a model reads. Most of it is a
+# plain dump; what is pinned here is the one deliberate omission - the document handle, a
+# value a model can do nothing with and will otherwise quote back in an answer about not
+# being able to open the file it was attached.
+
+
+def test_the_document_handle_never_reaches_a_prompt():
+    state = {
+        "input": "explain the timesheet",
+        "variables": {
+            "document_text": "| alice | 2 |",
+            "document_meta": {
+                "document_ref": "ui-9aa20ce6-abc",
+                "filename": "timesheet.xlsx",
+                "stats": {"rows_read": 3},
+            },
+        },
+        "history": [],
+    }
+
+    rendered = format_state_context(state)
+
+    assert "ui-9aa20ce6-abc" not in rendered
+    # Everything else about the document still reaches the model: which file was read and
+    # what the parser made of it.
+    assert "timesheet.xlsx" in rendered
+    assert "| alice | 2 |" in rendered
+    # And the state keeps the handle - a DOCUMENT node reads it from there, and a condition
+    # may still want it. Only the rendered copy drops it.
+    assert state["variables"]["document_meta"]["document_ref"] == "ui-9aa20ce6-abc"
+
+
+def test_a_state_with_no_document_is_rendered_unchanged():
+    state = {"input": "go", "variables": {"answer": "42"}, "history": []}
+
+    rendered = format_state_context(state)
+
+    assert '"answer": "42"' in rendered
+    assert "go" in rendered
+
+
+def test_every_slot_meta_is_scrubbed_not_just_the_historical_name():
+    """A graph may give each DOCUMENT node a meta variable of its own; all of them hold a handle."""
+    state = {
+        "input": "compare the two files",
+        "variables": {
+            "timesheets_text": "| alice | 1 |",
+            "timesheets_text_meta": {"document_ref": "ui-aaaa1111-aaa", "filename": "a.xlsx"},
+            "report_text": "| alice | 3 |",
+            "report_text_meta": {"document_ref": "ui-bbbb2222-bbb", "filename": "b.xlsx"},
+        },
+        "history": [],
+    }
+
+    rendered = format_state_context(state)
+
+    assert "ui-aaaa1111-aaa" not in rendered
+    assert "ui-bbbb2222-bbb" not in rendered
+    # The facts a model can use stay: which file, and what was in it.
+    assert "a.xlsx" in rendered and "b.xlsx" in rendered
+    assert "| alice | 1 |" in rendered and "| alice | 3 |" in rendered
+    # And the state itself keeps both handles.
+    assert state["variables"]["timesheets_text_meta"]["document_ref"] == "ui-aaaa1111-aaa"
+
+
+def test_an_unrelated_meta_shaped_variable_is_left_alone():
+    """The scrub is a document scrub, not a general "hide anything ending in _meta" filter."""
+    state = {
+        "input": "go",
+        "variables": {"invoice_meta": {"total": 42, "client": "acme"}},
+        "history": [],
+    }
+
+    rendered = format_state_context(state)
+
+    assert '"total": 42' in rendered
+    assert '"client": "acme"' in rendered
+
+
+# --- What a long text variable looks like in a prompt -----------------------------------
+#
+# A document extraction is meant to be READ, not parsed. json.dumps escapes every newline, so
+# a 7k-char table used to arrive as one line of \n - and, with ensure_ascii on by default,
+# every Cyrillic letter became a \uXXXX sequence. Reconstructing a ragged block layout out of
+# that is not a reasonable ask, and the symptom was rows attributed to the wrong employee.
+
+SHEET = "# Табель\n\n| Имя | Часы |\n| --- | --- |\n| Новиков | 14 |\n| Тепечин | 33.5 |"
+
+
+def test_multi_line_text_is_rendered_raw_not_escaped():
+    state = {
+        "input": "compare",
+        "variables": {"timesheets_text": SHEET, "answer": 7},
+        "history": [],
+    }
+
+    rendered = format_state_context(state)
+
+    # The real newlines survive, so the table is still a table.
+    assert "| Имя | Часы |\n| --- | --- |\n| Новиков | 14 |" in rendered
+    # The document is its own labelled block, not a JSON string.
+    assert "--- timesheets_text ---\n" + SHEET in rendered
+    assert "--- end timesheets_text ---" in rendered
+
+
+def test_non_ascii_is_not_turned_into_escape_sequences():
+    """The transport is UTF-8 end to end; escaping only made the prompt unreadable."""
+    state = {"input": "go", "variables": {"timesheets_text": SHEET}, "history": []}
+
+    rendered = format_state_context(state)
+
+    assert "Новиков" in rendered
+    assert "\\u041d" not in rendered
+
+
+def test_scalars_stay_in_the_json_dump():
+    """Only multi-line text is lifted out; plain values keep their types and stay compact."""
+    state = {
+        "input": "go",
+        "variables": {"timesheets_text": SHEET, "total": 7, "flag": True, "who": "Новиков"},
+        "history": [],
+    }
+
+    rendered = format_state_context(state)
+
+    assert '"total": 7' in rendered
+    assert '"flag": true' in rendered
+    assert '"who": "Новиков"' in rendered
+    # A one-line string is a value, not a document: it belongs in the dump.
+    assert "--- who ---" not in rendered
+
+
+def test_escaping_it_made_the_prompt_much_larger():
+    """The reason this is not merely cosmetic: escaping roughly tripled the prompt."""
+    state = {"input": "go", "variables": {"timesheets_text": SHEET}, "history": []}
+
+    rendered = format_state_context(state)
+    escaped = json.dumps({"timesheets_text": SHEET}, indent=2)
+
+    assert len(rendered) < len(escaped), (
+        "rendering the text raw must not cost more characters than escaping it"
+    )
+
+
+def test_a_variable_without_newlines_is_never_lifted_out():
+    state = {"input": "go", "variables": {"note": "one line"}, "history": []}
+
+    rendered = format_state_context(state)
+
+    assert '"note": "one line"' in rendered
+    assert "--- note ---" not in rendered
+
+
+# --- Only the variables a node declared ---------------------------------------------------
+#
+# A node in a pipeline works from the previous node's output. If it still receives the two
+# raw documents it was told not to use, it uses them: they are right there in the prompt,
+# several times larger than the table it is supposed to read, and the sums come out wrong.
+
+
+def test_only_variables_limits_what_is_rendered():
+    state = {
+        "input": "go",
+        "variables": {"tutu_rows": SHEET, "timesheets_text": "### Raw source document"},
+        "history": [],
+    }
+
+    rendered = format_state_context(state, only_variables={"tutu_rows"})
+
+    assert "| Новиков | 14 |" in rendered
+    assert "### Raw source document" not in rendered
+    assert "--- timesheets_text ---" not in rendered
+
+
+def test_only_variables_none_renders_everything():
+    state = {
+        "input": "go",
+        "variables": {"tutu_rows": SHEET, "timesheets_text": "### Raw source document"},
+        "history": [],
+    }
+
+    rendered = format_state_context(state)
+
+    assert "| Новиков | 14 |" in rendered
+    assert "### Raw source document" in rendered
+
+
+def test_include_variables_reads_the_list_a_node_declares():
+    from app.graph_engine.node_handlers import _include_variables
+
+    assert _include_variables({"include_variables": " tutu_rows , jira_rows "}) == {
+        "tutu_rows", "jira_rows"}
+    # Declaring nothing is "show everything" - the behaviour every graph had before.
+    assert _include_variables({}) is None
+    assert _include_variables({"include_variables": "   "}) is None
+    assert _include_variables(None) is None
 
 

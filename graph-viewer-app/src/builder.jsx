@@ -143,7 +143,10 @@ function Builder() {
                         body: n.metadata?.body || "",
                         llmProvider: n.metadata?.llm_provider || "",
                         llmModel: n.metadata?.llm_model || "",
-                        contextMode: n.metadata?.context_mode || ""
+                        contextMode: n.metadata?.context_mode || "",
+                        documentRefKey: n.metadata?.document_ref_key || "",
+                        documentOutputVariable: n.metadata?.output_variable || "",
+                        documentMetaVariable: n.metadata?.meta_variable || ""
                     }
                 })));
                 setEdges(data.getGraphView.edges.map((e, i) => ({
@@ -178,7 +181,7 @@ function Builder() {
         const id = `node_${Date.now()}`;
         setNodes(nds => nds.concat({
             id, type: 'designNode', position,
-            data: { label: id, type: type, prompt: "", subgraphId: null, friendlyName: null, method: "GET", url: "", headers: "{}", body: "", llmProvider: "", llmModel: "", contextMode: "" }
+            data: { label: id, type: type, prompt: "", subgraphId: null, friendlyName: null, method: "GET", url: "", headers: "{}", body: "", llmProvider: "", llmModel: "", contextMode: "", documentRefKey: "", documentOutputVariable: "", documentMetaVariable: "" }
         }));
     }, [hasStartNode, screenToFlowPosition, setNodes]);
 
@@ -208,6 +211,17 @@ function Builder() {
                 const meta = { system_prompt: n.data?.prompt || "", label: n.data?.friendlyName || "" };
                 if (n.data?.type === NODE_TYPES.GRAPH && n.data.subgraphId) meta.subgraph_id = n.data.subgraphId;
                 if (n.data?.type === NODE_TYPES.HTTP_REQUEST) { meta.method = n.data.method || "GET"; meta.url = n.data.url || ""; meta.headers = n.data.headers || "{}"; meta.body = n.data.body || ""; }
+                // DOCUMENT carries no system prompt (it never calls a model). Its three slot
+                // names are written back, and only when non-blank: an empty value would
+                // override the engine's default with nothing.
+                if (n.data?.type === NODE_TYPES.DOCUMENT) {
+                    const refKey = (n.data.documentRefKey || '').trim();
+                    const outputVariable = (n.data.documentOutputVariable || '').trim();
+                    const metaVariable = (n.data.documentMetaVariable || '').trim();
+                    if (refKey) meta.document_ref_key = refKey;
+                    if (outputVariable) meta.output_variable = outputVariable;
+                    if (metaVariable) meta.meta_variable = metaVariable;
+                }
                 // Per-node AI overrides (empty = inherit the graph/server default).
                 // context_mode is written back too - it used to be silently dropped here.
                 if (n.data?.llmProvider) meta.llm_provider = n.data.llmProvider;
@@ -365,6 +379,9 @@ function Builder() {
                     <div className="palette-node" title="Human Node" draggable onDragStart={(e) => onDragStart(e, NODE_TYPES.HUMAN)}>👤</div>
                     <div className="palette-node" title="Subgraph Node" draggable onDragStart={(e) => onDragStart(e, NODE_TYPES.GRAPH)}>🧩</div>
                     <div className="palette-node" title="HTTP Request Node" draggable onDragStart={(e) => onDragStart(e, NODE_TYPES.HTTP_REQUEST)}>🔧</div>
+                    {/* A document is an attachment, not an outbound call: the palette glyph is
+                        a paperclip and the node never calls a model (see AI_NODE_TYPES). */}
+                    <div className="palette-node" title="Document Node — extract text from an attached .xlsx/.docx" draggable onDragStart={(e) => onDragStart(e, NODE_TYPES.DOCUMENT)}>📎</div>
                     <div className="palette-node" title="End Node" draggable onDragStart={(e) => onDragStart(e, NODE_TYPES.END)}>🛑</div>
                 </div>
 
@@ -486,6 +503,69 @@ function Builder() {
                                                 </pre>
                                             </div>
                                         )}
+                                    </>
+                                ) : selectedElement.data.type === NODE_TYPES.DOCUMENT ? (
+                                    /* No system prompt field: the node never calls a model, so a prompt
+                                       here would be a silent no-op. What matters is the SLOT: where the
+                                       run's context keeps this file's reference, and where its extracted
+                                       text lands. A graph that reads several files gives each DOCUMENT
+                                       node a key of its own here - that is how it says which file is
+                                       which, and two nodes sharing a key read the same file twice. */
+                                    <>
+                                    <div className="form-row">
+                                        <div className="form-group" style={{flex: 2}}>
+                                            <label className="form-label">Slot name (shown next to the 📎 picker)</label>
+                                            <input className="form-input"
+                                                   value={selectedElement.data.friendlyName || ''}
+                                                   onChange={(e) => updateNode('friendlyName', e.target.value)}
+                                                   placeholder="e.g. Time sheet (as submitted)" />
+                                            <div style={{fontSize: 11, color: '#777', marginTop: 2}}>
+                                                The label the chat panel shows for this file, and a header
+                                                on the extracted text so the model can tell it apart.
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="form-row">
+                                        <div className="form-group" style={{flex: 2}}>
+                                            <label className="form-label">Context key holding the document reference</label>
+                                            <input className="form-input"
+                                                   value={selectedElement.data.documentRefKey || ''}
+                                                   onChange={(e) => updateNode('documentRefKey', e.target.value)}
+                                                   placeholder="document_ref" />
+                                            <div style={{fontSize: 11, color: '#777', marginTop: 2}}>
+                                                Read from the run's context. Give each DOCUMENT node its own
+                                                key - the chat panel then shows one 📎 picker per key. Leave
+                                                blank for the default, which the 📎 button already fills.
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="form-row">
+                                        <div className="form-group" style={{flex: 2}}>
+                                            <label className="form-label">Variable holding the extracted text</label>
+                                            <input className="form-input"
+                                                   value={selectedElement.data.documentOutputVariable || ''}
+                                                   onChange={(e) => updateNode('documentOutputVariable', e.target.value)}
+                                                   placeholder="document_text" />
+                                            <div style={{fontSize: 11, color: '#777', marginTop: 2}}>
+                                                Name it after the file ("timesheets_text") so a later node can
+                                                refer to each one. Two nodes writing the same variable means
+                                                the second overwrites the first.
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div className="form-row">
+                                        <div className="form-group" style={{flex: 2}}>
+                                            <label className="form-label">Variable holding the file's metadata</label>
+                                            <input className="form-input"
+                                                   value={selectedElement.data.documentMetaVariable || ''}
+                                                   onChange={(e) => updateNode('documentMetaVariable', e.target.value)}
+                                                   placeholder="document_meta" />
+                                            <div style={{fontSize: 11, color: '#777', marginTop: 2}}>
+                                                Filename, parse statistics and truncation warnings. Defaults to
+                                                the text variable's name + "_meta" when you name the text.
+                                            </div>
+                                        </div>
+                                    </div>
                                     </>
                                 ) : (
                                     <div className="form-row">

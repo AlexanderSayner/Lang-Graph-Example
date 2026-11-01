@@ -40,7 +40,7 @@ from app.graph_engine.node_handlers import (
     caller_kind_from_config,
     credentials_from_config,
     require_user_key_from_config,
-    scrub_secret_context,
+    scrub_prompt_context,
 )
 from app.services.execution_registry import ExecutionRegistry
 from app.services.langgraph_servicer import (
@@ -357,11 +357,15 @@ def test_credentials_read_back_from_a_built_config():
     assert credentials_from_config(None).is_empty()
 
 
-def test_scrub_secret_context_drops_every_credential_shaped_key():
-    scrubbed = scrub_secret_context({
+def test_scrub_prompt_context_drops_credentials_and_the_document_handle():
+    scrubbed = scrub_prompt_context({
         "llm_api_key": "sk",
         "yc_folder_id": "f",
         "llm_credentials_json": "{}",
+        # The handle a run names for its attachment. Not a secret - a DOCUMENT node must
+        # still be able to read it from the state - but nothing a model can act on, so
+        # showing it only produces an answer about not being able to open a file.
+        "document_ref": "ui-9aa20ce6-abc",
         "keep": "me",
     })
 
@@ -589,6 +593,9 @@ class _RecordingGraph:
 def _build_servicer(graph):
     servicer = LangGraphServiceServicer.__new__(LangGraphServiceServicer)
     servicer._active_runs = ExecutionRegistry()
+    # Read by the attachment guard in ExecuteGraph. Empty means "this process has built
+    # no definition", which the guard treats as "the answer is unknown" and stays quiet.
+    servicer._document_ref_keys = {}
 
     async def _load(_graph_id):
         return graph
@@ -896,3 +903,74 @@ def test_caller_kind_travels_through_config_and_never_into_the_state():
     assert caller_kind_from_config(None) == ""
     assert caller_kind_from_config({"configurable": {}}) == ""
     assert caller_kind_from_config({"configurable": {"caller_kind": "b2b"}}) == "b2b"
+
+
+# --- Publishing an answer under a name of its own --------------------------------------
+#
+# An ACTION node's answer only ever lived in `output`, which the NEXT node overwrites. So a
+# graph could not pass an intermediate result forward at all: a "normalise, then compare"
+# pipeline had nowhere to put the normalised table, and the second node re-parsed the two
+# source documents instead - which is the failure these tests exist to prevent. It was not
+# theoretical: the two-step discrepancy graph produced an answer with no `rows_text` in its
+# state at all, because there was no code path that could have written one.
+
+
+class _ScriptedLLM:
+    """Answers from a script, in order, and records every prompt it was given."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.calls = []
+
+    async def generate(self, user_message, system_message="", credentials=None):
+        self.calls.append(user_message)
+        answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+        return types.SimpleNamespace(content=answer, usage={"total_tokens": 3})
+
+
+def test_an_action_node_publishes_its_answer_under_its_own_variable():
+    llm = _ScriptedLLM("| A | B |\n| --- | --- |\n| 1 | 2 |")
+    handler = NodeHandler(graph_loader=None)
+    state = {"input": "go", "context": {}}
+
+    result = asyncio.run(handler._process_action(
+        "n1", {"system_prompt": "normalise", "output_variable": "rows_text"},
+        state, llm, credentials=LLMCredentialSet.empty()))
+
+    assert result["variables"]["rows_text"].startswith("| A | B |")
+    # `output` still carries the same text, so the final answer of a run whose LAST node
+    # publishes a variable is unaffected, and the history entry stays informative.
+    assert result["output"] == result["variables"]["rows_text"]
+
+
+def test_an_action_node_without_a_name_publishes_nothing():
+    """Back-compat: a graph built before this wrote no variables at all."""
+    llm = _ScriptedLLM("plain answer")
+    handler = NodeHandler(graph_loader=None)
+    state = {"input": "go", "context": {}}
+
+    result = asyncio.run(handler._process_action(
+        "n1", {"system_prompt": "answer"}, state, llm,
+        credentials=LLMCredentialSet.empty()))
+
+    assert "variables" not in result
+    assert result["output"] == "plain answer"
+
+
+def test_a_second_node_reads_what_the_first_one_published():
+    """The hand-off must survive into the next prompt, merged the way the reducer does it."""
+    llm = _ScriptedLLM("| Tutu | 14 |", "the table above is all you may use")
+    handler = NodeHandler(graph_loader=None)
+    state = {"input": "go", "context": {}}
+
+    first = asyncio.run(handler._process_action(
+        "normalise", {"system_prompt": "normalise", "output_variable": "rows_text"},
+        state, llm, credentials=LLMCredentialSet.empty()))
+    state["variables"] = {**state.get("variables", {}), **first["variables"]}
+    asyncio.run(handler._process_action(
+        "compare", {"system_prompt": "compare", "context_mode": "minimal"},
+        state, llm, credentials=LLMCredentialSet.empty()))
+
+    assert "| Tutu | 14 |" in llm.calls[1], (
+        "the second node must see the table the first one produced"
+    )

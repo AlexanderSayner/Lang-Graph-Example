@@ -10,6 +10,7 @@ import org.sandbox.langgraph.grpc.GetLlmSettingsResponse;
 import org.sandbox.langgraph.grpc.LangGraphServiceGrpc;
 import org.sandbox.langgraph.mapper.GraphGrpcMapper;
 import org.sandbox.langgraph.security.CurrentUser;
+import org.sandbox.langgraph.service.document.DocumentService;
 import org.sandbox.langgraph.service.llm.LlmRequestCredentials;
 import org.sandbox.langgraph.service.user.UserLlmCredentialService;
 
@@ -46,7 +47,8 @@ class LangGraphGrpcServiceLlmSettingsTest {
             when(stub.getLlmSettings(any(GetLlmSettingsRequest.class))).thenReturn(response);
         }
         return new LangGraphGrpcService(stub, mapper, new ObjectMapper(), store,
-                new LlmRequestCredentials(new CurrentUser(), mock(UserLlmCredentialService.class)));
+                new LlmRequestCredentials(new CurrentUser(), mock(UserLlmCredentialService.class)),
+                mock(DocumentService.class), new CurrentUser());
     }
 
     @Test

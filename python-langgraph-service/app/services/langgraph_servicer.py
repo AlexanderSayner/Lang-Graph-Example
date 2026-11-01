@@ -6,7 +6,7 @@ import logging
 import time
 from collections import defaultdict
 from dataclasses import replace
-from typing import Dict, Any, Callable, Tuple
+from typing import Dict, Any, Callable, Optional, Set, Tuple
 
 import grpc
 import redis.asyncio as redis
@@ -22,11 +22,13 @@ from app.clients.model_catalog import list_models
 from app.config import settings
 from app.copilot.copilot_agent import CopilotAgent
 from app.generated import langgraph_pb2_grpc, langgraph_pb2
-from app.graph_engine.graph_utils import parse_conditions, resolve_route, GraphState
+from app.graph_engine.graph_utils import parse_conditions, resolve_route, GraphState, DOCUMENT_REF_KEY, \
+    document_variables_of, looks_like_document_id
 from app.graph_engine.node_handlers import (
     BILLING_SERVICE,
     BILLING_USER,
     CONFIG_CALLER_KIND,
+    CONFIG_DOCUMENT_REF_KEYS,
     CONFIG_LLM_CREDENTIALS,
     CONFIG_REQUIRE_USER_KEY,
     CONFIG_USER_ID,
@@ -95,6 +97,9 @@ RUN_CONTEXT_KEYS = frozenset({
     # Legacy single-key form. A graph picks its provider per NODE, so a bare key cannot be
     # attributed to one; it is dropped rather than guessed at, and never kept in the state.
     "llm_api_key", "yc_folder_id",
+    # Resolved by the servicer from the definition, never taken from a client: it decides
+    # which context keys a prompt must hide, so a caller must not be able to widen it.
+    CONFIG_DOCUMENT_REF_KEYS,
 })
 
 
@@ -131,6 +136,41 @@ def _split_run_context(request_context: Any) -> Tuple[Dict[str, Any], Dict[str, 
             "its provider per node, so send llm_credentials_json keyed by provider."
         )
     return state_context, configurable
+
+
+def document_slots_of(graph_data: GraphDefinition) -> Optional[Dict[str, str]]:
+    """The ``ref_key -> output_variable`` slots this definition's DOCUMENT nodes read.
+
+    Mirrors ``NodeHandler._process_document``: a DOCUMENT node reads
+    ``context[metadata["document_ref_key"]]`` and writes ``variables[metadata["output_variable"]]``,
+    both through ``document_variables_of`` so the two can never disagree about the defaults.
+    Knowing the slots is what lets the servicer notice a run that names a reference nothing in
+    the graph will fetch - the failure behind "I don't have access to the file content", where
+    the upload, the ownership gate and the run itself all succeed and only the reading step is
+    missing - and its mirror image, a graph that expects a slot the run never supplied.
+
+    ``None`` means "cannot be known from here": a GRAPH node runs a second definition, and
+    whatever reads its context is not visible in this one.
+    """
+    slots: Dict[str, str] = {}
+    for node in graph_data.nodes:
+        if node.node_type == "GRAPH":
+            return None
+        if node.node_type != "DOCUMENT":
+            continue
+        ref_key, output_variable, _meta_variable, _label = document_variables_of(node.metadata)
+        slots[ref_key] = output_variable
+    return slots
+
+
+def document_ref_keys_of(graph_data: GraphDefinition) -> Optional[Set[str]]:
+    """The context keys this definition's DOCUMENT nodes actually read.
+
+    ``None`` means "cannot be known from here" (see :func:`document_slots_of`); otherwise the
+    set of ref keys, possibly empty.
+    """
+    slots = document_slots_of(graph_data)
+    return None if slots is None else set(slots)
 
 
 def _aggregate_billing(seen: Any) -> str:
@@ -183,6 +223,10 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
 
         max_cache_size = getattr(settings, "MAX_CACHED_GRAPHS", 100)
         self._compiled_graphs: LRUCache = LRUCache(maxsize=max_cache_size)
+        # Which context keys each cached graph's DOCUMENT nodes read, written together with
+        # the compiled graph (see _remember_compiled_graph) so the "nobody will read this
+        # attachment" guard never has to fetch a definition it already compiled.
+        self._document_ref_keys: LRUCache = LRUCache(maxsize=max_cache_size)
         self._compile_lock = asyncio.Lock()
 
         self._checkpointer = checkpointer
@@ -205,14 +249,93 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
 
         # Pass the unified loader to NodeHandler for subgraph resolution. Nodes resolve their
         # own client at compile time (see _build_langgraph); this is only the fallback.
+        #
+        # The document fetcher is the Java callback the DOCUMENT node uses to pull an uploaded
+        # attachment's bytes. It is passed as a bound method so the handler never needs to know
+        # about channels or stubs - it just awaits one callable (document_id) -> bytes.
         self.node_handler = NodeHandler(
             self._load_and_compile_graph,
             default_llm_factory=lambda: self._llm_registry.lazy(resolve_llm_config({}, {})),
+            document_fetcher=self.java_client.get_document,
         )
 
         # Live ExecuteGraph streams register here so a runaway run can be cancelled
         # (CancelGraphExecution) without waiting for the node/LLM call to finish.
         self._active_runs = ExecutionRegistry()
+
+    def _remember_compiled_graph(self, graph_id: str, graph_data: GraphDefinition,
+                                 compiled: Runnable) -> None:
+        """Cache a compiled graph together with what a run needs to know about it.
+
+        Both caches are written here and nowhere else (an in-process build and a lazy load),
+        so they can never disagree about which definition a ``graph_id`` names.
+        """
+        self._compiled_graphs[graph_id] = compiled
+        self._document_ref_keys[graph_id] = document_slots_of(graph_data)
+
+    def _warn_if_document_never_read(self, graph_id: str, state_context: Dict[str, Any]) -> None:
+        """Log when a run and a graph disagree about which documents it carries.
+
+        An attachment reaches a model only through a DOCUMENT node. Two ways of getting that
+        wrong are both silent by construction, and both end the same way - with the model
+        answering that it has no access to a file, or with half the inputs of a comparison
+        missing, having seen nothing that would say so:
+
+        1. the run names a reference under a key no DOCUMENT node reads (a graph without one,
+           or one that reads a different key). The upload, the ownership check and the run all
+           succeed and only the reading step is missing;
+        2. the graph reads more slots than the run supplied (the two-document case: a caller
+           attaches one file to a graph that expects two). The second node reports
+           ``missing_context`` and stops the run.
+
+        Either way it is a graph-design or calling mistake rather than a server fault, so this
+        is a warning and not a refusal: a caller may legitimately attach a file now and use it
+        in a later message.
+
+        Nothing is said when this process cannot know the answer: an evicted or never-built
+        definition, or one containing a GRAPH node, whose own subgraph may well hold the
+        DOCUMENT node. A warning must rest on what the engine knows, never on a guess.
+        """
+        slots = self._document_ref_keys.get(graph_id)
+        if slots is None:
+            return
+        # A dict of ref_key -> output_variable (what this servicer writes). Tolerated as a
+        # set too: that is what `document_ref_keys_of` returned before slots existed, and a
+        # cache seeded by a test or surviving a hot reload must not break the guard.
+        readable: Set[str] = set(slots or ())
+
+        supplied = {str(k): v for k, v in (state_context or {}).items() if str(v or "").strip()}
+
+        # 1 & 2 - a reference nothing will read.
+        for key, value in supplied.items():
+            if key in readable:
+                continue
+            if key != DOCUMENT_REF_KEY and not looks_like_document_id(value):
+                # An ordinary context value (a tenant, a date, a flag). The one key the
+                # contract has always used is reported whatever its value, so a caller who
+                # sends a malformed id under it is still told nothing will read it.
+                continue
+            logger.warning(
+                "graph %s was run with a document reference under context key %r, but no "
+                "DOCUMENT node in this graph reads that key (it reads: %s). The attachment is "
+                "uploaded and the reference authorised, and nothing will fetch it - add a "
+                "DOCUMENT node that reads this key, or give the node the key this run uses.",
+                graph_id, key, ", ".join(sorted(readable)) or "no document keys",
+            )
+
+        # 3 - a slot the run never supplied. Only a run that filled at least ONE of this
+        # graph's slots is reported: a caller that attached nothing is simply using the graph
+        # for a question, and attaching later is legitimate.
+        filled = readable & set(supplied)
+        if filled:
+            missing = sorted(readable - filled)
+            if missing:
+                logger.warning(
+                    "graph %s reads documents from context key(s) %s, but this run only "
+                    "supplied %s. The DOCUMENT node(s) will report missing_context and stop "
+                    "the run - attach a file for every slot before running.",
+                    graph_id, ", ".join(missing), ", ".join(sorted(filled)),
+                )
 
     async def _load_and_compile_graph(self, graph_id: str) -> Runnable:
         """Unified method to fetch, normalize, and compile a graph (prevents thundering herd)."""
@@ -244,7 +367,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             compiled = self._build_langgraph(validated)
 
             # 4. Cache in memory
-            self._compiled_graphs[graph_id] = compiled
+            self._remember_compiled_graph(graph_id, validated, compiled)
             logger.info(f"Graph {graph_id} compiled and cached locally")
             return compiled
 
@@ -291,11 +414,12 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
             # eagerly, so an unknown/typo'd provider still fails the build fast and loud.
             # The client itself is LAZY (LazyLLMClient): only nodes that really call the model
             # get one - router nodes always do, the rest only when they carry a system_prompt
-            # (pass-through, HTTP_REQUEST and GRAPH nodes never touch the LLM) - and a missing API key
-            # surfaces on the node's first model call instead of failing the whole build.
+            # (pass-through, HTTP_REQUEST, DOCUMENT and GRAPH nodes never touch the LLM) - and a
+            # missing API key surfaces on the node's first model call instead of failing the build.
             node_type_val = node.node_type
             uses_llm = is_router or (
-                node_type_val not in ("HTTP_REQUEST", "GRAPH") and bool(metadata.get("system_prompt"))
+                node_type_val not in ("HTTP_REQUEST", "GRAPH", "DOCUMENT")
+                and bool(metadata.get("system_prompt"))
             )
             llm_client = (
                 self._llm_registry.lazy(resolve_llm_config(metadata, graph_data.config))
@@ -403,7 +527,7 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         compiled_graph = self._build_langgraph(validated_graph_data)
 
         # Update caches
-        self._compiled_graphs[graph_id] = compiled_graph
+        self._remember_compiled_graph(graph_id, validated_graph_data, compiled_graph)
         await self.redis_client.setex(f"graph:def:{graph_id}", 3600, json.dumps(graph_dict))
         await self.redis_client.publish("graph:invalidation", graph_id)
 
@@ -441,6 +565,21 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
         # `aget_state` matters: the START event serialises `stream_input`, so a key left in
         # there would be shipped straight back to the browser.
         state_context, run_configurable = _split_run_context(getattr(request, "context", None))
+
+        # A document reaches a model only through a DOCUMENT node, so a run that names a
+        # reference nothing in this graph reads would upload, validate and then quietly do
+        # nothing with it - and the model, never shown the file, would answer that it has no
+        # access to it. Said out loud here, once per run, where an operator will see it.
+        self._warn_if_document_never_read(graph_id, state_context)
+
+        # Which context keys hold a document reference, for this graph and this run. The
+        # ACTION node hides them from the prompt: a custom-named handle is exactly as useless
+        # to a model as the default one, and being shown it is what makes a model announce it
+        # cannot open a file a DOCUMENT node has already turned into text. Resolved from the
+        # DEFINITION, never from the caller - it is configurable, so it reaches subgraphs too.
+        document_ref_keys = self._document_ref_keys.get(graph_id)
+        if document_ref_keys:
+            run_configurable[CONFIG_DOCUMENT_REF_KEYS] = ",".join(sorted(document_ref_keys))
 
         config: RunnableConfig = {
             "configurable": {

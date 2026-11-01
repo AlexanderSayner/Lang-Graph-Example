@@ -71,6 +71,50 @@ afterwards as a redundant confirmation write - it takes the flat `positions: [{ 
 idempotent on the server, and remains the path used by the canvas buttons above, which save a layout
 without rebuilding the graph.
 
+## Document attachments
+
+The chat panel can hand a run a file — an `.xlsx` or `.docx` — so a graph containing a
+`DOCUMENT` node gets real rows instead of asking a model to pretend it read a spreadsheet:
+
+- the 📎 file input sits in its own row (`components/ChatPanel.jsx`) and uploads the file the
+  moment it is chosen to `POST /api/documents` (multipart with `credentials: 'include'`). The
+  upload is REST rather than GraphQL on purpose — a binary body has no business in GraphQL
+  JSON — so it needs the `/api` entry in `nginx.conf` and `vite.config.js`, both of which
+  answer `{ documentId, filename, sizeBytes, sha256, expiresAt }`;
+- each row is a **slot**: a `DOCUMENT` node of the loaded graph, named by its label (or its
+  context key) and showing the variable its text lands in on hover. The slots come from
+  `documentSlots(view)` in `constants.js`, built from the same raw `getGraphView` payload that
+  carries each node's metadata, so "which file is which" is read from the **graph** rather
+  than guessed. A graph with no `DOCUMENT` node gets the single default slot, so a file can
+  still be picked and the warning below can explain that nothing will read it;
+- the result is kept per slot in `attachments` state in `app.jsx` and rendered as a chip: the
+  file name, an in-flight ⏳, or the reason the upload was refused (too large, wrong type)
+  with a ✕ to remove it. Uploading at pick time rather than at run time is what makes that
+  feedback arrive while the user still remembers which file it was about;
+- a run sends `{ <refKey>: documentId, … }` on its `context` for every filled slot — the only
+  channel the engine's `DOCUMENT` nodes read — and the attachments are cleared once the run
+  finishes, so a follow-up message never silently re-attaches the same files;
+- the references are **yours**: the server refuses one for any other account, and refuses one
+  for an anonymous visitor, answering `DOCUMENT_NOT_FOUND` — so a reference the caller did not
+  upload never reaches the engine. That check runs for every slot key, not just the default;
+- a file reaches a model only through a `DOCUMENT` node, so a graph without one would accept
+  the upload and then have nothing to read it — the model still sees the reference in its
+  own context and answers that it has no access to the file. The panel therefore shows an
+  amber warning next to the rows whenever a file is attached to a graph containing no
+  `DOCUMENT` node, with a link to the builder for that graph (the graph's name travels in the
+  link, because the builder falls back to "Untitled Graph" and would otherwise rebrand the
+  graph on the next save);
+- the panel also warns **before** the run about the one mistake it can see in the slots
+  themselves: several `DOCUMENT` nodes reading the same context key. They fetch the same
+  reference, so the graph reads one file twice and can never hold two — whichever second file
+  you pick overwrites the first's reference. The fix is one field in the builder.
+
+In the builder, a `DOCUMENT` node carries no prompt (it never calls a model): it is a slot —
+its **name** (the label shown next to the 📎 picker and prefixed to its extracted text), the
+**context key** holding the reference (`document_ref_key`, `document_ref` by default), the
+**variable** its text lands in (`output_variable`, `document_text` by default) and the
+**variable** for its metadata (`meta_variable`, `<output_variable>_meta` by default).
+
 ## Personal AI keys
 
 The signed-in user can save their own provider keys so their runs bill their own account

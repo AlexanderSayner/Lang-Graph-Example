@@ -509,4 +509,130 @@ mutation BuildManager {
     success
   }
 }
+
+#### Attachments: read a spreadsheet or a word document
+
+A `DOCUMENT` node is deterministic — it never calls a model. It fetches the file the run
+names, extracts its text, and writes it to `variables.document_text`; the `ACTION` node after
+it is what actually reasons over that text. Details in
+[B2B_INTEGRATION.md §7](B2B_INTEGRATION.md).
+
+Build a graph with one:
+
+```http request
+POST http://localhost:9191/graphql
+
+{
+  "query": "mutation BuildGraph($input: BuildGraphInput!) { buildGraph(input: $input) { success graphId message } }",
+  "variables": {
+    "input": {
+      "graphId": "invoice-agent",
+      "graphName": "Invoice agent",
+      "nodes": [
+        { "nodeId": "start",   "nodeType": "START",    "handlerName": "startHandler" },
+        { "nodeId": "attach",  "nodeType": "DOCUMENT", "handlerName": "attachHandler",
+          "metadata": { "label": "Read the attached file",
+                        "max_rows_per_sheet": 200,
+                        "max_total_chars": 15000 } },
+        { "nodeId": "summarise", "nodeType": "ACTION", "handlerName": "summariseHandler",
+          "metadata": { "system_prompt": "You receive spreadsheet rows in variables.document_text. Reply with JSON only: {\"total\": number, \"top_client\": string}." } },
+        { "nodeId": "end",     "nodeType": "END",      "handlerName": "endHandler" }
+      ],
+      "edges": [
+        { "source": "start", "target": "attach" },
+        { "source": "attach", "target": "summarise" },
+        { "source": "summarise", "target": "end" }
+      ]
+    }
+  }
+}
 ```
+
+Then, for B2B, upload the file and quote its id in the run's context
+(see [B2B_INTEGRATION.md §7](B2B_INTEGRATION.md) for the inline one-call form):
+
+```bash
+grpcurl -proto external_api.proto -plaintext -H 'x-api-key: <key>' -d '{
+  "thread_id": "t-1", "filename": "q1.xlsx",
+  "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "content": "'$(base64 -w0 q1.xlsx)'"
+}' localhost:9091 external.v1.LangGraphExternalApi/UploadDocument
+
+grpcurl -proto external_api.proto -plaintext -H 'x-api-key: <key>' -d '{
+  "graph_id": "invoice-agent", "thread_id": "t-1", "input": "Summarise the attached file",
+  "context": { "document_ref": "<document_id>" }
+}' localhost:9091 external.v1.LangGraphExternalApi/ExecuteGraph
+```
+
+```
+#### Attachments: compare two spreadsheets in one run
+
+A graph that reads **several** files gives each `DOCUMENT` node a slot of its own — the
+context key its file arrives under, the variable its text lands in, and a label. "Which file
+is which" is then answered by the graph, not guessed by the model. Two nodes left on the
+default key would read the *same* file twice, so naming the keys is what makes this graph
+work at all.
+
+```http request
+POST http://localhost:9191/graphql
+
+{
+  "query": "mutation BuildGraph($input: BuildGraphInput!) { buildGraph(input: $input) { success graphId message } }",
+  "variables": {
+    "input": {
+      "graphId": "discrepancy-agent",
+      "graphName": "Report discrepancies",
+      "nodes": [
+        { "nodeId": "start",     "nodeType": "START",    "handlerName": "startHandler" },
+        { "nodeId": "timesheet", "nodeType": "DOCUMENT", "handlerName": "timesheetHandler",
+          "metadata": { "label": "Time sheet (as submitted)",
+                        "document_ref_key": "timesheets_ref",
+                        "output_variable": "timesheets_text" } },
+        { "nodeId": "report",    "nodeType": "DOCUMENT", "handlerName": "reportHandler",
+          "metadata": { "label": "Filled report",
+                        "document_ref_key": "report_ref",
+                        "output_variable": "report_text" } },
+        { "nodeId": "compare",   "nodeType": "ACTION",   "handlerName": "compareHandler",
+          "metadata": { "system_prompt": "You receive two files: variables.timesheets_text (what the person submitted) and variables.report_text (the filled-in report). List every discrepancy as JSON only: [{\\\"field\\\": string, \\\"timesheet\\\": string, \\\"report\\\": string}]. Use [] when there are none." } },
+        { "nodeId": "end",       "nodeType": "END",      "handlerName": "endHandler" }
+      ],
+      "edges": [
+        { "source": "start", "target": "timesheet" },
+        { "source": "timesheet", "target": "report" },
+        { "source": "report", "target": "compare" },
+        { "source": "compare", "target": "end" }
+      ]
+    }
+  }
+}
+```
+
+Upload each file, then name both references in **one** run's context:
+
+```bash
+# Two uploads, because the two files are business data a run will quote.
+grpcurl -proto external_api.proto -plaintext -H 'x-api-key: <key>' -d '{
+  "thread_id": "t-3", "filename": "timesheet.xlsx",
+  "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "content": "'$(base64 -w0 timesheet.xlsx)'"
+}' localhost:9091 external.v1.LangGraphExternalApi/UploadDocument
+grpcurl -proto external_api.proto -plaintext -H 'x-api-key: <key>' -d '{
+  "thread_id": "t-3", "filename": "report.xlsx",
+  "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "content": "'$(base64 -w0 report.xlsx)'"
+}' localhost:9091 external.v1.LangGraphExternalApi/UploadDocument
+
+# One run, both references - the keys are the graph's, and each is tenant-checked.
+grpcurl -proto external_api.proto -plaintext -H 'x-api-key: <key>' -d '{
+  "graph_id": "discrepancy-agent", "thread_id": "t-3",
+  "input": "Compare the two files and list the discrepancies",
+  "context": { "timesheets_ref": "<document_id 1>", "report_ref": "<document_id 2>" }
+}' localhost:9091 external.v1.LangGraphExternalApi/ExecuteGraph
+```
+
+The chat panel does the same thing through the browser: it reads those slots and shows one
+labelled 📎 picker per `DOCUMENT` node, so both files are attached before a single run.
+
+Leave out one of the two references and the empty node reports
+`error = missing_context:report_ref` and stops — it never answers from one file alone.
+

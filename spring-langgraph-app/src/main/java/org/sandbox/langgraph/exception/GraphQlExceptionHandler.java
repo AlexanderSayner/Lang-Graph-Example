@@ -3,6 +3,7 @@ package org.sandbox.langgraph.exception;
 import graphql.GraphQLError;
 import graphql.GraphqlErrorBuilder;
 import graphql.schema.DataFetchingEnvironment;
+import org.sandbox.langgraph.service.document.DocumentNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.graphql.execution.DataFetcherExceptionResolverAdapter;
@@ -34,6 +35,18 @@ public class GraphQlExceptionHandler extends DataFetcherExceptionResolverAdapter
                     .errorType(ErrorType.NOT_FOUND)
                     .path(env.getExecutionStepInfo().getPath())
                     .extensions(java.util.Map.of("code", e.getErrorCode()))
+                    .build();
+
+            // An attachment reference that does not resolve: never uploaded, past its retention
+            // deadline, or owned by another account. Mirrors the B2B facade's answer exactly
+            // (NOT_FOUND, the same DOCUMENT_NOT_FOUND code, the same message) so the two doors
+            // cannot drift - and it is not the INTERNAL_ERROR the catch-all below would have
+            // reported: this is a condition of the caller's request, not a fault.
+            case DocumentNotFoundException e -> GraphqlErrorBuilder.newError()
+                    .message(e.getMessage())
+                    .errorType(ErrorType.NOT_FOUND)
+                    .path(env.getExecutionStepInfo().getPath())
+                    .extensions(java.util.Map.of("code", "DOCUMENT_NOT_FOUND"))
                     .build();
 
             case LangGraphException.GraphBuildException e -> GraphqlErrorBuilder.newError()

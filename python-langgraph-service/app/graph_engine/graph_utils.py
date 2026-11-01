@@ -2,9 +2,69 @@ import json
 import logging
 import operator
 import re
-from typing import TypedDict, Dict, Any, Annotated, List
+from typing import TypedDict, Dict, Any, Annotated, Iterable, List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+# The one context key that names an attached document BY DEFAULT. A graph that needs several
+# documents in one run gives each DOCUMENT node a key of its own (see DOCUMENT_REF_KEY below
+# and `document_variables_of`); this remains the fallback for a node that names none, and the
+# single key the Java facades gate by default. It is a run-level fact (a graph definition is
+# persisted and shared, a file belongs to a single run), so it travels in the run's context
+# rather than in node metadata; the metadata only names the KEY a DOCUMENT node should read.
+# Single source of truth for the engine, the node handler and the "nobody will read this" guard
+# in the servicer.
+DOCUMENT_REF_KEY = "document_ref"
+
+# Where a DOCUMENT node writes what it extracted, and the metadata that describes it. Both are
+# per-node metadata (`output_variable` / `meta_variable`) so one run can carry several files
+# without the second extraction overwriting the first - the failure behind "I uploaded two
+# documents and the agent only saw one". The defaults keep the original single-document
+# contract: a node that declares nothing writes exactly what it always wrote.
+DOCUMENT_OUTPUT_VARIABLE = "document_text"
+DOCUMENT_META_VARIABLE = "document_meta"
+
+# The shape of a document id minted by DocumentService.newId: "<owner_kind>-<owner_hash>-<32
+# chars of a-z0-9>". Used by the "nothing will read this" guard to tell a document handle in
+# the run context from an ordinary business value such as {"tenant": "orchestra"}, so a graph
+# that happens to pass context keys of its own is never warned about. Mirrored on the Java
+# side by DocumentService.looksLikeDocumentId - keep the two in step.
+DOCUMENT_ID_PATTERN = re.compile(r"^(ui|b2b)-[0-9a-f]{1,8}-[a-z0-9]{32}$")
+
+
+def looks_like_document_id(value: Any) -> bool:
+    """True when a context value is shaped like a document id this service would have minted."""
+    return isinstance(value, str) and bool(DOCUMENT_ID_PATTERN.match(value.strip()))
+
+
+def document_variables_of(metadata: Optional[Dict[str, Any]]) -> Tuple[str, str, str, str]:
+    """Resolve one DOCUMENT node's slot: ``(ref_key, output_variable, meta_variable, label)``.
+
+    Every part is metadata so a graph definition stays declarative and the same definition can
+    be shared across runs while each run supplies its own files. Blank or missing metadata
+    means the default, which is what keeps a graph built before this existed working
+    unchanged: ``context[document_ref]`` -> ``variables.document_text`` +
+    ``variables.document_meta``.
+
+    ``meta_variable`` defaults to ``document_meta`` while the output is the default
+    ``document_text``, and to ``<output_variable>_meta`` once the output is renamed - so the
+    metadata always sits next to the text it describes, and the historical name survives for
+    the historical layout.
+    """
+    meta = metadata or {}
+
+    def _name(key: str, fallback: str) -> str:
+        return str(meta.get(key) or "").strip() or fallback
+
+    ref_key = _name("document_ref_key", DOCUMENT_REF_KEY)
+    output_variable = _name("output_variable", DOCUMENT_OUTPUT_VARIABLE)
+    if "meta_variable" in meta or output_variable == DOCUMENT_OUTPUT_VARIABLE:
+        meta_variable = _name("meta_variable", DOCUMENT_META_VARIABLE)
+    else:
+        meta_variable = _name("meta_variable", f"{output_variable}_meta")
+    label = str(meta.get("label") or "").strip()
+    return ref_key, output_variable, meta_variable, label
 
 
 # --- Reducer for Variables ---
@@ -239,19 +299,86 @@ def resolve_route(variables: Dict[str, Any], parsed_conditions, extra_state: Dic
     return None
 
 
+def _renderable_variables(variables: Dict[str, Any]) -> Dict[str, Any]:
+    """The variables a model may see, with what it cannot act on removed.
+
+    Every ``*_meta`` map a DOCUMENT node wrote records which reference produced its text. The
+    filename, the label and the parse statistics are useful context; ``document_ref`` is an
+    opaque handle - a model can do nothing but quote it back, and doing so is exactly how a
+    run ends with an answer about being unable to open a file. The state keeps the handle (the
+    state inspector shows which reference produced the text, and a condition may still want
+    it); only the rendered copy drops it.
+
+    The scan is over every ``*_meta`` variable rather than the one historical name, because a
+    graph may give each of its DOCUMENT nodes a meta variable of its own (see
+    ``document_variables_of``) - scrubbing only ``document_meta`` would leak the handles of
+    every slot that was renamed. The name suffix is required so an unrelated variable the graph
+    happens to call ``*_meta`` is left alone unless it really holds a handle.
+
+    Returns the ORIGINAL dict when there is nothing to remove, so the common case costs
+    neither a copy nor a lookup beyond one key probe.
+    """
+    rendered = None
+    for name, value in variables.items():
+        if not (name.endswith("_meta") or name == DOCUMENT_META_VARIABLE):
+            continue
+        if not (isinstance(value, dict) and DOCUMENT_REF_KEY in value):
+            continue
+        if rendered is None:
+            rendered = dict(variables)
+        rendered[name] = {k: v for k, v in value.items() if k != DOCUMENT_REF_KEY}
+    return rendered if rendered is not None else variables
+
+
+def _is_block_text(value: Any) -> bool:
+    """A string the model has to READ as text rather than parse as a value.
+
+    `json.dumps` escapes every newline, so a document extraction arrives as one enormous line
+    of ``\\n`` - and with `ensure_ascii` (the default) every non-ASCII character becomes a
+    ``\\uXXXX`` sequence, turning «Новиков» into ``\\u041d\\u043e\\u0432\\u0438\\u043a\\u043e\\u0432``.
+    Reading a ragged block layout - where a person's name sits on its own row above their
+    rows and must be carried down - out of such a line is not a reasonable ask, and the
+    symptom is exactly what this feature reports: rows attributed to the wrong employee.
+    Anything with a newline is therefore rendered raw instead of as a JSON string.
+    """
+    return isinstance(value, str) and "\n" in value
+
+
 def format_state_context(state: GraphState, include_history: bool = True,
-                          include_http_result: bool = True) -> str:
+                          include_http_result: bool = True,
+                          only_variables: Optional[Set[str]] = None) -> str:
     """Prepares the conversation history and variables for the LLM.
 
     `include_history` / `include_http_result` let a node ask for a smaller context: a very long
     prompt (full API payload + full history) makes the model noticeably more likely to refuse,
     and a node usually needs only part of it. Values that are switched off are simply not shown.
+
+    `only_variables` narrows this further: when a node declares the variables it consumes, only
+    those are rendered. A node in a pipeline that works from the previous node's normalised
+    table otherwise still receives the two raw documents it was told not to use - and, being
+    right there in the prompt, they win: the model re-parses them and the sums come out wrong.
     """
     # We MUST show the LLM the current variables so it knows what is already filled.
     current_vars = state.get("variables", {}) or {}
     if not include_http_result:
         current_vars = {k: v for k, v in current_vars.items() if k != "http_result"}
-    vars_json_str = json.dumps(current_vars, indent=2)
+    if only_variables is not None:
+        current_vars = {k: v for k, v in current_vars.items() if k in only_variables}
+    current_vars = _renderable_variables(current_vars)
+
+    # Scalars stay in the JSON dump - compact, and the types stay unambiguous. Multi-line text
+    # (a document extraction, an HTML payload) is emitted raw, because escaping it is what makes
+    # it unreadable; see _is_block_text.
+    scalars = {k: v for k, v in current_vars.items() if not _is_block_text(v)}
+    blocks = {k: v for k, v in current_vars.items() if _is_block_text(v)}
+    # ensure_ascii=False: the transport is UTF-8 end to end (gRPC, Postgres, HTTP), so there is
+    # nothing to escape, and escaping it only made the prompt bigger and unreadable.
+    vars_json_str = json.dumps(scalars, indent=2, ensure_ascii=False)
+    blocks_str = ""
+    if blocks:
+        blocks_str = "\n\n" + "\n\n".join(
+            f"--- {name} ---\n{text}\n--- end {name} ---" for name, text in blocks.items()
+        )
 
     # Dynamic History (Conversation memory)
     # This is CRITICAL. Without this, the LLM doesn't know what happened before.
@@ -260,14 +387,14 @@ def format_state_context(state: GraphState, include_history: bool = True,
     if history:
         # Format: "Node Name: Output"
         history_str = "Conversation History:\n" + "\n".join(
-            [f"- {h.get('node')}: {h.get('output')}" for h in history if h.get('output')]
+            [f"- {h.get('node')}: {h.get('output')}" for h in history if h.get("output")]
         )
 
     user_input = state.get("input") or ""
 
     # We create a clear "Data Block" so the LLM cannot hallucinate state.
     data_block = (
-        f"=== CURRENT STATE VARIABLES ===\n{vars_json_str}\n\n"
+        f"=== CURRENT STATE VARIABLES ===\n{vars_json_str}{blocks_str}\n\n"
         f"=== CURRENT USER INPUT ===\n{user_input}"
     )
 

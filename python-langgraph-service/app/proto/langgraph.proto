@@ -46,10 +46,21 @@ service HttpRequestService {
 
 service JavaGraphProvider {
   rpc GetGraphDefinition (GetGraphDefinitionRequest) returns (GetGraphDefinitionResponse);
+  rpc GetDocument (GetDocumentRequest) returns (GetDocumentResponse);
 }
 
 message GetGraphDefinitionRequest {string graph_id = 1;}
 message GetGraphDefinitionResponse {string definition_json = 1;}
+
+message GetDocumentRequest {
+  string document_id = 1;
+}
+
+message GetDocumentResponse {
+  bytes content = 1;
+  string filename = 2;
+  string mime_type = 3;
+}
 
 // Message for building a graph
 message BuildGraphRequest {

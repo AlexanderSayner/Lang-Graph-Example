@@ -4,6 +4,7 @@ import io.grpc.Metadata;
 import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import jakarta.validation.ConstraintViolationException;
+import org.sandbox.langgraph.service.document.DocumentNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -76,6 +77,15 @@ public final class GrpcErrors {
         if (unwrapped instanceof IllegalArgumentException validation) {
             return withCode(Status.INVALID_ARGUMENT, "INVALID_ARGUMENT",
                     validation.getMessage() != null ? validation.getMessage() : "invalid request");
+        }
+
+        // A document reference that does not resolve: never uploaded, past its retention
+        // deadline, or owned by another tenant (requireOwnedBy reports those identically, so
+        // a caller cannot probe for ids). NOT_FOUND rather than INTERNAL - it is a condition
+        // of the caller's request, not a fault, and the engine's DOCUMENT node words it the
+        // same way when the run eventually reaches it.
+        if (unwrapped instanceof DocumentNotFoundException notFound) {
+            return withCode(Status.NOT_FOUND, "DOCUMENT_NOT_FOUND", notFound.getMessage());
         }
 
         if (unwrapped instanceof ConstraintViolationException violations) {

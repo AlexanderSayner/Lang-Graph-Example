@@ -47,6 +47,9 @@ class _FakeGraph:
 def _build_servicer(graph):
     servicer = LangGraphServiceServicer.__new__(LangGraphServiceServicer)
     servicer._active_runs = ExecutionRegistry()
+    # Read by the attachment guard in ExecuteGraph. Empty means "this process has built
+    # no definition", which the guard treats as "the answer is unknown" and stays quiet.
+    servicer._document_ref_keys = {}
 
     async def _load(_graph_id):
         return graph

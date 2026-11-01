@@ -76,6 +76,48 @@ export const fetchGraphQL = async (query, variables, options = {}) => {
     throw new Error(`GraphQL request failed. Tried: ${problems.join(' | ')}`);
 };
 
+// --- Document upload ---------------------------------------------------------------
+//
+// Attachments are REST/multipart, not GraphQL: the file is binary and base64-in-JSON would
+// inflate every upload by a third and hit the GraphQL message limit. Same origin rules as
+// fetchGraphQL above - the same-origin /api path first (it goes through the dev server's
+// proxy and nginx's), the absolute backend URL as the fallback when the UI is served
+// without one.
+export const DOCUMENT_UPLOAD_URL = `${window.location.origin}/api/documents`;
+
+/**
+ * Upload one file and return `{ documentId, filename, sizeBytes, sha256 }`.
+ *
+ * @param {File}   file     the chosen file; the browser sets its own content type
+ * @param {string} threadId the thread it will be attached to (audit only; may be blank)
+ * @param {object} options  optional AbortSignal, so a stuck upload can be cancelled
+ * @returns {Promise<object>} the reference to quote as context.document_ref on the next run
+ */
+export const uploadDocument = async (file, threadId, options = {}) => {
+    const form = new FormData();
+    form.append('file', file);
+    if (threadId) form.append('threadId', threadId);
+
+    const response = await fetch(DOCUMENT_UPLOAD_URL, {
+        method: 'POST',
+        credentials: 'include',
+        signal: options.signal,
+        body: form,
+    });
+
+    const contentType = response.headers.get('content-type') || '';
+    const text = await response.text();
+    if (!contentType.includes('json')) {
+        // Same SPA-fallback failure as fetchGraphQL: no /api proxy, so index.html came back.
+        throw new Error(`no JSON from ${DOCUMENT_UPLOAD_URL} (HTTP ${response.status})`);
+    }
+    const json = JSON.parse(text);
+    if (!response.ok || json.success === false) {
+        throw new Error(json.errorMessage || `Upload failed (HTTP ${response.status})`);
+    }
+    return json;
+};
+
 // --- Auth Queries & Mutations ---
 export const GET_CURRENT_USER_QUERY = `
     query {
@@ -204,6 +246,9 @@ export const NODE_TYPES = Object.freeze({
     HUMAN: 'HUMAN',
     GRAPH: 'GRAPH',
     HTTP_REQUEST: 'HTTP_REQUEST',
+    // Deterministic document extraction: reads the file the run's context names and writes
+    // the text to variables.document_text. Never calls a model - see AI_NODE_TYPES below.
+    DOCUMENT: 'DOCUMENT',
 });
 
 // Multi-provider LLM selection. Keep the values in sync with
@@ -333,9 +378,10 @@ export const fetchLlmModels = async (provider) => {
 };
 
 // Node types whose system prompt is actually sent to a model (NodeHandler.process).
-// Every type except HTTP_REQUEST and GRAPH runs the model when it carries a system_prompt, so
-// START/HUMAN nodes qualify too - only HTTP_REQUEST and GRAPH never do (unless they are routers,
-// which builder.jsx adds back via nodeUsesLlm).
+// Every type except HTTP_REQUEST, DOCUMENT and GRAPH runs the model when it carries a
+// system_prompt, so START/HUMAN nodes qualify too - those three never do (unless they are
+// routers, which builder.jsx adds back via nodeUsesLlm). DOCUMENT is the clearest case: it
+// only reads bytes and extracts text, so giving it a prompt would be a silent no-op.
 // Keep in sync with `uses_llm` in python-langgraph-service/app/services/langgraph_servicer.py.
 export const AI_NODE_TYPES = Object.freeze([NODE_TYPES.START, NODE_TYPES.END, NODE_TYPES.ACTION, NODE_TYPES.HUMAN]);
 
@@ -350,6 +396,7 @@ const NODE_CLASS_SUFFIXES = Object.freeze({
     [NODE_TYPES.HUMAN]: 'human',
     [NODE_TYPES.GRAPH]: 'graph',
     [NODE_TYPES.HTTP_REQUEST]: 'http-request',
+    [NODE_TYPES.DOCUMENT]: 'document',
 });
 
 /** React Flow node class for a node type, e.g. HTTP_REQUEST -> "node-http-request". */
@@ -493,4 +540,96 @@ export const layoutGraph = (nodes, edges, rankdir = 'TB') => {
         const box = boxes.get(n.id);
         return { ...n, position: { x: Math.round(box.x), y: Math.round(box.y) } };
     });
+};
+
+// --- Attachment slots ------------------------------------------------------------------
+//
+// A graph reads a document through a DOCUMENT node, and a graph may read several in one run:
+// each node names the context key its file arrives under (`document_ref_key`, default
+// `document_ref`) and the variable its text lands in (`output_variable`, default
+// `document_text`). Those keys ARE the answer to "which file is which" - the graph says so,
+// not the model - so the chat panel asks for a file per slot rather than one file per run.
+
+/** The context key a DOCUMENT node reads, and the engine's default when it names none. */
+export const DEFAULT_DOCUMENT_REF_KEY = 'document_ref';
+
+/**
+ * The attachment slots of a graph, in the order its nodes were declared.
+ *
+ * Two DOCUMENT nodes reading the same key share one slot: they read the same file twice,
+ * which is what a graph with two unnamed nodes looks like. That is reported through
+ * `nodeIds` (length > 1) so the panel can say so instead of offering two pickers that write
+ * to the same reference.
+ *
+ * A graph with no DOCUMENT node has no slots by definition, but the panel still needs
+ * somewhere to put a picked file - the file is uploaded and the reference carried, and the
+ * warning next to it explains that nothing will read it. That case yields one slot marked
+ * `declared: false`.
+ *
+ * @param {{ nodes?: Array<{ nodeId: string, nodeType: string, metadata?: object }> }} view
+ *        the getGraphView payload for the LOADED graph
+ * @returns {Array<{ refKey: string, label: string, outputVariable: string,
+ *                   nodeIds: string[], declared: boolean }>}
+ */
+export const documentSlots = (view) => {
+    const byKey = new Map();
+    (view?.nodes || []).forEach(node => {
+        if (node?.nodeType !== NODE_TYPES.DOCUMENT) return;
+        const meta = node?.metadata || {};
+        const refKey = String(meta.document_ref_key || '').trim() || DEFAULT_DOCUMENT_REF_KEY;
+        const outputVariable = String(meta.output_variable || '').trim() || 'document_text';
+        const label = String(meta.label || '').trim();
+        const existing = byKey.get(refKey);
+        if (existing) {
+            existing.nodeIds.push(node.nodeId);
+            if (label && !existing.label) existing.label = label;
+            return;
+        }
+        byKey.set(refKey, {
+            refKey,
+            label,
+            outputVariable,
+            nodeIds: [node.nodeId],
+            declared: true,
+        });
+    });
+
+    if (byKey.size === 0) {
+        return [{
+            refKey: DEFAULT_DOCUMENT_REF_KEY,
+            label: '',
+            outputVariable: 'document_text',
+            nodeIds: [],
+            declared: false,
+        }];
+    }
+    return Array.from(byKey.values());
+};
+
+/**
+ * The slots more than one DOCUMENT node reads - the graph reads one file twice and can never
+ * hold two. The engine cannot fix this for the caller (both nodes fetch the same reference),
+ * so the panel says it before the run instead of leaving the second file mysteriously absent.
+ *
+ * @param {ReturnType<typeof documentSlots>} slots
+ * @returns {Array<{ refKey: string, nodeIds: string[] }>}
+ */
+export const ambiguousDocumentSlots = (slots) =>
+    (slots || []).filter(slot => slot.nodeIds.length > 1);
+
+/**
+ * What the run's context must carry for the slots that have a file attached.
+ *
+ * @param {ReturnType<typeof documentSlots>} slots every slot of the loaded graph
+ * @param {Record<string, { documentId?: string }>} attachments by refKey
+ * @returns {object|undefined} the context map, or undefined when nothing is attached (so an
+ *          ordinary run keeps sending no context at all rather than an empty object)
+ */
+export const documentContextFor = (slots, attachments) => {
+    const context = {};
+    (slots || []).forEach(slot => {
+        const documentId = attachments?.[slot.refKey]?.documentId;
+        if (documentId) context[slot.refKey] = documentId;
+    });
+    return Object.keys(context).length > 0 ? context : undefined;
 };

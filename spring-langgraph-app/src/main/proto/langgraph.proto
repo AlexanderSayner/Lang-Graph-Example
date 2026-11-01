@@ -50,10 +50,29 @@ service HttpRequestService {
 
 service JavaGraphProvider {
   rpc GetGraphDefinition (GetGraphDefinitionRequest) returns (GetGraphDefinitionResponse);
+  // Fetches an uploaded document's raw bytes so the engine's DOCUMENT node can parse it.
+  //
+  // Internal only (it is served on spring.grpc.server.port, which the Python engine already
+  // calls back into for graph definitions): the engine is trusted here, and the caller that
+  // supplied the reference was already authorised by whichever facade stored the document.
+  // A missing or expired id is NOT_FOUND, which the DOCUMENT node reports as a node error.
+  rpc GetDocument (GetDocumentRequest) returns (GetDocumentResponse);
 }
 
 message GetGraphDefinitionRequest {string graph_id = 1;}
 message GetGraphDefinitionResponse {string definition_json = 1;}
+
+message GetDocumentRequest {
+  // Opaque, tenant- or user-scoped id handed back by UploadDocument (or derived by the
+  // facade from an inline document on ExecuteGraph).
+  string document_id = 1;
+}
+
+message GetDocumentResponse {
+  bytes content = 1;
+  string filename = 2;
+  string mime_type = 3;
+}
 
 // Message for building a graph
 message BuildGraphRequest {

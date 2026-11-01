@@ -77,7 +77,8 @@ class B2bGrpcServerIntegrationTest {
 
         LangGraphExternalApiService externalApi = new LangGraphExternalApiService(
                 langGraphService, mock(CopilotService.class), new GraphExecutionAggregator(),
-                new ExternalApiMapper(), new B2BThreadScope(), new B2BGraphScope(), mock(jakarta.validation.Validator.class));
+                new ExternalApiMapper(), new B2BThreadScope(), new B2BGraphScope(), mock(jakarta.validation.Validator.class),
+                mock(org.sandbox.langgraph.service.document.DocumentService.class));
 
         ShadedNettyGrpcServerFactory factory = new ShadedNettyGrpcServerFactory(
                 "localhost:0", List.of(), null, null, null);

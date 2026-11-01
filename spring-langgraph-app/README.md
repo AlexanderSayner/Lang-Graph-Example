@@ -81,6 +81,8 @@ session cookie.
 | `CancelExecution` | unary | For runs started with the unary `ExecuteGraph` |
 | `DeleteGraph`, `ListGraphs` | unary | `ListGraphs` is read-only, page-token paging |
 | `AskCopilot` | unary | Chat history is a raw JSON string, passed through |
+| `UploadDocument` | unary | Attach an `.xlsx`/`.docx`; returns a `document_id` reference |
+| `UploadDocumentStream` | client streaming | The same upload, chunked, for a large file |
 
 Structured JSON (`state`, `context`, `config`, `state_updates`) travels as
 `google.protobuf.Struct`; raw JSON strings (the copilot chat history) stay
@@ -146,6 +148,37 @@ A thread addresses a run's checkpoint, state, history and cancellation, and
 nothing in the engine owns one. The facade therefore scopes `thread_id` to the
 caller's tenant (`<tenant>:<threadId>`): send `"abc"` and the engine is asked for
 `"orchestra:abc"`. An id namespaced with another tenant's prefix is rejected.
+
+### Attachments
+
+A run may carry a document (`UploadDocument`, or the inline `document` field on
+`ExecuteGraph`). Both paths converge on `DocumentService`, which validates, digests and
+stores the bytes in `app.documents` and hands back an opaque `document_id`:
+
+* **Owner-bound.** The id is minted as `<owner_kind>-<owner_hash>-<random>`; the random part is
+  32 characters from a CSPRNG (about 165 bits), and the prefix names the owner the reference is
+  checked **against**. Both facades run that check before a reference may name a run:
+  `requireOwnedBy` on the B2B side, and `LangGraphGrpcService.requireOwnedDocument` on the
+  GraphQL side - which additionally refuses an anonymous caller outright, since it can own no
+  document. Quoting somebody else's id is refused and reads exactly like a missing one
+  (`DOCUMENT_NOT_FOUND`, on both surfaces) - a caller can never probe for ids that exist.
+* **Not graph-scoped.** A document belongs to a tenant and a thread, not to a graph
+  definition; graphs are persisted and shared, a document is one run's input.
+* **Never returned.** No RPC on the B2B surface serves the bytes back. Only the engine
+  reads them, over the internal port (`JavaGraphProvider.GetDocument`), and only to parse
+  them in the `DOCUMENT` node.
+* **Bounded.** An 8 MB cap and a format allowlist (`.xlsx`/`.docx`, detected from the ZIP's
+  own parts rather than trusting the declared mime type). `UploadDocumentStream` enforces
+  the same cap against the running total, so an over-long stream is cut off as it crosses
+  the limit.
+* **Expiring.** Rows carry `expires_at` (7 days by default) and `DocumentRetentionSweeper`
+  deletes the rows once it elapses - one pass every `documents.retention.sweep-interval-ms`
+  (1 hour by default, `DOCUMENT_SWEEP_INTERVAL_MS`). Past the deadline a reference resolves to
+  NOT_FOUND, which the engine reports as a node error rather than a crash.
+
+The browser path (multipart upload) enforces the same rules through the same service, and the
+GraphQL run path enforces the same *reference* rule as the B2B facade (above), so the two doors
+cannot drift in either direction.
 
 ### Cancelling a run
 
@@ -418,4 +451,6 @@ mutation DeleteGraph {
 | `B2B_API_KEY` | API key of the default B2B caller. With neither key set, every B2B call is rejected. | *(blank)* |
 | `B2B_API_KEY_SHA256` | Hex SHA-256 of the API key, for setups that must not put the key in the environment. | *(blank)* |
 | `B2B_ALLOWED_GRAPHS` | Graph scope of the default caller: exact ids, `prefix-*`, or `*` for every graph. Empty = no graph (fail closed). | `*` |
+| `DOCUMENT_MAX_FILE_SIZE` | Largest single document accepted by `POST /api/documents`. | `10MB` |
+| `DOCUMENT_MAX_REQUEST_SIZE` | Largest multipart request; keep it above the file size so the *file* limit is what reports the error. | `12MB` |
 

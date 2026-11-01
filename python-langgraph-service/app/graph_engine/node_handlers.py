@@ -13,8 +13,13 @@ from app.clients.llm import LLMCredentialSet, LLMCredentials, MissingUserApiKeyE
     missing_user_key_message
 from app.config import settings
 from app.generated import langgraph_pb2_grpc, langgraph_pb2
+from app.graph_engine.document_parser import (
+    DocumentLimits,
+    DocumentParseError,
+    parse_document,
+)
 from app.graph_engine.graph_utils import format_state_context, extract_json_from_response, JsonGenerationError, \
-    parse_literal, GraphState
+    parse_literal, GraphState, DOCUMENT_REF_KEY, document_variables_of
 
 logger = logging.getLogger(__name__)
 
@@ -33,16 +38,30 @@ CONFIG_LLM_CREDENTIALS = "llm_credentials_json"   # JSON: provider -> {api_key, 
 CONFIG_REQUIRE_USER_KEY = "require_user_key"       # "1" = fail instead of using the service key
 CONFIG_USER_ID = "x_user_id"                       # attribution (per-run metering/logs)
 CONFIG_CALLER_KIND = "caller_kind"                 # "b2b" = word the refusal for an integrator
+# Comma-separated context keys this graph's DOCUMENT nodes read, resolved once per run by the
+# servicer. It rides in configurable - never in GraphState - so an ACTION node can hide those
+# keys from the prompt: a custom-named reference is as useless to a model as `document_ref`,
+# and showing it is what makes a model announce it cannot open a file that has already been
+# extracted into a variable. Not a secret, purely an opaque handle.
+CONFIG_DOCUMENT_REF_KEYS = "document_ref_keys"
 
 # Keys that must be inherited by subgraphs (subgraph nodes run with the parent's user).
 INHERITED_CONFIGURABLE_KEYS = (
     CONFIG_LLM_CREDENTIALS, CONFIG_REQUIRE_USER_KEY, CONFIG_USER_ID, CONFIG_CALLER_KIND,
+    CONFIG_DOCUMENT_REF_KEYS,
 )
 
 # Context keys that would leak a secret if left in GraphState.context. Popped by the
 # servicer, and scrubbed again before that state is rendered into a prompt - belt and
 # braces, because a client can always send its own context map.
 SECRET_CONTEXT_KEYS = frozenset({"llm_api_key", "yc_folder_id", "llm_credentials_json"})
+
+# Everything in GraphState.context that has no business being in a prompt: the credentials
+# above (a leak to the model's provider), and the document reference - an opaque handle a
+# model can neither read nor act on, which will only be quoted back in an answer about not
+# being able to open the file. The handle STAYS in the state: a DOCUMENT node reads it from
+# there, and a condition may still want it. Only the rendered copy drops it.
+PROMPT_HIDDEN_CONTEXT_KEYS = SECRET_CONTEXT_KEYS | {DOCUMENT_REF_KEY}
 
 BILLING_USER = "user"
 BILLING_SERVICE = "service"
@@ -72,11 +91,49 @@ def caller_kind_from_config(config: Optional[RunnableConfig]) -> str:
     return str(configurable.get(CONFIG_CALLER_KIND, "")).strip()
 
 
-def scrub_secret_context(context: Any) -> Dict[str, Any]:
-    """Copy of ``context`` with every credential-carrying key removed."""
+def document_ref_keys_from_config(config: Optional[RunnableConfig]) -> Set[str]:
+    """The context keys this run's DOCUMENT nodes read, as the servicer resolved them.
+
+    Absent (a test, a direct call, a legacy caller) means "nothing is known", so the caller
+    falls back to the one key the contract has always had - a run must never become leaky
+    just because the servicer did not get a chance to annotate it.
+    """
+    configurable = (config or {}).get("configurable") or {}
+    raw = str(configurable.get(CONFIG_DOCUMENT_REF_KEYS) or "").strip()
+    keys = {k.strip() for k in raw.split(",") if k.strip()} if raw else set()
+    return keys or {DOCUMENT_REF_KEY}
+
+
+def scrub_prompt_context(context: Any, hidden_keys: Optional[Set[str]] = None) -> Dict[str, Any]:
+    """Copy of ``context`` that is safe to render into a prompt.
+
+    Drops every key in :data:`PROMPT_HIDDEN_CONTEXT_KEYS` - the credential-shaped ones, which
+    would leak a user's key to their model provider - plus ``hidden_keys``, the document
+    references this graph's DOCUMENT nodes read. Not a secret filter alone: a reference is not
+    secret, it is USELESS there, and showing it is what makes a model announce it cannot open a
+    file that a DOCUMENT node has already turned into text. A custom-named reference is just as
+    useless, so the graph's own keys are hidden too rather than the one default spelling.
+
+    ``hidden_keys`` defaults to the default reference key, so a caller that knows nothing about
+    the graph behaves exactly as before.
+    """
     if not isinstance(context, dict):
         return {}
-    return {k: v for k, v in context.items() if k not in SECRET_CONTEXT_KEYS}
+    hidden = PROMPT_HIDDEN_CONTEXT_KEYS | (hidden_keys or {DOCUMENT_REF_KEY})
+    return {k: v for k, v in context.items() if k not in hidden}
+
+
+def _include_variables(n_meta: Optional[Dict]) -> Optional[Set[str]]:
+    """The variables a node declares it consumes, or ``None`` for "everything".
+
+    Metadata ``include_variables`` is a comma-separated list. This is how a node in a
+    pipeline narrows its own prompt: the node that compares two normalised tables names only
+    those tables, so the two raw documents it must not re-parse are no longer in its prompt
+    at all. Declaring nothing keeps the old behaviour - every variable is shown.
+    """
+    raw = str((n_meta or {}).get("include_variables") or "").strip()
+    names = {n.strip() for n in raw.split(",") if n.strip()}
+    return names or None
 
 
 # Which clients accept a `credentials=` keyword. LazyLLMClient does; the older
@@ -212,9 +269,10 @@ class NodeHandler:
     # call simply never happened and nothing reported it.
     # START / END / HUMAN are pass-through ACTION nodes here - they carry no prompt of their own.
     ACTION_NODE_TYPES = frozenset({"START", "END", "ACTION", "HUMAN"})
-    KNOWN_NODE_TYPES = ACTION_NODE_TYPES | {"GRAPH", "HTTP_REQUEST"}
+    KNOWN_NODE_TYPES = ACTION_NODE_TYPES | {"GRAPH", "HTTP_REQUEST", "DOCUMENT"}
 
-    def __init__(self, graph_loader: GraphLoader, default_llm=None, default_llm_factory=None):
+    def __init__(self, graph_loader: GraphLoader, default_llm=None, default_llm_factory=None,
+                 document_fetcher=None):
         # Each node may carry its own provider/model: the servicer resolves a client per
         # node (node metadata -> graph config -> service default) and passes it into
         # process(). The service-level fallback below is built lazily so that a missing
@@ -222,6 +280,11 @@ class NodeHandler:
         self.default_llm = default_llm
         self.default_llm_factory = default_llm_factory
         self.graph_loader = graph_loader
+        # Injected by the servicer in commit 3 of this feature: an async callable
+        # (document_id) -> (bytes, filename, mime_type) backed by the Java source of truth.
+        # A DOCUMENT node with no fetcher fails loudly at run time instead of silently
+        # producing an empty prompt - the same contract as an unreachable HTTP service.
+        self.document_fetcher = document_fetcher
 
         try:
             self.http_channel = grpc.aio.insecure_channel(
@@ -335,9 +398,12 @@ class NodeHandler:
             return await self._process_subgraph(n_id, n_meta, state, config)
         if node_type == "HTTP_REQUEST":
             return await self._process_http_request(n_id, n_meta, state)
+        if node_type == "DOCUMENT":
+            return await self._process_document(n_id, n_meta, state)
         if node_type in self.ACTION_NODE_TYPES:
             return await self._process_action(n_id, n_meta, state, llm,
-                                              credentials, require_user_key, caller_kind)
+                                              credentials, require_user_key, caller_kind,
+                                              document_ref_keys_from_config(config))
 
         raise ValueError(
             f"Node {n_id}: unknown node type '{node_type}'. "
@@ -424,7 +490,8 @@ class NodeHandler:
     async def _process_action(self, n_id: str, n_meta: Dict[str, Any], state: GraphState,
                               llm=None, credentials: Optional[LLMCredentialSet] = None,
                               require_user_key: bool = False,
-                              caller_kind: str = "") -> Dict[str, Any]:
+                              caller_kind: str = "",
+                              document_ref_keys: Optional[Set[str]] = None) -> Dict[str, Any]:
         user_input = state.get("input") or ""
         if not user_input.strip():
             return {"last_node": n_id, "output": "No input provided."}
@@ -434,13 +501,18 @@ class NodeHandler:
             logger.info(f"Node {n_id} is pass-through (no prompt).")
             return {"last_node": n_id}
 
-        data_block = format_state_context(state, *self._context_flags(n_meta))
+        data_block = format_state_context(state, *self._context_flags(n_meta),
+                                          only_variables=_include_variables(n_meta))
         final_user_input = data_block
 
         # state["context"] is rendered straight into the prompt, so anything credential-like
         # is dropped here as well (the servicer already popped the keys the backend sent; this
-        # covers a client that put its own llm_api_key into the context map).
-        context_data = scrub_secret_context(state.get("context"))
+        # covers a client that put its own llm_api_key into the context map). The document
+        # handle goes with them: a model cannot open a file, and being shown the reference
+        # only makes it say so - the DOCUMENT node has already turned the file into text. A
+        # slot may name its reference key whatever it likes, so the keys to hide come from the
+        # run (see document_ref_keys_from_config) rather than being one fixed spelling.
+        context_data = scrub_prompt_context(state.get("context"), document_ref_keys)
         if context_data:
             try:
                 context_str = json.dumps(context_data, indent=2, default=str)
@@ -458,13 +530,27 @@ class NodeHandler:
             usage = getattr(llm_response, 'usage', {})
             tokens = usage.get('total_tokens', 0) if isinstance(usage, dict) else 0
 
-            return {
+            update = {
                 "last_node": n_id,
                 "output": output_content,
                 "history": [{"node": n_id, "output": output_content, "tokens_used": tokens}],
                 "total_tokens": tokens,
                 "llm_billing": billing
             }
+            # An ACTION node may publish its answer under a variable name of its own, so the
+            # next node can read it as DATA instead of re-deriving it. Without this a node's
+            # answer only ever lives in `output`, which the next node overwrites - so a
+            # multi-step pipeline cannot pass an intermediate result forward at all. This is
+            # what makes a "normalise, then compare" graph work: the first node writes its
+            # table to `variables[output_variable]`, and the second works from that table
+            # rather than re-parsing the two source documents.
+            #
+            # `output` is still set to the same text, so the run's final answer, the history
+            # entry and the state inspector all keep showing what the node said.
+            output_variable = str((n_meta or {}).get("output_variable") or "").strip()
+            if output_variable:
+                update["variables"] = {output_variable: output_content}
+            return update
         except MissingUserApiKeyError as e:
             # Refused, so no model call and no tokens: llm_billing must stay "" (see the
             # router branch) rather than claim the service paid for a run that never spent.
@@ -618,3 +704,119 @@ class NodeHandler:
         except Exception as e:
             logger.error(f"Node {n_id}: Unexpected HTTP request error - {e}", exc_info=True)
             return {"last_node": n_id, "output": "Unexpected error during HTTP request execution.", "error": str(e)}
+
+    async def _process_document(self, n_id: str, n_meta: Dict, state: GraphState) -> Dict:
+        """Fetch a caller-attached document and extract prompt-ready text from it.
+
+        The document itself NEVER enters GraphState: it would be checkpointed to Postgres on
+        every step and rendered wholesale into the next node's prompt by
+        ``format_state_context``. Only the extracted text (capped) and a small metadata dict
+        are written, under ``variables`` so the existing reducer merges them into whatever
+        the graph already holds.
+
+        The reference arrives per run - a graph definition is persisted and shared, so it
+        cannot live in node metadata - under ``context[document_ref_key]``.
+
+        SLOTS: a node may also name where its text lands (``output_variable`` /
+        ``meta_variable``) and how it is titled (``label``), all with the historical defaults.
+        That is what makes several documents possible in one run: a graph gives each of its
+        DOCUMENT nodes its own key and its own variable, so the second extraction lands beside
+        the first instead of overwriting it, and the ACTION node downstream can name both.
+        See :func:`app.graph_engine.graph_utils.document_variables_of`.
+        """
+        context = state.get("context") or {}
+        if not isinstance(context, dict):
+            context = {}
+        ref_key, output_variable, meta_variable, label = document_variables_of(n_meta)
+        document_ref = str(context.get(ref_key) or "").strip()
+
+        if not document_ref:
+            return {
+                "last_node": n_id,
+                "output": f"Document node found no '{ref_key}' in the run context.",
+                "error": f"missing_context:{ref_key}",
+            }
+
+        if self.document_fetcher is None:
+            logger.error("Node %s: no document fetcher is configured", n_id)
+            return {
+                "last_node": n_id,
+                "output": "Error: Document Service is not connected.",
+                "error": "Document Service Unavailable",
+            }
+
+        try:
+            content, filename, _mime_type = await self.document_fetcher(document_ref)
+        except KeyError:
+            # The Java callback raises KeyError for NOT_FOUND: either the reference was never
+            # uploaded, or it is past its retention deadline. A readable node error either
+            # way - a raw gRPC status would be noise in the chat.
+            logger.warning("Node %s: document %r is not available", n_id, document_ref)
+            return {
+                "last_node": n_id,
+                "output": "Error: that document is no longer available "
+                          "(it may never have been uploaded, or its retention period has elapsed).",
+                "error": f"document_not_found:{document_ref}",
+            }
+        except grpc.RpcError as e:
+            logger.error("Node %s: document fetch failed - %s: %s", n_id, e.code(), e.details())
+            return {
+                "last_node": n_id,
+                "output": f"System Error: could not fetch the document ({e.code()}).",
+                "error": str(e.details()),
+            }
+        except Exception as e:
+            logger.error("Node %s: document fetch raised - %s", n_id, e, exc_info=True)
+            return {
+                "last_node": n_id,
+                "output": f"Error: could not fetch the document ({e}).",
+                "error": str(e),
+            }
+
+        limits = DocumentLimits.from_metadata(n_meta)
+        try:
+            parsed = parse_document(content, limits, filename=filename)
+        except DocumentParseError as e:
+            logger.error("Node %s: could not parse document: %s", n_id, e)
+            return {
+                "last_node": n_id,
+                "output": f"Error: {e}",
+                "error": str(e),
+            }
+
+        stats = dict(parsed.stats)
+        meta = {
+            "document_ref": document_ref,
+            "filename": filename,
+            "kind": parsed.kind,
+            "truncated": parsed.truncated,
+            "chars": len(parsed.text),
+            "stats": stats,
+        }
+        if label:
+            meta["label"] = label
+        if parsed.warnings:
+            meta["warnings"] = parsed.warnings
+
+        # A titled slot labels its own text. Two files named timesheets_text / report_text are
+        # already distinguishable by variable name, but a graph may keep both at the default or
+        # call them anything at all - so when the node declares a label, the text the model
+        # reads opens with it. Only the extracted text is prefixed; `chars` stays the parsed
+        # length, so the caps report what the parser did and not what the header added.
+        text = f"# {label}\n\n{parsed.text}" if label else parsed.text
+
+        summary = (
+            f"Parsed {parsed.kind} '{filename}'"
+            + (f" as '{label}'" if label else "")
+            + f": {len(parsed.text)} chars"
+            + (f" (truncated: {'; '.join(parsed.warnings)})" if parsed.warnings else "")
+        )
+        return {
+            "last_node": n_id,
+            "output": summary,
+            "variables": {output_variable: text, meta_variable: meta},
+            "total_tokens": 0,
+            "history": [{"node": n_id, "output": summary, "tokens_used": 0}],
+            "llm_billing": "",
+        }
+
