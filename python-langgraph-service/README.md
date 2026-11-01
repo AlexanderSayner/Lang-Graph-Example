@@ -249,7 +249,7 @@ own runs. Nothing changes when none arrive - that is the pre-migration behaviour
 
 ### What arrives on a run
 
-Three context keys, lifted out of `ExecuteGraphRequest.context` into
+Four context keys, lifted out of `ExecuteGraphRequest.context` into
 `RunnableConfig.configurable` by `_split_run_context` (`app/services/langgraph_servicer.py`):
 
 | key | value | meaning |
@@ -257,6 +257,13 @@ Three context keys, lifted out of `ExecuteGraphRequest.context` into
 | `llm_credentials_json` | `{"openai": {"api_key": "…", "folder_id": ""}, …}` | every key the user owns, keyed by provider |
 | `require_user_key` | `"1"` | deployment runs `policy=REQUIRE`: a missing key fails instead of falling back |
 | `x_user_id` | UUID | attribution for the per-run billing log |
+| `caller_kind` | `"b2b"` | who is asking, so the "no key" failure can be worded for that audience |
+
+A **fifth** key, `document_ref_keys` (comma-separated context keys holding a document
+reference), is added to the same map by the servicer itself from the graph definition — it is
+never read from the request, and anything a client sends under that name is stripped, because
+it decides which context keys a prompt must hide and a caller must not be able to widen that
+(see *Several documents in one run*).
 
 A **map, not a single key**, because a graph resolves its provider *per node* (node metadata
 > graph config > server default): one run can legitimately spend on OpenAI and Anthropic.
@@ -399,6 +406,8 @@ repository root `README.md` → *Edge conditions*.
 
 A graph may carry a document (`DOCUMENT` node type). The node fetches the file the run's
 context names, extracts its text, and writes `variables.document_text` for whatever follows.
+A graph may carry **several** — see *slots* below — and then each node writes a variable of
+its own.
 
 **The extraction is deliberately not a model call.** An `.xlsx`/`.docx` is a ZIP container of
 XML whose text is already text, so `openpyxl` and `python-docx` recover it exactly and for
@@ -420,31 +429,146 @@ Every cap is **reported, not silent**: a truncated extraction sets `truncated` a
 warning to `document_meta`, so a reader can tell "the file said this" from "the file said
 this about the first 500 rows".
 
+### A stylesheet Excel accepts is accepted here
+
+`openpyxl` is strict about exactly one thing that real exports get wrong: every `rgb`
+attribute in `xl/styles.xml` must be a full 8-digit aRGB hex. A generator that emits an RGB
+triplet with its alpha pair written once (`F44546A`) — or a name such as `auto` — still
+produces a file Excel opens without complaint, and refusing the whole workbook over a colour
+would throw away every row of an otherwise readable spreadsheet.
+
+So a workbook that fails to load is retried **once**, with that one part repaired in memory
+(`_repair_xlsx_styles`): a seven-hex-digit value — an RGB triplet whose alpha pair was
+written once — is padded back to eight, and a value that is not hex at all is replaced with
+openpyxl's own default colour rather than dropped, because the indexed palette's `<rgbColor>`
+entries require the attribute and removing it would turn a repairable file into an
+unreadable one. Values openpyxl already accepts, six-hex-digit ones included, stay
+byte-for-byte as they were. Nothing else in the package is touched, every entry is copied
+through its own `ZipInfo`, and the repaired workbook is loaded with the same `read_only` /
+`data_only` flags — so the number formats that turn date cells into dates survive. A
+well-formed file is never rewritten, and a retry that also fails re-raises the **original**
+error, so a repair never masks a different problem.
+
 ### Where the reference comes from
 
-The reference travels in the run's context, under `context.document_ref` — a graph definition
-is persisted and shared, so a *per-run* file cannot live in node metadata. Metadata only
-carries the **key name** to read (`document_ref_key`, default `document_ref`), which lets a
-caller that stores its files elsewhere name its own key.
+The reference travels in the run's context — a graph definition is persisted and shared, so a
+*per-run* file cannot live in node metadata. Metadata only carries the **key name** to read
+(`document_ref_key`, default `document_ref`), which lets a caller that stores its files
+elsewhere name its own key.
 
 ```text
-state["context"]["document_ref"]  ->  fetch  ->  parse  ->  state["variables"]["document_text"]
+state["context"][ref_key]  ->  fetch  ->  parse  ->  state["variables"][output_variable]
 ```
 
 The bytes never enter `GraphState`: they would be checkpointed to Postgres on every step and
 rendered wholesale into the next node's prompt. Only the extracted, capped text does.
 
+**A long text variable is rendered raw, not as a JSON string.** `format_state_context` puts
+ordinary variables through `json.dumps`, but lifts out any string containing a newline and
+writes it as its own labelled block:
+
+```text
+=== CURRENT STATE VARIABLES ===
+{ "timesheets_text_meta": { "filename": "…", "rows_read": 109 } }
+
+--- timesheets_text ---
+# Табель
+| Имя | Часы |
+| --- | --- |
+| Новиков | 14 |
+--- end timesheets_text ---
+```
+
+Two reasons, and both are about readability rather than taste. `json.dumps` escapes every
+newline, so a 7 000-character table arrived as one line of `\n` — and a document laid out in
+blocks, where an employee's name sits on a row above *their* rows and must be carried down,
+cannot be read out of that. Worse, `ensure_ascii` (on by default) turned every Cyrillic letter
+into a `\uXXXX` sequence, so «Новиков» reached the model as `\u041d\u043e\u0432\u0438\u043a\u043e\u0432`.
+The prompt also shrank by about 3× on real data (35.5k → 12.3k characters) — the escaping had
+been costing more than the content. The transport is UTF-8 end to end, so nothing needs
+escaping.
+
+Variables stay in the dump when they are *values* — numbers, flags, one-line strings and the
+metadata maps — because there the types matter and the compactness is a feature.
+
+### Several documents in one run (slots)
+
+A node is a **slot**: it names where its file arrives (`document_ref_key`) and where its text
+lands (`output_variable`), with a label that titles it. A graph that reads two files therefore
+has two `DOCUMENT` nodes, and "which file is which" is answered by the **graph**, not guessed
+by the model:
+
+```text
+START → DOCUMENT(ref: timesheets_ref → timesheets_text, label: "Time sheet")
+      → DOCUMENT(ref: report_ref     → report_text,     label: "Filled report")
+      → ACTION("Compare report_text against timesheets_text; list discrepancies as JSON …")
+      → END
+```
+
+Every key is node metadata, resolved by `document_variables_of`
+(`app/graph_engine/graph_utils.py`) so the node, the servicer's guard and the "which keys must
+a prompt hide" set can never disagree:
+
+| Metadata | Default | Meaning |
+|---|---|---|
+| `document_ref_key` | `document_ref` | context key this slot reads |
+| `output_variable` | `document_text` | variable its extracted text is written to |
+| `meta_variable` | `document_meta`, or `<output_variable>_meta` when the output is named | variable its file metadata is written to |
+| `label` | — | a `# heading` prefixed to the extracted text, and recorded in the metadata |
+
+Two rules follow, and both are enforced rather than left to care:
+
+- **defaults are the original contract.** A node that declares none of the four writes exactly
+  `variables.document_text` + `variables.document_meta`, so a graph built before slots existed
+  is untouched;
+- **a handle never reaches a prompt, under any key.** The set of keys the graph's slots read
+  rides into the run as `document_ref_keys` on `configurable` (resolved from the definition —
+  never from the caller, which is why it is stripped from anything a client sends), and
+  `scrub_prompt_context` drops all of them. Hiding only the default spelling would have put a
+  custom-named handle straight into `=== STATIC CONTEXT ===`, where the model quotes it back in
+  an answer about being unable to open the file. `_renderable_variables` likewise drops
+  `document_ref` from **every** `*_meta` variable, not just the historical name.
+
+### A run and a graph that disagree
+
+`_warn_if_document_never_read` says so out loud, once per run, where an operator sees it —
+both directions, because both are silent by construction:
+
+- a reference under a key **nothing reads** (a graph with no `DOCUMENT` node, or one that
+  reads a different key);
+- a slot the run **never supplied** (a graph that reads two files, run with one attached) —
+  the second node then reports `missing_context` and the run stops with half its input.
+
+It warns rather than refuses: attaching a file now to use it in a later message is legitimate.
+Nothing is said when the engine cannot know — an evicted definition, or one containing a
+`GRAPH` node whose subgraph may hold the `DOCUMENT` node.
+
+The handle never reaches a prompt either. Every key the graph's slots read, and every copy
+recorded in a `*_meta` variable, is dropped when the state is rendered for a model. Both stay
+in the **state**, so the DOCUMENT node still finds the reference and an edge condition can
+still match on it.
+
 ### Failure modes
 
 | Condition | Node reports |
 |---|---|
-| No reference in the context | `error = missing_context:document_ref` |
+| No reference in the context | `error = missing_context:<ref key of that node>` |
 | Reference unknown or past retention | `error = document_not_found:…` with a readable message |
 | Not an `.xlsx`/`.docx` | `error` carrying "not a readable .xlsx or .docx file" |
 | Fetch unreachable / service down | `error` carrying the gRPC code or the connection failure |
 
 Each is a **node error, not a crash**: the run completes with `success=false` and a message,
 exactly like any other node-level failure.
+
+One failure is deliberately **not** a node error, because in the run nothing fails: a graph
+containing no `DOCUMENT` node — or one that reads a different context key — never looks at
+the reference at all. The upload, the ownership check and the run all succeed, and the
+model, never shown the file, explains that it has no access to it. `ExecuteGraph` logs a
+warning naming the graph and the keys it does read (never the reference itself), and says
+nothing to the caller, who may legitimately be attaching now for a later message. Nor does it
+warn for a graph containing a `GRAPH` node: the subgraph may well hold the `DOCUMENT` node,
+and a warning must not rest on a guess. The chat panel warns about the same case *before*
+the run.
 
 ### Where it comes from
 

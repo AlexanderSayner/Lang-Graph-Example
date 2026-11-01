@@ -53,7 +53,11 @@ def test_extracted_text_lands_in_variables_not_in_the_raw_state():
     state = {"input": "summarise", "context": {"document_ref": "tenant:abc-123"}}
     result = run_node(make_handler(fetcher), state)
 
-    assert result["variables"]["document_text"] == state["context"]["document_ref"] or True
+    # The extracted TEXT is stored, never the opaque id the run named: `variables` is what a
+    # downstream prompt sees, so copying the reference in there would be useless at best. The
+    # assertion below used to read `... == state["context"]["document_ref"] or True`, which is
+    # a comparison that can never fail - it pinned nothing at all.
+    assert result["variables"]["document_text"] != state["context"]["document_ref"]
     assert "alice" in result["variables"]["document_text"]
     meta = result["variables"]["document_meta"]
     assert meta["document_ref"] == "tenant:abc-123"
@@ -237,3 +241,164 @@ def test_a_document_node_never_gets_an_llm_client():
         "only the ACTION node should resolve an LLM client; "
         f"got {len(resolved)} ({resolved})"
     )
+
+
+# --- What a downstream model sees --------------------------------------------------------
+#
+# A DOCUMENT node's whole point is to put a file's TEXT in front of a model. What is pinned
+# here is both halves of that: the text must arrive, and the opaque handle the run named
+# must not. A model shown only the handle answers that it cannot open the file - which is
+# the exact failure this feature exists to prevent.
+
+
+def test_a_downstream_node_sees_the_text_and_never_the_handle():
+    import asyncio
+    import types
+
+    payload = make_xlsx_bytes([("alice", 1)])
+    seen = {}
+
+    async def fetcher(ref):
+        return payload, "people.xlsx", "application/octet-stream"
+
+    class RecordingClient:
+        """Stands in for the provider: records the prompt it was handed, answers plainly."""
+
+        provider = "test"
+
+        async def generate(self, user_message, system_message):
+            seen["user"] = user_message
+            seen["system"] = system_message
+            return types.SimpleNamespace(content="alice has 1", usage={"total_tokens": 1})
+
+    state = {
+        "input": "explain the attachment",
+        "context": {"document_ref": "ui-9aa20ce6-abc"},
+        "variables": {},
+        "history": [],
+    }
+
+    # The DOCUMENT node runs first, and its update is merged into the state exactly the way
+    # the merge_dicts reducer does it, so the ACTION node below sees a real downstream state.
+    state.update(run_node(make_handler(fetcher), state))
+
+    handler = make_handler(fetcher)
+    result = asyncio.run(handler._process_action(
+        "act", {"system_prompt": "Describe the file."}, state, llm=RecordingClient()))
+
+    assert result["output"] == "alice has 1"
+    assert "alice" in seen["user"]  # the extracted text reached the model
+    # ...and the handle did not, in either the context block or the variables block.
+    assert "ui-9aa20ce6-abc" not in seen["user"]
+
+
+# --- Slots: several documents in one run -------------------------------------------------
+#
+# One run may carry more than one file, and "which is which" has to survive the extraction.
+# The mechanism is the node itself: each DOCUMENT node names its own reference key AND its own
+# output variable, so the second extraction lands beside the first instead of overwriting it.
+# These tests pin that contract, and the one rule it must never break - a node that declares
+# nothing still writes exactly what it always wrote.
+
+
+def test_a_slot_writes_where_it_was_told_to():
+    payload = make_xlsx_bytes([("alice", 1)])
+
+    async def fetcher(ref):
+        assert ref == "r-timesheet"
+        return payload, "timesheet.xlsx", "application/octet-stream"
+
+    state = {"input": "go", "context": {"timesheets_ref": "r-timesheet"}}
+    result = run_node(make_handler(fetcher), state, {
+        "document_ref_key": "timesheets_ref",
+        "output_variable": "timesheets_text",
+    })
+
+    assert "alice" in result["variables"]["timesheets_text"]
+    assert "document_text" not in result["variables"], (
+        "a renamed slot must not ALSO write the default, or a two-file graph would look "
+        "like it had three"
+    )
+    # The metadata follows the text to a name of its own: `<output_variable>_meta` by default,
+    # so a reader can tell which file a variable describes without a lookup table.
+    meta = result["variables"]["timesheets_text_meta"]
+    assert meta["document_ref"] == "r-timesheet"
+    assert meta["filename"] == "timesheet.xlsx"
+    assert "document_meta" not in result["variables"]
+
+
+def test_a_meta_variable_may_be_named_explicitly():
+    payload = make_xlsx_bytes([("bob", 2)])
+
+    async def fetcher(ref):
+        return payload, "b.xlsx", "application/octet-stream"
+
+    state = {"input": "go", "context": {"document_ref": "r1"}}
+    result = run_node(make_handler(fetcher), state, {"meta_variable": "report_meta"})
+
+    assert "bob" in result["variables"]["document_text"]
+    assert result["variables"]["report_meta"]["filename"] == "b.xlsx"
+
+
+def test_two_slots_coexist_in_one_run():
+    """The whole feature: two files, two variables, neither clobbers the other."""
+    sheets = make_xlsx_bytes([("alice", 1)], headers=("name", "hours"))
+    reports = make_xlsx_bytes([("alice", 3)], headers=("name", "hours"))
+
+    async def fetcher(ref):
+        return (sheets, "timesheet.xlsx", "application/octet-stream") if ref == "r-a" \
+            else (reports, "report.xlsx", "application/octet-stream")
+
+    handler = make_handler(fetcher)
+    state = {"input": "find the discrepancy", "context": {"a_ref": "r-a", "b_ref": "r-b"}}
+
+    def apply_slot(metadata):
+        """Merge a node's update the way the merge_dicts reducer does - key by key."""
+        update = run_node(handler, state, metadata)
+        state["variables"] = {**state.get("variables", {}), **update["variables"]}
+
+    apply_slot({"document_ref_key": "a_ref", "output_variable": "a_text"})
+    apply_slot({"document_ref_key": "b_ref", "output_variable": "b_text"})
+
+    assert "| alice | 1 |" in state["variables"]["a_text"]
+    assert "| alice | 3 |" in state["variables"]["b_text"]
+    assert state["variables"]["a_text_meta"]["filename"] == "timesheet.xlsx"
+    assert state["variables"]["b_text_meta"]["filename"] == "report.xlsx"
+
+
+def test_the_default_slot_is_unchanged():
+    """Back-compat: a node that declares nothing writes the historical names, byte for byte."""
+    payload = make_xlsx_bytes([("alice", 1)])
+
+    async def fetcher(ref):
+        return payload, "p.xlsx", "application/octet-stream"
+
+    result = run_node(make_handler(fetcher), {"input": "go", "context": {"document_ref": "r1"}})
+
+    assert set(result["variables"]) == {"document_text", "document_meta"}
+    # The parser opens each sheet with its own heading; what must hold is the table itself,
+    # byte for byte, because this is the layout every graph built before slots existed reads.
+    assert "| col_a | col_b |\n| --- | --- |\n| alice | 1 |" in result["variables"]["document_text"]
+
+
+def test_a_label_titles_its_own_text():
+    payload = make_xlsx_bytes([("alice", 1)])
+
+    async def fetcher(ref):
+        return payload, "timesheet.xlsx", "application/octet-stream"
+
+    state = {"input": "go", "context": {"timesheets_ref": "r-a"}}
+    result = run_node(make_handler(fetcher), state, {
+        "document_ref_key": "timesheets_ref",
+        "output_variable": "timesheets_text",
+        "label": "Time sheet (as submitted)",
+    })
+
+    text = result["variables"]["timesheets_text"]
+    assert text.startswith("# Time sheet (as submitted)\n\n")
+    assert "alice" in text
+    # `chars` is what the PARSER produced, not the labelled text - the caps report the parse,
+    # and a reader must not think a label changed the budget.
+    assert result["variables"]["timesheets_text_meta"]["label"] == "Time sheet (as submitted)"
+    assert result["variables"]["timesheets_text_meta"]["chars"] < len(text)
+    assert "as 'Time sheet (as submitted)'" in result["output"]
