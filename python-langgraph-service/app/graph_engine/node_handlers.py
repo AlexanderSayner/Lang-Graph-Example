@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import json
 import logging
@@ -65,6 +66,27 @@ PROMPT_HIDDEN_CONTEXT_KEYS = SECRET_CONTEXT_KEYS | {DOCUMENT_REF_KEY}
 
 BILLING_USER = "user"
 BILLING_SERVICE = "service"
+
+# Free-tier and shared providers rate-limit and hiccup: HTTP 429, 5xx, connection resets.
+# These are transient by nature - the very same call succeeds seconds later - so they retry
+# inside the node's normal attempt budget instead of failing the whole run. A run whose
+# compare node died on a 429 produced no output variable at all, and every downstream node
+# then answered from nothing. Auth and permission errors stay fatal: retrying them just
+# burns quota and hides a configuration problem.
+TRANSIENT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+TRANSIENT_RETRY_DELAYS = (2.0, 5.0)  # seconds; pause before retry 1 and retry 2
+
+
+def _is_transient_llm_error(error: Exception) -> bool:
+    """True for errors worth one more attempt: rate limits, provider hiccups, timeouts."""
+    status = getattr(error, "status_code", None)
+    if isinstance(status, int) and status in TRANSIENT_STATUS_CODES:
+        return True
+    text = str(error).lower()
+    return any(token in text for token in (
+        "429", "rate limit", "too many requests", "service unavailable", "overloaded",
+        "temporarily", "timeout", "timed out", "connection",
+    ))
 
 
 def credentials_from_config(config: Optional[RunnableConfig]) -> LLMCredentialSet:
@@ -312,9 +334,12 @@ class NodeHandler:
                         caller_kind: str = "") -> Tuple[Any, str]:
         """Call the LLM, retrying once when the answer is a refusal or empty text.
 
-        On the retry we also shrink the prompt: the conversation history is dropped and a
-        stricter instruction is appended, because a long context is what most often triggers
-        the refusal in the first place.
+        Transient provider failures (HTTP 429 / 5xx, timeouts, connection resets) retry on
+        the same budget with a short pause instead of failing the node - a rate limit says
+        nothing about the prompt, and a node that dies on one leaves downstream nodes with
+        no variable to work from. On the retry we also shrink the prompt: the conversation
+        history is dropped and a stricter instruction is appended, because a long context is
+        what most often triggers the refusal in the first place.
 
         ``credentials`` are this run's personal keys, indexed by provider; the entry picked
         is the one matching the provider *this client* resolved to, so a mixed-provider graph
@@ -368,8 +393,21 @@ class NodeHandler:
         message = user_message
         response = None
         for attempt in range(1, attempts + 1):
-            response = await client.generate(user_message=message, system_message=prompt,
-                                             **generate_kwargs)
+            try:
+                response = await client.generate(user_message=message, system_message=prompt,
+                                                 **generate_kwargs)
+            except Exception as e:
+                # A 429 / provider hiccup says nothing about the prompt - the same call goes
+                # through seconds later, so spend one of this node's attempts on the wait
+                # rather than let the whole run die and the downstream nodes answer from
+                # nothing. Non-transient failures (bad key, permission) re-raise at once.
+                if not _is_transient_llm_error(e) or attempt == attempts:
+                    raise
+                delay = TRANSIENT_RETRY_DELAYS[min(attempt, len(TRANSIENT_RETRY_DELAYS)) - 1]
+                logger.warning("LLM call hit a transient error (attempt %d/%d): %s - "
+                               "retrying in %.0fs", attempt, attempts, e, delay)
+                await asyncio.sleep(delay)
+                continue
             text = str(response)
             if not is_unusable_answer(text):
                 return response, billing
