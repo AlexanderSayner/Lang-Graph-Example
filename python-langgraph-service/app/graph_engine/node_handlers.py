@@ -77,6 +77,172 @@ TRANSIENT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 TRANSIENT_RETRY_DELAYS = (2.0, 5.0)  # seconds; pause before retry 1 and retry 2
 
 
+# --- Deterministic ACTION nodes: metadata "compare" replaces the model call ---------
+# An ACTION node whose metadata carries a "compare" object performs a generic, purely
+# mechanical comparison of two array variables and writes the result to the node's
+# output_variable - no model call, so the step is exact, free, and immune to the copying
+# mistakes LLM nodes kept making (dropped rows, reshuffled hours, invented entries). The
+# engine learns nothing about any particular report format: what to match on, where the
+# numbers live and what the statuses are called all come from the node's metadata (see
+# README "Deterministic nodes").
+MATCH_FIELDS_DEFAULT = "person,date"
+
+
+def _parse_llm_array(text):
+    """Parse a model-written JSON array variable.
+
+    Accepts a plain array, one wrapped in ``` fences, a pretty-printed one, and NDJSON
+    (objects one per line, brackets forgotten) - every shape real runs produced. Anything
+    else raises ValueError with a short reason.
+    """
+    clean = str(text).strip()
+    if clean.startswith("```"):
+        clean = "\n".join(l for l in clean.splitlines()
+                          if not l.strip().startswith("```")).strip()
+    try:
+        data = json.loads(clean)
+        if isinstance(data, list):
+            return data
+    except json.JSONDecodeError:
+        pass
+    rows = []
+    for line in clean.splitlines():
+        line = line.strip().rstrip(",")
+        if line.startswith("{"):
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    if rows:
+        return rows
+    raise ValueError("не массив и не построчный JSON (нет ни [ ], ни объектов на строках)")
+
+
+def _coerce_number(value):
+    """Hours arrive as numbers from the parsing nodes; a stray "4,5" / "4h" is still 4.5."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace(",", ".")
+    m = re.search(r"\d+(?:\.\d+)?", text)
+    return float(m.group(0)) if m else None
+
+
+def _match_value(field, value):
+    """Canonical form of one match-field value.
+
+    Text keys are case-insensitive (one report spells «Новиков», another «новиков»); a
+    `date` field accepts both 2026-10-04 and 04.10.2026 spellings in the same key, so two
+    reports that write the same day differently still pair.
+    """
+    text = str(value if value is not None else "").strip()
+    if field.lower() == "date":
+        m = re.fullmatch(r"(\d{2})\.(\d{2})\.(\d{4})", text)
+        if m:
+            return f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
+    return text.casefold()
+
+
+def _deterministic_compare(n_id: str, n_meta: Dict[str, Any],
+                           state: GraphState) -> Optional[Dict[str, Any]]:
+    """The update dict for a `compare`-configured ACTION node, or None (not configured).
+
+    Pairs records of the `left` array with records of the `right` array on the combined
+    `match_fields` key, positionally within equal keys (first unused right record), then
+    classifies: equal hours -> ok, different -> mismatch, left record without a partner ->
+    left_only, right record without a partner -> right_only. One record enters exactly one
+    output object - by construction, not by instruction.
+    """
+    config = (n_meta or {}).get("compare")
+    if not isinstance(config, dict):
+        return None
+
+    left_name = str(config.get("left") or "doc1").strip() or "doc1"
+    right_name = str(config.get("right") or "doc2").strip() or "doc2"
+    fields = [f.strip() for f in str(config.get("match_fields") or MATCH_FIELDS_DEFAULT)
+              .split(",") if f.strip()] or ["person", "date"]
+    hours_left_field = str(config.get("left_hours_field")
+                           or config.get("hours_field") or "hours")
+    hours_right_field = str(config.get("right_hours_field")
+                            or config.get("hours_field") or "hours")
+    task_field = str(config.get("task_field") or "task")
+    names = config.get("status_names") or {}
+    s_ok = str(names.get("ok") or "ok")
+    s_mismatch = str(names.get("mismatch") or "hours_mismatch")
+    s_left_only = str(names.get("left_only") or "only_in_1")
+    s_right_only = str(names.get("right_only") or "only_in_2")
+    out_var = str((n_meta or {}).get("output_variable") or "matched").strip() or "matched"
+
+    variables = state.get("variables") or {}
+    missing = [name for name, value in ((left_name, variables.get(left_name)),
+                                        (right_name, variables.get(right_name)))
+               if not str(value or "").strip()]
+    if missing:
+        return {
+            "last_node": n_id,
+            "output": "Error: deterministic compare needs the variables "
+                      + ", ".join(missing)
+                      + " (the nodes that produce them did not run or wrote nothing).",
+            "error": f"missing_variables:{','.join(missing)}",
+        }
+    try:
+        left = _parse_llm_array(variables[left_name])
+        right = _parse_llm_array(variables[right_name])
+    except ValueError as e:
+        return {
+            "last_node": n_id,
+            "output": f"Error: cannot parse the arrays to compare - {e}",
+            "error": f"unparseable_arrays:{e}",
+        }
+
+    def key_of(rec):
+        return tuple(_match_value(f, rec.get(f)) for f in fields)
+
+    index = {}
+    for i, rec in enumerate(right):
+        index.setdefault(key_of(rec), []).append(i)
+    used = set()
+    objects = []
+    for rec in left:
+        candidates = index.get(key_of(rec), [])
+        partner = next((i for i in candidates if i not in used), None)
+        h1 = _coerce_number(rec.get(hours_left_field))
+        if partner is None:
+            objects.append({**{f: rec.get(f) for f in fields},
+                            task_field: rec.get(task_field),
+                            "hours_1": h1, "hours_2": None, "status": s_left_only})
+            continue
+        used.add(partner)
+        h2 = _coerce_number(right[partner].get(hours_right_field))
+        objects.append({**{f: rec.get(f) for f in fields},
+                        task_field: rec.get(task_field),
+                        "hours_1": h1, "hours_2": h2,
+                        "status": s_ok if (h1 is not None and h2 is not None
+                                           and h1 == h2) else s_mismatch})
+    for i, rec in enumerate(right):
+        if i in used:
+            continue
+        objects.append({**{f: rec.get(f) for f in fields}, task_field: rec.get(task_field),
+                        "hours_1": None, "hours_2": _coerce_number(rec.get(hours_right_field)),
+                        "status": s_right_only})
+
+    findings = [o for o in objects if o["status"] != s_ok]
+    ordered = findings + [o for o in objects if o["status"] == s_ok]
+    text = ("[\n" + ",\n".join(json.dumps(o, ensure_ascii=False) for o in ordered) + "\n]")
+    pairs = len(objects) - len(findings)
+    summary = (f"Детерминированное сопоставление (без модели): {len(left)} записей слева, "
+               f"{len(right)} справа, пар {pairs}, расхождений {len(findings)}.")
+    return {
+        "last_node": n_id,
+        "output": summary,
+        "variables": {out_var: text},
+        "total_tokens": 0,
+        "llm_billing": "",
+        "history": [{"node": n_id, "output": summary, "tokens_used": 0}],
+    }
+
+
 def _is_transient_llm_error(error: Exception) -> bool:
     """True for errors worth one more attempt: rate limits, provider hiccups, timeouts."""
     status = getattr(error, "status_code", None)
@@ -530,6 +696,13 @@ class NodeHandler:
                               require_user_key: bool = False,
                               caller_kind: str = "",
                               document_ref_keys: Optional[Set[str]] = None) -> Dict[str, Any]:
+        # A node can skip the model entirely: metadata "compare" turns this ACTION into a
+        # deterministic array-vs-array comparison (see _deterministic_compare). Checked
+        # before the prompt handling because such a node legitimately has no prompt at all.
+        deterministic = _deterministic_compare(n_id, n_meta, state)
+        if deterministic is not None:
+            return deterministic
+
         user_input = state.get("input") or ""
         if not user_input.strip():
             return {"last_node": n_id, "output": "No input provided."}
