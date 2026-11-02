@@ -604,8 +604,28 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
 
             if next_nodes:
                 logger.info(f"Resuming graph from node: {current_snapshot.next}")
+                # A resumed turn may carry NEW context, and on the first resume that is the only
+                # way a document can arrive: the graph paused before it could read one, and the
+                # files only exist once a person has sent them. The fresh branch below seeds
+                # `context` into the state; without this the resume dropped the caller's handles
+                # entirely, so a graph that asks for two reports and then waits for them got
+                # `missing_context` on a file sitting in its own request.
+                #
+                # Merged rather than replaced: `context` has no reducer, so a plain assignment
+                # would erase every key the caller did not repeat - including the documents of an
+                # earlier turn and anything the deployment injected. An empty `state_context`
+                # means "nothing to add", not "clear it", which is why the update is only built
+                # when there is something to write.
+                updates: Dict[str, Any] = {}
                 if getattr(request, "input", None):
-                    await compiled_graph.aupdate_state(config, {"input": request.input}, as_node=None)
+                    updates["input"] = request.input
+                if state_context:
+                    previous_values = getattr(current_snapshot, "values", None) or {}
+                    merged_context = dict(previous_values.get("context") or {})
+                    merged_context.update(state_context)
+                    updates["context"] = merged_context
+                if updates:
+                    await compiled_graph.aupdate_state(config, updates, as_node=None)
                 stream_input = None
                 start_event = None
             else:
