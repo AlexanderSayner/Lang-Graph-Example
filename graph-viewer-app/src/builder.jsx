@@ -134,6 +134,11 @@ function Builder() {
                     id: n.nodeId, type: 'designNode', position: n.position || { x: 0, y: 0 },
                     data: {
                         label: n.nodeId, type: n.nodeType,
+                        // Full metadata travels with the node. The save below starts from this
+                        // object, so keys this form has no editor for (output_variable on an
+                        // AI node, include_variables, llm_temperature, llm_max_tokens) survive
+                        // a re-save instead of being silently destroyed.
+                        metadata: n.metadata || {},
                         prompt: n.metadata?.system_prompt || "",
                         friendlyName: n.metadata?.label || "",
                         subgraphId: n.metadata?.subgraph_id || null,
@@ -181,7 +186,7 @@ function Builder() {
         const id = `node_${Date.now()}`;
         setNodes(nds => nds.concat({
             id, type: 'designNode', position,
-            data: { label: id, type: type, prompt: "", subgraphId: null, friendlyName: null, method: "GET", url: "", headers: "{}", body: "", llmProvider: "", llmModel: "", contextMode: "", documentRefKey: "", documentOutputVariable: "", documentMetaVariable: "" }
+            data: { label: id, type: type, prompt: "", subgraphId: null, friendlyName: null, method: "GET", url: "", headers: "{}", body: "", llmProvider: "", llmModel: "", contextMode: "", documentRefKey: "", documentOutputVariable: "", documentMetaVariable: "", metadata: {} }
         }));
     }, [hasStartNode, screenToFlowPosition, setNodes]);
 
@@ -208,8 +213,19 @@ function Builder() {
             if (!nodes.find(n => n.data?.type === NODE_TYPES.END)) throw new Error("Graph needs an END node");
 
             const payloadNodes = nodes.map(n => {
-                const meta = { system_prompt: n.data?.prompt || "", label: n.data?.friendlyName || "" };
-                if (n.data?.type === NODE_TYPES.GRAPH && n.data.subgraphId) meta.subgraph_id = n.data.subgraphId;
+                // Start from the metadata the server returned, then let the form fields below
+                // overwrite their OWN keys. Rebuilding meta from the form alone silently
+                // destroyed everything this panel has no editor for - output_variable on AI
+                // nodes (the whole variable hand-off of a pipeline), include_variables,
+                // llm_temperature, llm_max_tokens - and one such save turned a working graph
+                // into a chain of nodes asking for data they already had.
+                const meta = { ...(n.data?.metadata || {}) };
+                meta.system_prompt = n.data?.prompt || "";
+                meta.label = n.data?.friendlyName || "";
+                if (n.data?.type === NODE_TYPES.GRAPH) {
+                    if (n.data.subgraphId) meta.subgraph_id = n.data.subgraphId;
+                    else delete meta.subgraph_id;
+                }
                 if (n.data?.type === NODE_TYPES.HTTP_REQUEST) { meta.method = n.data.method || "GET"; meta.url = n.data.url || ""; meta.headers = n.data.headers || "{}"; meta.body = n.data.body || ""; }
                 // DOCUMENT carries no system prompt (it never calls a model). Its three slot
                 // names are written back, and only when non-blank: an empty value would
@@ -218,15 +234,19 @@ function Builder() {
                     const refKey = (n.data.documentRefKey || '').trim();
                     const outputVariable = (n.data.documentOutputVariable || '').trim();
                     const metaVariable = (n.data.documentMetaVariable || '').trim();
-                    if (refKey) meta.document_ref_key = refKey;
-                    if (outputVariable) meta.output_variable = outputVariable;
-                    if (metaVariable) meta.meta_variable = metaVariable;
+                    if (refKey) meta.document_ref_key = refKey; else delete meta.document_ref_key;
+                    if (outputVariable) meta.output_variable = outputVariable; else delete meta.output_variable;
+                    if (metaVariable) meta.meta_variable = metaVariable; else delete meta.meta_variable;
                 }
-                // Per-node AI overrides (empty = inherit the graph/server default).
-                // context_mode is written back too - it used to be silently dropped here.
+                // Per-node AI overrides (empty = inherit the graph/server default). A cleared
+                // field must DELETE its key: with the spread above, leaving it would keep a
+                // stale value the user just tried to remove.
                 if (n.data?.llmProvider) meta.llm_provider = n.data.llmProvider;
+                else delete meta.llm_provider;
                 if (n.data?.llmModel) meta.llm_model = n.data.llmModel;
+                else delete meta.llm_model;
                 if (n.data?.contextMode) meta.context_mode = n.data.contextMode;
+                else delete meta.context_mode;
                 return { nodeId: n.id, nodeType: n.data?.type, handlerName: `${n.id}Handler`, metadata: meta, position: { x: n.position.x, y: n.position.y } };
             });
 
