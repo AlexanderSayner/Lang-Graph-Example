@@ -170,8 +170,18 @@ def _parse_java_map_string(text):
     if cur:
         parts.append("".join(cur).strip())
 
-    out = {}
+    # A plain value may itself contain a comma: match_fields=person,date arrives as the
+    # fragments "match_fields=person" + "date". A fragment without "=" is the tail of the
+    # previous value - glue it back instead of dropping it.
+    whole = []
     for part in parts:
+        if "=" in part or not whole:
+            whole.append(part)
+        else:
+            whole[-1] = whole[-1] + "," + part
+
+    out = {}
+    for part in whole:
         if "=" not in part:
             continue
         key, value = part.split("=", 1)
@@ -266,21 +276,59 @@ def _deterministic_compare(n_id: str, n_meta: Dict[str, Any],
     def key_of(rec):
         return tuple(_match_value(f, rec.get(f)) for f in fields)
 
+    def title_tokens(rec):
+        # Words of the human-readable task text, lower-cased, length >= 4 - the overlap of
+        # two systems' titles for the same work. Numbers and task keys count too: an
+        # identical task id is the strongest signal there is.
+        text = str(rec.get(task_field) or "").casefold()
+        return {t for t in re.findall(r"[a-zа-яё0-9]+", text) if len(t) >= 4}
+
     index = {}
     for i, rec in enumerate(right):
         index.setdefault(key_of(rec), []).append(i)
-    used = set()
+
+    # Pair CLUSTER BY CLUSTER (one combined key at a time), never globally: the same
+    # person+date is the evidence the two rows are the same work. A 1-on-1 cluster pairs
+    # unconditionally - one row per side is the strongest signal, titles are noise. Larger
+    # clusters pair greedily by the largest title-token overlap, because "first with first"
+    # pairs the wrong rows whenever one side has an extra record; leftovers stay UNPAIRED
+    # (only_in_* on each side) rather than being force-paired by position - a forced pair
+    # invents a mismatch, and an unpaired pair only reports two honest absences.
+    clusters_left = {}
+    for i, rec in enumerate(left):
+        clusters_left.setdefault(key_of(rec), []).append(i)
+
+    used_right = set()
+    partner_of = {}
+
+    for key, l_ids in clusters_left.items():
+        r_ids = [i for i in index.get(key, [])]
+        free_r = [i for i in r_ids if i not in used_right]
+        if len(l_ids) == 1 and len(free_r) == 1:
+            partner_of[l_ids[0]] = free_r[0]
+            used_right.add(free_r[0])
+            continue
+        scored = sorted(
+            ((len(title_tokens(left[i]) & title_tokens(right[j])), i, j)
+             for i in l_ids for j in free_r),
+            key=lambda t: (-t[0], t[1], t[2]))
+        for score, i, j in scored:
+            if score == 0:
+                break
+            if i in partner_of or j in used_right:
+                continue
+            partner_of[i] = j
+            used_right.add(j)
+
     objects = []
-    for rec in left:
-        candidates = index.get(key_of(rec), [])
-        partner = next((i for i in candidates if i not in used), None)
+    for i, rec in enumerate(left):
         h1 = _coerce_number(rec.get(hours_left_field))
+        partner = partner_of.get(i)
         if partner is None:
             objects.append({**{f: rec.get(f) for f in fields},
                             task_field: rec.get(task_field),
                             "hours_1": h1, "hours_2": None, "status": s_left_only})
             continue
-        used.add(partner)
         h2 = _coerce_number(right[partner].get(hours_right_field))
         objects.append({**{f: rec.get(f) for f in fields},
                         task_field: rec.get(task_field),
@@ -288,7 +336,7 @@ def _deterministic_compare(n_id: str, n_meta: Dict[str, Any],
                         "status": s_ok if (h1 is not None and h2 is not None
                                            and h1 == h2) else s_mismatch})
     for i, rec in enumerate(right):
-        if i in used:
+        if i in used_right:
             continue
         objects.append({**{f: rec.get(f) for f in fields}, task_field: rec.get(task_field),
                         "hours_1": None, "hours_2": _coerce_number(rec.get(hours_right_field)),

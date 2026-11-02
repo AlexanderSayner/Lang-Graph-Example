@@ -134,6 +134,28 @@ def test_a_node_without_compare_metadata_still_uses_the_llm_path():
     assert result["output"] == "echo"
 
 
+def test_title_overlap_pairs_the_right_rows_inside_a_date_cluster():
+    # The exact cluster of run 1793615616989: two Тепечин rows on 22.10 in doc1, one doc2
+    # row whose title matches only one of them. "First with first" pairs the wrong rows
+    # (1 vs 4 invented a discrepancy and orphaned a 4/4 row); title overlap must pair
+    # «Подбор» with «Подбор» and leave «x-www-form-urlencoded» unpaired.
+    doc1 = json.dumps([
+        {"person": "Тепечин", "date": "2026-10-22", "task": "TB-105124 Back. Поддержка x-www-form-urlencoded в действии Выполнить HTTP-запрос", "hours": 1},
+        {"person": "Тепечин", "date": "2026-10-22", "task": "TB-104999 Back. ForPeople-Jira. Подбор", "hours": 4},
+    ])
+    doc2 = json.dumps([
+        {"person": "Тепечин", "date": "2026-10-22", "task": "KIT-9466 Back. ForPeople-Jira. Подбор", "hours": 4},
+    ])
+    result = asyncio.run(_handler()._process_action("n", _meta(), _state(doc1, doc2)))
+    matched = json.loads(result["variables"]["matched"])
+    statuses = {o["task"].split()[0]: o["status"] for o in matched}
+    assert statuses["TB-104999"] == "ok", "the title-matching pair is a 4/4 ok row"
+    assert statuses["TB-105124"] == "only_in_1", "the alien title row stays unpaired"
+    # and the hours travelled with the right partner:
+    by_key = {o["task"].split()[0]: o for o in matched}
+    assert by_key["TB-104999"]["hours_2"] == 4.0
+
+
 def test_an_action_with_compare_but_no_prompt_never_touches_the_llm_path():
     # The graph keeps the node promptless: the deterministic branch must return before the
     # "no prompt -> pass-through" check, or the output variable would silently vanish.
@@ -146,7 +168,28 @@ def test_an_action_with_compare_but_no_prompt_never_touches_the_llm_path():
     assert len(json.loads(result["variables"]["matched"])) == 1
 
 
-def test_a_string_json_config_and_the_java_toString_spelling_both_work():
+def test_a_comma_inside_a_value_survives_the_java_toString_spelling():
+    # The exact breakage of run 1793615616989: Java's Map.toString() has no value quoting, so
+    # match_fields=person,date reads as two top-level fragments - "match_fields=person" and a
+    # bare "date". Dropping the bare fragment silently removed the date from the match key
+    # AND from every output object (the report then had no date to print and echoed the
+    # prompt's «ДД.ММ» placeholder instead).
+    doc1 = json.dumps([{"person": "Новиков", "date": "2026-10-06", "task": "T", "hours": 3},
+                       {"person": "Новиков", "date": "2026-10-02", "task": "U", "hours": 1}])
+    doc2 = json.dumps([{"person": "Новиков", "date": "2026-10-02", "task": "UU", "hours": 2},
+                       {"person": "Новиков", "date": "2026-10-06", "task": "TT", "hours": 2}])
+    meta = {"output_variable": "matched",
+            "compare": "{left=doc1, right=doc2, match_fields=person, date, "
+                       "hours_field=hours, task_field=task}"}
+    result = asyncio.run(_handler()._process_action("n", meta, _state(doc1, doc2)))
+    matched = json.loads(result["variables"]["matched"])
+    assert len(matched) == 2
+    assert all(o.get("date") for o in matched), "the date field must not be swallowed"
+    by_date = {o["date"]: o for o in matched}
+    assert by_date["2026-10-06"]["status"] == "hours_mismatch"   # 3 != 2
+    assert by_date["2026-10-02"]["status"] == "hours_mismatch"   # 1 != 2
+    assert by_date["2026-10-02"]["task"] == "U"                  # doc1's own task
+
     # The gRPC transport types metadata as map<string, string>, so the config can only ride
     # as a string. Two spellings exist in the wild: JSON (the current Java mapper) and the
     # older Map.toString() form ({"left=doc1"}) persisted into older graph definitions.
@@ -175,3 +218,4 @@ def test_nested_status_names_survive_the_java_toString_spelling():
     # doc1 A pairs (2 != 1) and doc1 C stays unpaired; the custom names prove the nested
     # map inside the stringified config was parsed, not taken as a literal.
     assert [o["status"] for o in matched] == ["РАЗНЫЕ", "НЕТ_ВО_2"]
+
