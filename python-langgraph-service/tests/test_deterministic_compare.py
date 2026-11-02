@@ -144,3 +144,34 @@ def test_an_action_with_compare_but_no_prompt_never_touches_the_llm_path():
               "compare": {"left": "doc1", "right": "doc2"}}, _state(doc1, doc2)))
     assert "matched" in result["variables"]
     assert len(json.loads(result["variables"]["matched"])) == 1
+
+
+def test_a_string_json_config_and_the_java_toString_spelling_both_work():
+    # The gRPC transport types metadata as map<string, string>, so the config can only ride
+    # as a string. Two spellings exist in the wild: JSON (the current Java mapper) and the
+    # older Map.toString() form ({"left=doc1"}) persisted into older graph definitions.
+    json_config = {"output_variable": "matched",
+                   "compare": "{\"left\": \"doc1\", \"right\": \"doc2\"}"}
+    java_config = {"output_variable": "matched",
+                   "compare": "{left=doc1, right=doc2}"}
+    for meta in (json_config, java_config):
+        doc1 = json.dumps([{"person": "A", "date": "2026-10-02", "task": "T", "hours": 1}])
+        doc2 = json.dumps([{"person": "A", "date": "2026-10-02", "task": "TT", "hours": 1}])
+        result = asyncio.run(_handler()._process_action("n", meta, _state(doc1, doc2)))
+        matched = json.loads(result["variables"]["matched"])
+        assert len(matched) == 1 and matched[0]["status"] == "ok"
+
+
+def test_nested_status_names_survive_the_java_toString_spelling():
+    doc1 = json.dumps([{"person": "A", "date": "2026-10-02", "task": "T", "hours": 1},
+                       {"person": "C", "date": "2026-10-05", "task": "Z", "hours": 3}])
+    doc2 = json.dumps([{"person": "A", "date": "2026-10-02", "task": "TT", "hours": 2}])
+    meta = {"output_variable": "matched",
+            "compare": "{left=doc1, right=doc2, "
+                       "status_names={ok=ok, mismatch=РАЗНЫЕ, left_only=НЕТ_ВО_2, "
+                                     "right_only=НЕТ_В_1}}"}
+    result = asyncio.run(_handler()._process_action("n", meta, _state(doc1, doc2)))
+    matched = json.loads(result["variables"]["matched"])
+    # doc1 A pairs (2 != 1) and doc1 C stays unpaired; the custom names prove the nested
+    # map inside the stringified config was parsed, not taken as a literal.
+    assert [o["status"] for o in matched] == ["РАЗНЫЕ", "НЕТ_ВО_2"]

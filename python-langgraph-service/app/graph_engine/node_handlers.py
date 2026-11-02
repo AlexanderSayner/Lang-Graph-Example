@@ -144,6 +144,73 @@ def _match_value(field, value):
     return text.casefold()
 
 
+def _parse_java_map_string(text):
+    """Parse a Java toString() map: "{left=doc1, right=doc2}" - with nested maps.
+
+    The gRPC transport types node metadata as map<string, string> (langgraph.proto), so a
+    nested object a client sent arrives stringified. Older Java builds used the default
+    Map.toString() spelling ("{left=doc1}"); parsing it keeps already-persisted graph
+    definitions alive.
+    """
+    inner = text.strip()
+    if not (inner.startswith("{") and inner.endswith("}")):
+        raise ValueError("не карта")
+    inner = inner[1:-1].strip()
+    parts, depth, cur = [], 0, []
+    for ch in inner:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append("".join(cur).strip())
+            cur = []
+        else:
+            cur.append(ch)
+    if cur:
+        parts.append("".join(cur).strip())
+
+    out = {}
+    for part in parts:
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        key, value = key.strip(), value.strip()
+        if value.startswith("{") and value.endswith("}"):
+            out[key] = _parse_java_map_string(value)
+        elif value.startswith("'") and value.endswith("'"):
+            out[key] = value[1:-1]
+        else:
+            out[key] = value
+    return out
+
+
+def _normalize_compare_config(raw):
+    """Accept the compare config in every shape the transport can deliver.
+
+    A dict (direct use), a JSON object as a string (the current Java mapper serialises
+    nested metadata values to JSON), or the older Java Map.toString() spelling.
+    Returns a dict or None if the shape is not recognisable.
+    """
+    if isinstance(raw, dict):
+        return dict(raw)
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if text.startswith("{"):
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            pass
+        try:
+            return _parse_java_map_string(text)
+        except ValueError:
+            return None
+    return None
+
+
 def _deterministic_compare(n_id: str, n_meta: Dict[str, Any],
                            state: GraphState) -> Optional[Dict[str, Any]]:
     """The update dict for a `compare`-configured ACTION node, or None (not configured).
@@ -154,8 +221,8 @@ def _deterministic_compare(n_id: str, n_meta: Dict[str, Any],
     left_only, right record without a partner -> right_only. One record enters exactly one
     output object - by construction, not by instruction.
     """
-    config = (n_meta or {}).get("compare")
-    if not isinstance(config, dict):
+    config = _normalize_compare_config((n_meta or {}).get("compare"))
+    if config is None:
         return None
 
     left_name = str(config.get("left") or "doc1").strip() or "doc1"
