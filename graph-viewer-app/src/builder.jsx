@@ -74,9 +74,8 @@ const viewToFlow = (view) => ({
         data: {
             label: n.nodeId, type: n.nodeType,
             // Full metadata travels with the node. The save starts from this object, so keys this
-            // form has no editor for (output_variable on an AI node, include_variables,
-            // llm_temperature, llm_max_tokens) survive a re-save instead of being silently
-            // destroyed.
+            // form has no editor for (include_variables, llm_temperature, llm_max_tokens)
+            // survive a re-save instead of being silently destroyed.
             metadata: n.metadata || {},
             prompt: n.metadata?.system_prompt || "",
             friendlyName: n.metadata?.label || "",
@@ -90,7 +89,10 @@ const viewToFlow = (view) => ({
             contextMode: n.metadata?.context_mode || "",
             documentRefKey: n.metadata?.document_ref_key || "",
             documentOutputVariable: n.metadata?.output_variable || "",
-            documentMetaVariable: n.metadata?.meta_variable || ""
+            documentMetaVariable: n.metadata?.meta_variable || "",
+            // An AI node keeps its answer slot in the same metadata key; it is a separate form
+            // field because a node is either DOCUMENT or AI, never both.
+            aiOutputVariable: n.metadata?.output_variable || ""
         },
     })),
     edges: (view?.edges || []).map((e, i) => ({
@@ -118,8 +120,7 @@ const canvasToBuildInput = ({ graphId, graphName, nodes, edges, graphConfig, gra
     const payloadNodes = nodes.map(n => {
         // Start from the metadata the server returned, then let the form fields below
         // overwrite their OWN keys. Rebuilding meta from the form alone silently
-        // destroyed everything this panel has no editor for - output_variable on AI
-        // nodes (the whole variable hand-off of a pipeline), include_variables,
+        // destroyed everything this panel has no editor for - include_variables,
         // llm_temperature, llm_max_tokens - and one such save turned a working graph
         // into a chain of nodes asking for data they already had.
         const meta = { ...(n.data?.metadata || {}) };
@@ -140,6 +141,15 @@ const canvasToBuildInput = ({ graphId, graphName, nodes, edges, graphConfig, gra
             if (refKey) meta.document_ref_key = refKey; else delete meta.document_ref_key;
             if (outputVariable) meta.output_variable = outputVariable; else delete meta.output_variable;
             if (metaVariable) meta.meta_variable = metaVariable; else delete meta.meta_variable;
+        }
+        // An AI node publishes its answer to `variables` only when it names the slot: without it
+        // the response lives solely in `output`, which the next node cannot read as data (an HTTP
+        // request's stateJson is `variables` alone). Blank deletes the key - with the spread above
+        // a cleared field would keep the stale value the user just removed.
+        if (AI_NODE_TYPES.includes(n.data?.type)) {
+            const answerVariable = (n.data.aiOutputVariable || '').trim();
+            if (answerVariable) meta.output_variable = answerVariable;
+            else delete meta.output_variable;
         }
         // Per-node AI overrides (empty = inherit the graph/server default). A cleared
         // field must DELETE its key: with the spread above, leaving it would keep a
@@ -289,7 +299,7 @@ function Builder() {
         const id = `node_${Date.now()}`;
         setNodes(nds => nds.concat({
             id, type: 'designNode', position,
-            data: { label: id, type: type, prompt: "", subgraphId: null, friendlyName: null, method: "GET", url: "", headers: "{}", body: "", llmProvider: "", llmModel: "", contextMode: "", documentRefKey: "", documentOutputVariable: "", documentMetaVariable: "", metadata: {} }
+            data: { label: id, type: type, prompt: "", subgraphId: null, friendlyName: null, method: "GET", url: "", headers: "{}", body: "", llmProvider: "", llmModel: "", contextMode: "", documentRefKey: "", documentOutputVariable: "", documentMetaVariable: "", aiOutputVariable: "", metadata: {} }
         }));
     }, [hasStartNode, screenToFlowPosition, setNodes]);
 
@@ -691,6 +701,7 @@ function Builder() {
                                     </div>
                                     </>
                                 ) : (
+                                    <>
                                     <div className="form-row">
                                         <div className="form-group" style={{flex: 2}}>
                                             <div className="prompt-lib-bar">
@@ -708,6 +719,26 @@ function Builder() {
                                             />
                                         </div>
                                     </div>
+                                    {/* Without this slot the answer lives only in the run's `output`
+                                        and the next node cannot read it as data: an HTTP request
+                                        node receives `variables` as its stateJson, nothing else. */}
+                                    <div className="form-row">
+                                        <div className="form-group" style={{flex: 2}}>
+                                            <label className="form-label">Output variable (optional)</label>
+                                            <input className="form-input"
+                                                   value={selectedElement.data.aiOutputVariable || ''}
+                                                   onChange={(e) => updateNode('aiOutputVariable', e.target.value)}
+                                                   placeholder="e.g. extracted_answer" />
+                                            <div style={{fontSize: 11, color: '#777', marginTop: 2}}>
+                                                Publishes this node's answer to a graph variable so a later node can
+                                                read it as <code>{'{{name}}'}</code> - an HTTP request node gets it in
+                                                stateJson, for example. Leave blank to keep the answer only in the
+                                                run's output. A router node's answer is merged into variables
+                                                automatically, so leave this empty there.
+                                            </div>
+                                        </div>
+                                    </div>
+                                    </>
                                 )}
                             </>
                         )}
