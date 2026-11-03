@@ -240,14 +240,18 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
     display: flex;
     gap: 5px;
     align-items: center;
-    /* The row holds four controls now (copy, export, edit, delete) and .graph-item clips its
-       overflow - so the buttons must never be the thing that gets squeezed out. */
-    flex-shrink: 0;
+    /* The row holds four controls (copy, export, edit, delete) and .graph-item clips its
+       overflow - so the buttons must never be the thing that gets squeezed out. `flex: 0 0 auto`
+       states that explicitly instead of relying on the default shrink factor. */
+    flex: 0 0 auto;
 }
 /* Names are unbounded and the item clips, so without this a long name grows .graph-info past the
-   row and the action buttons are simply cut off. It truncates instead. */
-.graph-info { min-width: 0; overflow: hidden; }
-.graph-item .name { overflow: hidden; text-overflow: ellipsis; }
+   row and the action buttons are simply cut off. The name block is the only flexible part of the
+   row: it absorbs the free space, `min-width: 0` lets a long, unbreakable name shrink below its
+   intrinsic width and `overflow: hidden` clips what is left over, so Edit stays in view. */
+.graph-info { flex: 1 1 auto; min-width: 0; overflow: hidden; }
+/* Explicit nowrap + max-width so text-overflow: ellipsis is guaranteed to kick in. */
+.graph-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .sidebar.collapsed .graph-actions {
     display: none !important;
 }
