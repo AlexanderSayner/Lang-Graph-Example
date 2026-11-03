@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { fetchGraphQL, GET_CURRENT_USER_QUERY, LOGIN_MUTATION, REGISTER_MUTATION, LOGOUT_MUTATION } from '../constants';
 
 export default function Sidebar({
     graphs, selected, collapsed, setCollapsed, onSelectGraph,
     copyGraphId, copiedGraph, handleDelete, realBalance,
-    onUserLoggedIn, onAuthStateChange, onOpenLlmSettings, hasPersonalKeys
+    onUserLoggedIn, onAuthStateChange, onOpenLlmSettings, hasPersonalKeys,
+    onExportGraph, onImportGraph
 }) {
     const [isLoggedIn, setIsLoggedIn] = useState(false);
     const [currentUser, setCurrentUser] = useState('');
@@ -13,6 +14,9 @@ export default function Sidebar({
     const [formPass, setFormPass] = useState('');
     const [loading, setLoading] = useState(false);
     const [message, setMessage] = useState('');
+    // Hidden <input type="file"> behind the Import button; a file picker cannot be styled, so
+    // it lives out of the layout and is clicked programmatically.
+    const importInputRef = useRef(null);
 
     // Report the session state upward: App needs it because personal LLM keys only exist
     // for a signed-in user (the chat's "this will use the shared key" hint is meaningless
@@ -79,6 +83,26 @@ export default function Sidebar({
                     <button className="new-graph-btn" onClick={() => window.location.href = 'builder.html?isNew=true'}>
                         {collapsed ? '+' : '+ New'}
                     </button>
+                    {/* Import a graph from a previously exported .json file; it becomes a NEW
+                        graph in the list (never an overwrite of an existing one). */}
+                    <button
+                        className="import-graph-btn"
+                        title="Import a graph from a .json file"
+                        onClick={() => importInputRef.current?.click()}
+                    >
+                        {collapsed ? '⤓' : '⤓ Import'}
+                    </button>
+                    <input
+                        ref={importInputRef}
+                        type="file"
+                        accept=".json,application/json"
+                        style={{ display: 'none' }}
+                        onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            e.target.value = ''; // reset, so the same file can be picked again
+                            if (file) onImportGraph?.(file);
+                        }}
+                    />
                     <button className="toggle-btn" onClick={() => setCollapsed(!collapsed)}>
                         {collapsed ? '»' : '«'}
                     </button>
@@ -114,6 +138,7 @@ export default function Sidebar({
                         </div>
                         <div className="graph-actions" style={{ display: 'flex', gap: '5px', alignItems: 'center' }}>
                             <button className="icon-btn" title="Copy ID" onClick={(e) => { e.stopPropagation(); copyGraphId(g.graphId); }}>{copiedGraph === g.graphId ? '✅' : '📋'}</button>
+                            <button className="icon-btn" title="Export as .json" onClick={(e) => { e.stopPropagation(); onExportGraph?.(g.graphId, g.graphName); }}>⬇</button>
                             <button className="edit-btn" onClick={(e) => { e.stopPropagation(); window.location.href = `builder.html?graphId=${g.graphId}&graphName=${g.graphName}`; }}>Edit</button>
                             <button className="delete-btn" onClick={(e) => handleDelete(e, g.graphId)}>✕</button>
                         </div>
