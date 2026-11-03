@@ -133,7 +133,8 @@ export default function Sidebar({
                     <div key={g.graphId} className={`graph-item ${g.graphId === selected ? 'active' : ''}`} onClick={() => onSelectGraph(g.graphId)}>
                         <div className="graph-icon-mini"></div>
                         <div className="graph-info">
-                            <div className="name">{g.graphName}</div>
+                            {/* title keeps the full name readable once .name truncates it. */}
+                            <div className="name" title={g.graphName}>{g.graphName}</div>
                             <div className="meta">{g.nodeCount} Nodes</div>
                         </div>
                         <div className="graph-actions" style={{ display: 'flex', gap: '5px', alignItems: 'center' }}>
