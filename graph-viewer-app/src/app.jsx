@@ -13,7 +13,7 @@ import {
     CLAIM_THREADS_MUTATION, LLM_CREDENTIALS_QUERY, LLM_BILLING_SETTINGS_QUERY,
     collectGraphProviders, collectGraphLlm, normalizeProviderId,
     documentSlots, documentContextFor, layoutGraph, NODE_TYPES, EXECUTION_EVENT_TYPES,
-    nodeClassName, uploadDocument
+    nodeClassName, uploadDocument, exportGraphFile, importGraphFile
 } from './constants';
 import CopilotTab from './copilot';
 import Sidebar from './components/Sidebar';
@@ -254,9 +254,14 @@ function App() {
     // Load Graph List. The catalogue state is tracked explicitly because the canvas
     // placeholder distinguishes "the list is still arriving" (or failed to arrive) from
     // "a graph is being loaded" - see the canvasPlaceholder state machine below.
-    const loadGraphList = useCallback(() => {
-        setGraphsStatus('loading');
-        setGraphsError(null);
+    const loadGraphList = useCallback((silent = false) => {
+        // A silent refresh (after an import) leaves the current canvas and list alone until the
+        // answer lands, instead of blanking both and flashing "Loading graphs..." over a graph
+        // the user is looking at.
+        if (!silent) {
+            setGraphsStatus('loading');
+            setGraphsError(null);
+        }
         fetchGraphQL(LIST_QUERY)
             .then(d => {
                 setGraphs(d.listGraphs.graphs);
@@ -470,6 +475,33 @@ function App() {
     const handleSelectGraph = (id) => {
         setSelected(id);
         loadGraph(id);
+    };
+
+    // --- Export / Import ---
+    // Download a graph of the list as a .json file. The read is getGraphView, so it works for
+    // any graph in the catalogue without disturbing the canvas.
+    const handleExportGraph = async (graphId, graphName) => {
+        try {
+            const { filename } = await exportGraphFile(graphId);
+            showToast(`Exported ${graphName || graphId} as ${filename}`, 'success');
+        } catch (err) {
+            console.error("❌ Export failed:", err);
+            showToast("Export failed: " + err.message, "error", 6000);
+        }
+    };
+
+    // Create a graph from a downloaded file. importGraphFile mints a fresh graph id, so the
+    // result is always a NEW graph and an import can never overwrite the one the file came from.
+    const handleImportGraph = async (file) => {
+        try {
+            const { graphId, graphName, nodeCount } = await importGraphFile(file);
+            await loadGraphList(true);   // silent: no list flash just before the new graph opens
+            handleSelectGraph(graphId);
+            showToast(`Imported "${graphName}" with ${nodeCount} node(s)`, 'success');
+        } catch (err) {
+            console.error("❌ Import failed:", err);
+            showToast("Import failed: " + err.message, "error", 6000);
+        }
     };
 
     // The canvas is mounted only once its nodes are ready, so fitView measures the graph that is
@@ -970,6 +1002,8 @@ function App() {
                 onAuthStateChange={setIsLoggedIn}
                 onOpenLlmSettings={() => setShowLlmSettings(true)}
                 hasPersonalKeys={savedKeyProviders.length > 0}
+                onExportGraph={handleExportGraph}
+                onImportGraph={handleImportGraph}
             />
 
             {/* Personal LLM key manager - one modal, opened from the sidebar and from the

@@ -66,6 +66,35 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
 }
 .new-graph-btn:hover { background: #1976d2; }
 
+/* Import sits beside "+ New" but is deliberately not blue: it does not create an empty graph,
+   it reads a file and writes a filled one. Collapsed, it is just a glyph like "+ New". */
+.import-graph-btn {
+    background: #fff;
+    color: #1976d2;
+    border: 1px solid #90caf9;
+    padding: 5px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    white-space: nowrap;
+    transition: background 0.2s ease;
+}
+.import-graph-btn:hover { background: #e3f2fd; }
+
+.sidebar.collapsed .import-graph-btn {
+    width: 40px;
+    height: 28px;
+    min-width: 40px;
+    min-height: 28px;
+    padding: 0;
+    font-size: 16px;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+}
+
 .sidebar.collapsed .new-graph-btn {
     width: 40px;
     height: 28px;
@@ -211,7 +240,14 @@ body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
     display: flex;
     gap: 5px;
     align-items: center;
+    /* The row holds four controls now (copy, export, edit, delete) and .graph-item clips its
+       overflow - so the buttons must never be the thing that gets squeezed out. */
+    flex-shrink: 0;
 }
+/* Names are unbounded and the item clips, so without this a long name grows .graph-info past the
+   row and the action buttons are simply cut off. It truncates instead. */
+.graph-info { min-width: 0; overflow: hidden; }
+.graph-item .name { overflow: hidden; text-overflow: ellipsis; }
 .sidebar.collapsed .graph-actions {
     display: none !important;
 }

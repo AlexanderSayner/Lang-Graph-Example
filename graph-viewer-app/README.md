@@ -60,6 +60,62 @@ dismisses after ~3.5 s, click to dismiss) - the blocking browser `alert()` popup
 the viewer and the builder. The `window.confirm` questions (delete graph, rewind) were kept on
 purpose, because those need an explicit answer.
 
+## Export / Import
+
+A graph can be downloaded as a `.json` file and imported back through the UI. Both directions are
+**purely client side** - an export is a `getGraphView` read, an import writes through the existing
+`buildGraph` mutation - so no server endpoint, proto or nginx change is involved and the file format
+lives entirely in `src/constants.js`.
+
+Two places offer it:
+
+- **Viewer** (`components/Sidebar.jsx`) - each graph row has a **⬇** button that exports that graph,
+  and the header has **⤓ Import** next to `+ New`. An import creates the graph immediately, selects it
+  and refreshes the list (silently - no "Loading graphs..." flash over the canvas);
+- **Builder** (`builder.jsx`) - **⬇ Export** / **⬆ Import** sit beside *Save Graph*. Export snapshots
+  the **current canvas, including unsaved edits**; Import only loads the canvas and assigns a fresh
+  graph id, so nothing reaches the server until the user presses *Save Graph*.
+
+### The file
+
+```json
+{
+  "format": "langgraph.graph",
+  "version": 1,
+  "exportedAt": "2026-11-03T12:00:00.000Z",
+  "graph": {
+    "graphId": "graph-001",
+    "graphName": "Smart Support Triage",
+    "config": { "llm_provider": "yandex" },
+    "nodes": [ { "nodeId": "start", "nodeType": "START", "handlerName": "startHandler",
+                 "metadata": {}, "position": { "x": 0, "y": 0 } } ],
+    "edges": [ { "source": "start", "target": "triage", "condition": null } ]
+  }
+}
+```
+
+- `format`/`version` are checked on import, so an unrelated JSON file (or one from a newer build) is
+  refused with a message instead of half-loading;
+- the file is pretty-printed, so it is also readable - and hand-editable - as plain text;
+- node `position` (layout) and the **full** `metadata` are included, so a round trip is faithful -
+  including keys this UI has no editor for (`output_variable`, `llm_temperature`, `include_variables`);
+- because the metadata carries graph content (prompts, URLs), the file is **not** secret: treat an
+  export like the graph itself.
+
+Import accepts that envelope, and also a raw `BuildGraphInput` / `getGraphView` payload (same shape
+without the wrapper), so a file written by hand or by the API works too. `parseGraphImport` validates
+before anything is written and reports the first problem it finds - invalid JSON, a foreign or newer
+format, no nodes, an unknown `nodeType`, a missing START/END, duplicate node ids, an edge pointing at
+a node that is not in the file, or a node id over the server's 100-character limit.
+
+**An import never overwrites anything.** `freshGraphId()` mints `<name-slug>-<timestamp>` (with a
+sequence suffix for two imports in the same millisecond, trimmed to 100 characters), so the imported
+graph is always a new one and the graph the file came from is untouched.
+
+The builder payload itself is built by one pure helper, `canvasToBuildInput()`, which both *Save Graph*
+and *Export* call - the downloaded file is byte-for-byte what a Save would persist, and the edge
+condition rule (`key == value`) has a single implementation.
+
 ## Builder save
 
 `builder.jsx` `handleSave()` sends the layout **inside** every node of the `buildGraph` input as

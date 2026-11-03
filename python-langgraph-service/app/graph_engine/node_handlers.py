@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import json
 import logging
@@ -65,6 +66,308 @@ PROMPT_HIDDEN_CONTEXT_KEYS = SECRET_CONTEXT_KEYS | {DOCUMENT_REF_KEY}
 
 BILLING_USER = "user"
 BILLING_SERVICE = "service"
+
+# Free-tier and shared providers rate-limit and hiccup: HTTP 429, 5xx, connection resets.
+# These are transient by nature - the very same call succeeds seconds later - so they retry
+# inside the node's normal attempt budget instead of failing the whole run. A run whose
+# compare node died on a 429 produced no output variable at all, and every downstream node
+# then answered from nothing. Auth and permission errors stay fatal: retrying them just
+# burns quota and hides a configuration problem.
+TRANSIENT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+TRANSIENT_RETRY_DELAYS = (2.0, 5.0)  # seconds; pause before retry 1 and retry 2
+
+
+# --- Deterministic ACTION nodes: metadata "compare" replaces the model call ---------
+# An ACTION node whose metadata carries a "compare" object performs a generic, purely
+# mechanical comparison of two array variables and writes the result to the node's
+# output_variable - no model call, so the step is exact, free, and immune to the copying
+# mistakes LLM nodes kept making (dropped rows, reshuffled hours, invented entries). The
+# engine learns nothing about any particular report format: what to match on, where the
+# numbers live and what the statuses are called all come from the node's metadata (see
+# README "Deterministic nodes").
+MATCH_FIELDS_DEFAULT = "person,date"
+
+
+def _parse_llm_array(text):
+    """Parse a model-written JSON array variable.
+
+    Accepts a plain array, one wrapped in ``` fences, a pretty-printed one, and NDJSON
+    (objects one per line, brackets forgotten) - every shape real runs produced. Anything
+    else raises ValueError with a short reason.
+    """
+    clean = str(text).strip()
+    if clean.startswith("```"):
+        clean = "\n".join(l for l in clean.splitlines()
+                          if not l.strip().startswith("```")).strip()
+    try:
+        data = json.loads(clean)
+        if isinstance(data, list):
+            return data
+    except json.JSONDecodeError:
+        pass
+    rows = []
+    for line in clean.splitlines():
+        line = line.strip().rstrip(",")
+        if line.startswith("{"):
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    if rows:
+        return rows
+    raise ValueError("не массив и не построчный JSON (нет ни [ ], ни объектов на строках)")
+
+
+def _coerce_number(value):
+    """Hours arrive as numbers from the parsing nodes; a stray "4,5" / "4h" is still 4.5."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace(",", ".")
+    m = re.search(r"\d+(?:\.\d+)?", text)
+    return float(m.group(0)) if m else None
+
+
+def _match_value(field, value):
+    """Canonical form of one match-field value.
+
+    Text keys are case-insensitive (one report spells «Новиков», another «новиков»); a
+    `date` field accepts both 2026-10-04 and 04.10.2026 spellings in the same key, so two
+    reports that write the same day differently still pair.
+    """
+    text = str(value if value is not None else "").strip()
+    if field.lower() == "date":
+        m = re.fullmatch(r"(\d{2})\.(\d{2})\.(\d{4})", text)
+        if m:
+            return f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
+    return text.casefold()
+
+
+def _parse_java_map_string(text):
+    """Parse a Java toString() map: "{left=doc1, right=doc2}" - with nested maps.
+
+    The gRPC transport types node metadata as map<string, string> (langgraph.proto), so a
+    nested object a client sent arrives stringified. Older Java builds used the default
+    Map.toString() spelling ("{left=doc1}"); parsing it keeps already-persisted graph
+    definitions alive.
+    """
+    inner = text.strip()
+    if not (inner.startswith("{") and inner.endswith("}")):
+        raise ValueError("не карта")
+    inner = inner[1:-1].strip()
+    parts, depth, cur = [], 0, []
+    for ch in inner:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append("".join(cur).strip())
+            cur = []
+        else:
+            cur.append(ch)
+    if cur:
+        parts.append("".join(cur).strip())
+
+    # A plain value may itself contain a comma: match_fields=person,date arrives as the
+    # fragments "match_fields=person" + "date". A fragment without "=" is the tail of the
+    # previous value - glue it back instead of dropping it.
+    whole = []
+    for part in parts:
+        if "=" in part or not whole:
+            whole.append(part)
+        else:
+            whole[-1] = whole[-1] + "," + part
+
+    out = {}
+    for part in whole:
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        key, value = key.strip(), value.strip()
+        if value.startswith("{") and value.endswith("}"):
+            out[key] = _parse_java_map_string(value)
+        elif value.startswith("'") and value.endswith("'"):
+            out[key] = value[1:-1]
+        else:
+            out[key] = value
+    return out
+
+
+def _normalize_compare_config(raw):
+    """Accept the compare config in every shape the transport can deliver.
+
+    A dict (direct use), a JSON object as a string (the current Java mapper serialises
+    nested metadata values to JSON), or the older Java Map.toString() spelling.
+    Returns a dict or None if the shape is not recognisable.
+    """
+    if isinstance(raw, dict):
+        return dict(raw)
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    if text.startswith("{"):
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            pass
+        try:
+            return _parse_java_map_string(text)
+        except ValueError:
+            return None
+    return None
+
+
+def _deterministic_compare(n_id: str, n_meta: Dict[str, Any],
+                           state: GraphState) -> Optional[Dict[str, Any]]:
+    """The update dict for a `compare`-configured ACTION node, or None (not configured).
+
+    Pairs records of the `left` array with records of the `right` array on the combined
+    `match_fields` key, positionally within equal keys (first unused right record), then
+    classifies: equal hours -> ok, different -> mismatch, left record without a partner ->
+    left_only, right record without a partner -> right_only. One record enters exactly one
+    output object - by construction, not by instruction.
+    """
+    config = _normalize_compare_config((n_meta or {}).get("compare"))
+    if config is None:
+        return None
+
+    left_name = str(config.get("left") or "doc1").strip() or "doc1"
+    right_name = str(config.get("right") or "doc2").strip() or "doc2"
+    fields = [f.strip() for f in str(config.get("match_fields") or MATCH_FIELDS_DEFAULT)
+              .split(",") if f.strip()] or ["person", "date"]
+    hours_left_field = str(config.get("left_hours_field")
+                           or config.get("hours_field") or "hours")
+    hours_right_field = str(config.get("right_hours_field")
+                            or config.get("hours_field") or "hours")
+    task_field = str(config.get("task_field") or "task")
+    names = config.get("status_names") or {}
+    s_ok = str(names.get("ok") or "ok")
+    s_mismatch = str(names.get("mismatch") or "hours_mismatch")
+    s_left_only = str(names.get("left_only") or "only_in_1")
+    s_right_only = str(names.get("right_only") or "only_in_2")
+    out_var = str((n_meta or {}).get("output_variable") or "matched").strip() or "matched"
+
+    variables = state.get("variables") or {}
+    missing = [name for name, value in ((left_name, variables.get(left_name)),
+                                        (right_name, variables.get(right_name)))
+               if not str(value or "").strip()]
+    if missing:
+        return {
+            "last_node": n_id,
+            "output": "Error: deterministic compare needs the variables "
+                      + ", ".join(missing)
+                      + " (the nodes that produce them did not run or wrote nothing).",
+            "error": f"missing_variables:{','.join(missing)}",
+        }
+    try:
+        left = _parse_llm_array(variables[left_name])
+        right = _parse_llm_array(variables[right_name])
+    except ValueError as e:
+        return {
+            "last_node": n_id,
+            "output": f"Error: cannot parse the arrays to compare - {e}",
+            "error": f"unparseable_arrays:{e}",
+        }
+
+    def key_of(rec):
+        return tuple(_match_value(f, rec.get(f)) for f in fields)
+
+    def title_tokens(rec):
+        # Words of the human-readable task text, lower-cased, length >= 4 - the overlap of
+        # two systems' titles for the same work. Numbers and task keys count too: an
+        # identical task id is the strongest signal there is.
+        text = str(rec.get(task_field) or "").casefold()
+        return {t for t in re.findall(r"[a-zа-яё0-9]+", text) if len(t) >= 4}
+
+    index = {}
+    for i, rec in enumerate(right):
+        index.setdefault(key_of(rec), []).append(i)
+
+    # Pair CLUSTER BY CLUSTER (one combined key at a time), never globally: the same
+    # person+date is the evidence the two rows are the same work. A 1-on-1 cluster pairs
+    # unconditionally - one row per side is the strongest signal, titles are noise. Larger
+    # clusters pair greedily by the largest title-token overlap, because "first with first"
+    # pairs the wrong rows whenever one side has an extra record; leftovers stay UNPAIRED
+    # (only_in_* on each side) rather than being force-paired by position - a forced pair
+    # invents a mismatch, and an unpaired pair only reports two honest absences.
+    clusters_left = {}
+    for i, rec in enumerate(left):
+        clusters_left.setdefault(key_of(rec), []).append(i)
+
+    used_right = set()
+    partner_of = {}
+
+    for key, l_ids in clusters_left.items():
+        r_ids = [i for i in index.get(key, [])]
+        free_r = [i for i in r_ids if i not in used_right]
+        if len(l_ids) == 1 and len(free_r) == 1:
+            partner_of[l_ids[0]] = free_r[0]
+            used_right.add(free_r[0])
+            continue
+        scored = sorted(
+            ((len(title_tokens(left[i]) & title_tokens(right[j])), i, j)
+             for i in l_ids for j in free_r),
+            key=lambda t: (-t[0], t[1], t[2]))
+        for score, i, j in scored:
+            if score == 0:
+                break
+            if i in partner_of or j in used_right:
+                continue
+            partner_of[i] = j
+            used_right.add(j)
+
+    objects = []
+    for i, rec in enumerate(left):
+        h1 = _coerce_number(rec.get(hours_left_field))
+        partner = partner_of.get(i)
+        if partner is None:
+            objects.append({**{f: rec.get(f) for f in fields},
+                            task_field: rec.get(task_field),
+                            "hours_1": h1, "hours_2": None, "status": s_left_only})
+            continue
+        h2 = _coerce_number(right[partner].get(hours_right_field))
+        objects.append({**{f: rec.get(f) for f in fields},
+                        task_field: rec.get(task_field),
+                        "hours_1": h1, "hours_2": h2,
+                        "status": s_ok if (h1 is not None and h2 is not None
+                                           and h1 == h2) else s_mismatch})
+    for i, rec in enumerate(right):
+        if i in used_right:
+            continue
+        objects.append({**{f: rec.get(f) for f in fields}, task_field: rec.get(task_field),
+                        "hours_1": None, "hours_2": _coerce_number(rec.get(hours_right_field)),
+                        "status": s_right_only})
+
+    findings = [o for o in objects if o["status"] != s_ok]
+    ordered = findings + [o for o in objects if o["status"] == s_ok]
+    text = ("[\n" + ",\n".join(json.dumps(o, ensure_ascii=False) for o in ordered) + "\n]")
+    pairs = len(objects) - len(findings)
+    summary = (f"Детерминированное сопоставление (без модели): {len(left)} записей слева, "
+               f"{len(right)} справа, пар {pairs}, расхождений {len(findings)}.")
+    return {
+        "last_node": n_id,
+        "output": summary,
+        "variables": {out_var: text},
+        "total_tokens": 0,
+        "llm_billing": "",
+        "history": [{"node": n_id, "output": summary, "tokens_used": 0}],
+    }
+
+
+def _is_transient_llm_error(error: Exception) -> bool:
+    """True for errors worth one more attempt: rate limits, provider hiccups, timeouts."""
+    status = getattr(error, "status_code", None)
+    if isinstance(status, int) and status in TRANSIENT_STATUS_CODES:
+        return True
+    text = str(error).lower()
+    return any(token in text for token in (
+        "429", "rate limit", "too many requests", "service unavailable", "overloaded",
+        "temporarily", "timeout", "timed out", "connection",
+    ))
 
 
 def credentials_from_config(config: Optional[RunnableConfig]) -> LLMCredentialSet:
@@ -312,9 +615,12 @@ class NodeHandler:
                         caller_kind: str = "") -> Tuple[Any, str]:
         """Call the LLM, retrying once when the answer is a refusal or empty text.
 
-        On the retry we also shrink the prompt: the conversation history is dropped and a
-        stricter instruction is appended, because a long context is what most often triggers
-        the refusal in the first place.
+        Transient provider failures (HTTP 429 / 5xx, timeouts, connection resets) retry on
+        the same budget with a short pause instead of failing the node - a rate limit says
+        nothing about the prompt, and a node that dies on one leaves downstream nodes with
+        no variable to work from. On the retry we also shrink the prompt: the conversation
+        history is dropped and a stricter instruction is appended, because a long context is
+        what most often triggers the refusal in the first place.
 
         ``credentials`` are this run's personal keys, indexed by provider; the entry picked
         is the one matching the provider *this client* resolved to, so a mixed-provider graph
@@ -368,8 +674,21 @@ class NodeHandler:
         message = user_message
         response = None
         for attempt in range(1, attempts + 1):
-            response = await client.generate(user_message=message, system_message=prompt,
-                                             **generate_kwargs)
+            try:
+                response = await client.generate(user_message=message, system_message=prompt,
+                                                 **generate_kwargs)
+            except Exception as e:
+                # A 429 / provider hiccup says nothing about the prompt - the same call goes
+                # through seconds later, so spend one of this node's attempts on the wait
+                # rather than let the whole run die and the downstream nodes answer from
+                # nothing. Non-transient failures (bad key, permission) re-raise at once.
+                if not _is_transient_llm_error(e) or attempt == attempts:
+                    raise
+                delay = TRANSIENT_RETRY_DELAYS[min(attempt, len(TRANSIENT_RETRY_DELAYS)) - 1]
+                logger.warning("LLM call hit a transient error (attempt %d/%d): %s - "
+                               "retrying in %.0fs", attempt, attempts, e, delay)
+                await asyncio.sleep(delay)
+                continue
             text = str(response)
             if not is_unusable_answer(text):
                 return response, billing
@@ -492,6 +811,13 @@ class NodeHandler:
                               require_user_key: bool = False,
                               caller_kind: str = "",
                               document_ref_keys: Optional[Set[str]] = None) -> Dict[str, Any]:
+        # A node can skip the model entirely: metadata "compare" turns this ACTION into a
+        # deterministic array-vs-array comparison (see _deterministic_compare). Checked
+        # before the prompt handling because such a node legitimately has no prompt at all.
+        deterministic = _deterministic_compare(n_id, n_meta, state)
+        if deterministic is not None:
+            return deterministic
+
         user_input = state.get("input") or ""
         if not user_input.strip():
             return {"last_node": n_id, "output": "No input provided."}

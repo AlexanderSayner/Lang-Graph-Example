@@ -241,6 +241,35 @@ it, drop the `llm_max_tokens` override for that node/graph.
 
 ---
 
+## Deterministic nodes: the `compare` metadata
+
+An ACTION node whose metadata carries a `compare` object **does not call a model at all**.
+It performs a mechanical comparison of two array variables and writes the result to the
+node's `output_variable` - exact, free, and impossible to make a copying mistake in. The
+engine stays format-agnostic: everything specific lives in the node's metadata.
+
+| key | default | meaning |
+|---|---|---|
+| `left` / `right` | `doc1` / `doc2` | variables holding the two JSON arrays (a model-written array is accepted plain, ```-wrapped, pretty-printed, or one object per line) |
+| `match_fields` | `person,date` | comma-separated record fields whose combined value pairs a left record with a right one (person matching is case-insensitive, `date` accepts `ДД.ММ.ГГГГ` and `YYYY-MM-DD` in the same key) |
+| `hours_field` / `left_hours_field` / `right_hours_field` | `hours` | where the number lives on each side (`"4,5"` and `"4h"` coerce to 4.5) |
+| `task_field` | `task` | the human-readable task field copied into every output object |
+| `status_names` | `ok`, `hours_mismatch`, `only_in_1`, `only_in_2` | the four status strings written to the output |
+
+Output: one object per left record plus one per unpaired right record, shaped
+`{<match fields>, <task field>, "hours_1", "hours_2", "status"}`; findings first, then the
+`ok` pairs. The node's visible output is a one-line summary; `llm_billing` stays empty.
+
+```json
+"metadata": {
+  "label": "Сопоставить",
+  "output_variable": "matched",
+  "compare": {"left": "doc1", "right": "doc2", "match_fields": "person,date"}
+}
+```
+
+---
+
 ## Personal API keys
 
 Service-wide keys (`.env` / settings) stay the *fallback*. A caller may additionally supply
