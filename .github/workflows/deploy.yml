@@ -135,7 +135,24 @@ jobs:
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
             docker compose --env-file ~/myapp.env pull
-            # --force-recreate on the service whose environment changed
-            docker compose --env-file ~/myapp.env up -d --force-recreate spring-service
+            # Recreate every application service. Naming a single service restricts `up`
+            # to that service, so `... up -d --force-recreate spring-service` left
+            # graph-viewer-app and langgraph-service running the previous release even
+            # though `pull` had already fetched the new :latest images. postgres/redis are
+            # deliberately not listed: they hold state and their config did not change.
+            docker compose --env-file ~/myapp.env up -d --force-recreate spring-service langgraph-service graph-viewer-app
+
+            # Verify the release actually landed: every application container must run the
+            # image `pull` just fetched, not a stale one left over from an earlier deploy.
+            docker compose --env-file ~/myapp.env ps
+            for svc in spring-service langgraph-service graph-viewer-app; do
+              cid=$(docker compose --env-file ~/myapp.env ps -q "$svc")
+              if [ -z "$cid" ]; then echo "::error::$svc is not running"; exit 1; fi
+              running_img=$(docker inspect -f '{{.Image}}' "$cid")
+              latest_img=$(docker image inspect -f '{{.Id}}' "ghcr.io/alexandersayner/lang-graph-example/$svc:latest")
+              if [ "$running_img" != "$latest_img" ]; then
+                echo "::error::$svc is running a stale image ($running_img != $latest_img)"; exit 1
+              fi
+            done
 
             docker image prune -f
