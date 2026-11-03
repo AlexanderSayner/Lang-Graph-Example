@@ -40,15 +40,23 @@ public class HttpRequestExecutorServiceImpl implements HttpRequestExecutorServic
             String finalUrl = injectVariables(url, variables);
             String finalBody = (body != null) ? injectVariables(body, variables) : null;
 
+            Map<String, String> finalHeaders = new HashMap<>();
+            if (headers != null) {
+                headers.forEach((name, value) -> {
+                    String resolvedName = injectVariables(name, variables);
+                    if (resolvedName == null || resolvedName.isBlank()) {
+                        log.warn("Skipping HTTP header with unresolved name: '{}'", name);
+                        return;
+                    }
+                    finalHeaders.put(resolvedName, injectVariables(value, variables));
+                });
+            }
+
             log.info("Executing HTTP request: {} {}", method, finalUrl);
 
             ResponseEntity<@NonNull String> response = restClient.method(HttpMethod.valueOf(method))
                     .uri(finalUrl)
-                    .headers(httpHeaders -> {
-                        if (headers != null) {
-                            headers.forEach(httpHeaders::add);
-                        }
-                    })
+                    .headers(httpHeaders -> finalHeaders.forEach(httpHeaders::add))
                     .body(finalBody != null ? finalBody : "")
                     .retrieve()
                     .toEntity(String.class);
@@ -84,7 +92,7 @@ public class HttpRequestExecutorServiceImpl implements HttpRequestExecutorServic
         while (matcher.find()) {
             String key = matcher.group(1);
             Object val = variables.get(key);
-            matcher.appendReplacement(sb, val != null ? val.toString() : "");
+            matcher.appendReplacement(sb, Matcher.quoteReplacement(val != null ? val.toString() : ""));
         }
         matcher.appendTail(sb);
         return sb.toString();
