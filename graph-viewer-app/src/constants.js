@@ -633,3 +633,297 @@ export const documentContextFor = (slots, attachments) => {
     });
     return Object.keys(context).length > 0 ? context : undefined;
 };
+
+// ============================================================================
+// Graph export / import (JSON)
+// ============================================================================
+// A graph can be downloaded as a single .json file and imported back through the web UI.
+// Both directions are pure client side: an export is read with `getGraphView`, an import is
+// written with the existing `buildGraph` mutation - no server endpoint, no proto change.
+// This section owns the file format; the two pages only wire buttons to it.
+
+/** Marker every export carries, so an unrelated JSON file is rejected on import. */
+export const GRAPH_EXPORT_FORMAT = 'langgraph.graph';
+
+/** Bumped whenever the envelope changes shape in a way an older reader cannot follow. */
+export const GRAPH_EXPORT_VERSION = 1;
+
+/**
+ * The read an export performs. Like `VIEW_QUERY`, but it also selects `graphName` (the file is
+ * named after it) and `handlerName`, so importing reproduces the stored handler instead of
+ * quietly inventing a different one.
+ */
+export const GRAPH_EXPORT_QUERY = `query Export($graphId: String!) {
+  getGraphView(graphId: $graphId) {
+    success message graphId graphName config
+    nodes { nodeId nodeType handlerName metadata position { x y } }
+    edges { source target condition }
+  }
+}`;
+
+/** Create a graph definition - the mutation an import writes through. */
+export const BUILD_MUTATION = `mutation Build($input: BuildGraphInput!) { buildGraph(input: $input) { success graphId message } }`;
+
+const VALID_NODE_TYPES = new Set(Object.values(NODE_TYPES));
+
+/**
+ * Build the export envelope from a graph definition.
+ *
+ * Accepts either a `getGraphView` payload or a `BuildGraphInput`-shaped object (the builder
+ * exports its unsaved canvas), because both carry `graphId`/`graphName`/`config`/`nodes`/`edges`.
+ *
+ * @param {{ graphId?: string, graphName?: string, config?: object,
+ *           nodes?: Array<object>, edges?: Array<object> }} view
+ * @returns {{ format: string, version: number, exportedAt: string, graph: object }}
+ */
+export const buildGraphExport = (view) => ({
+    format: GRAPH_EXPORT_FORMAT,
+    version: GRAPH_EXPORT_VERSION,
+    exportedAt: new Date().toISOString(),
+    graph: {
+        graphId: view?.graphId || '',
+        graphName: view?.graphName || '',
+        config: view?.config || {},
+        nodes: (view?.nodes || []).map(node => ({
+            nodeId: node.nodeId,
+            nodeType: node.nodeType,
+            handlerName: node.handlerName || `${node.nodeId}Handler`,
+            metadata: node.metadata || {},
+            position: node.position ? { x: node.position.x, y: node.position.y } : null,
+        })),
+        edges: (view?.edges || []).map(edge => ({
+            source: edge.source,
+            target: edge.target,
+            condition: edge.condition ?? null,
+        })),
+    },
+});
+
+/**
+ * Save `text` to the user's disk as a download.
+ *
+ * The object URL is revoked on the next tick rather than synchronously: revoking in the same
+ * turn as `click()` cancels the download in some browsers.
+ *
+ * @param {string} filename suggested name (the browser may still adjust it)
+ * @param {string} text file body
+ * @param {string} mime content type
+ */
+export const downloadTextFile = (filename, text, mime = 'application/json') => {
+    const blob = new Blob([text], { type: `${mime};charset=utf-8` });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+};
+
+/**
+ * Turn a graph name into something a filesystem will accept as a file name.
+ *
+ * @param {string} name graph name
+ * @param {string} fallback used when nothing usable is left
+ * @returns {string} never empty, never containing path separators
+ */
+export const sanitizeFileName = (name, fallback = 'graph') => {
+    const cleaned = String(name || '')
+        .replace(/[\\/:*?"<>|]+/g, '-')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/^\.+/, '')
+        .slice(0, 80)
+        .trim();
+    return cleaned || fallback;
+};
+
+/**
+ * Download one graph as a .json file.
+ *
+ * @param {string} graphId graph to export
+ * @returns {Promise<{ filename: string, graphName: string }>} what was written
+ * @throws when the graph cannot be read (unknown id, transport failure)
+ */
+export const exportGraphFile = async (graphId) => {
+    if (!graphId) throw new Error('No graph is loaded to export.');
+    const data = await fetchGraphQL(GRAPH_EXPORT_QUERY, { graphId });
+    const view = data?.getGraphView;
+    if (!view || view.success === false) {
+        throw new Error(view?.message || `Graph "${graphId}" could not be read for export.`);
+    }
+    const filename = `${sanitizeFileName(view.graphName || graphId)}.json`;
+    downloadTextFile(filename, JSON.stringify(buildGraphExport(view), null, 2));
+    return { filename, graphName: view.graphName || graphId };
+};
+
+/** Normalise one node of an imported file, or throw naming exactly what is wrong with it. */
+const normalizeImportedNode = (raw, index) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new Error(`Node #${index + 1} is not an object.`);
+    }
+    const nodeId = String(raw.nodeId ?? '').trim();
+    if (!nodeId) throw new Error(`Node #${index + 1} has no nodeId.`);
+    if (nodeId.length > 100) {
+        throw new Error(`Node id "${nodeId}" is longer than the 100 characters the server allows.`);
+    }
+
+    const nodeType = String(raw.nodeType ?? '').trim().toUpperCase();
+    if (!VALID_NODE_TYPES.has(nodeType)) {
+        throw new Error(`Node "${nodeId}" has unknown type "${raw.nodeType}".`);
+    }
+
+    const metadata = raw.metadata && typeof raw.metadata === 'object' && !Array.isArray(raw.metadata)
+        ? raw.metadata
+        : {};
+
+    let position = null;
+    if (raw.position && typeof raw.position === 'object') {
+        const x = Number(raw.position.x);
+        const y = Number(raw.position.y);
+        if (Number.isFinite(x) && Number.isFinite(y)) position = { x, y };
+    }
+
+    return {
+        nodeId,
+        nodeType,
+        handlerName: String(raw.handlerName ?? '').trim() || `${nodeId}Handler`,
+        metadata,
+        position,
+    };
+};
+
+/** Normalise one edge of an imported file, checking both endpoints exist in the graph. */
+const normalizeImportedEdge = (raw, index, nodeIds) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new Error(`Edge #${index + 1} is not an object.`);
+    }
+    const source = String(raw.source ?? '').trim();
+    const target = String(raw.target ?? '').trim();
+    if (!source || !target) throw new Error(`Edge #${index + 1} needs both a source and a target.`);
+    if (!nodeIds.has(source)) throw new Error(`Edge source "${source}" is not a node of this graph.`);
+    if (!nodeIds.has(target)) throw new Error(`Edge target "${target}" is not a node of this graph.`);
+    return { source, target, condition: raw.condition == null ? null : String(raw.condition) };
+};
+
+/**
+ * Parse and validate the contents of an exported graph file.
+ *
+ * Accepts the canonical envelope, and - because they share the same shape - a raw
+ * `BuildGraphInput` or `getGraphView` payload too, so a hand-written file works as well.
+ *
+ * @param {string} text raw file contents
+ * @returns {{ graphName: string, config: object, nodes: Array<object>, edges: Array<object> }}
+ *          ready to hand to `buildGraph` or to paint on the builder canvas
+ * @throws {Error} describing the first problem found, suitable for showing to the user
+ */
+export const parseGraphImport = (text) => {
+    let parsed;
+    try {
+        parsed = JSON.parse(typeof text === 'string' ? text : String(text ?? ''));
+    } catch {
+        throw new Error('That file is not valid JSON. Import the .json file produced by Export.');
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error('The file does not describe a graph (a JSON object was expected).');
+    }
+    if (parsed.format != null && parsed.format !== GRAPH_EXPORT_FORMAT) {
+        throw new Error(`Unsupported file format "${parsed.format}" - expected "${GRAPH_EXPORT_FORMAT}".`);
+    }
+    if (typeof parsed.version === 'number' && parsed.version > GRAPH_EXPORT_VERSION) {
+        throw new Error(
+            `This export is version ${parsed.version}, newer than this UI understands (${GRAPH_EXPORT_VERSION}).`
+        );
+    }
+
+    // Canonical envelope -> its `graph`; otherwise the file already is the definition.
+    const source = parsed.graph && typeof parsed.graph === 'object' ? parsed.graph : parsed;
+
+    const rawNodes = source.nodes;
+    if (!Array.isArray(rawNodes) || rawNodes.length === 0) {
+        throw new Error('The file contains no nodes, so there is no graph to import.');
+    }
+    // Built one at a time rather than with a plain `.map`: a repeated id is a broken graph
+    // (edges would only ever address one of the two), so it is caught before the Set below
+    // would silently collapse them.
+    const nodes = [];
+    const nodeIds = new Set();
+    rawNodes.forEach((raw, index) => {
+        const node = normalizeImportedNode(raw, index);
+        if (nodeIds.has(node.nodeId)) throw new Error(`Duplicate node id "${node.nodeId}".`);
+        nodeIds.add(node.nodeId);
+        nodes.push(node);
+    });
+
+    if (!nodes.some(node => node.nodeType === NODE_TYPES.START)) {
+        throw new Error('The graph has no START node.');
+    }
+    if (!nodes.some(node => node.nodeType === NODE_TYPES.END)) {
+        throw new Error('The graph has no END node.');
+    }
+
+    const rawEdges = source.edges == null ? [] : source.edges;
+    if (!Array.isArray(rawEdges)) throw new Error('The file\'s "edges" field is not a list.');
+    const edges = rawEdges.map((edge, index) => normalizeImportedEdge(edge, index, nodeIds));
+
+    const config = source.config && typeof source.config === 'object' && !Array.isArray(source.config)
+        ? source.config
+        : {};
+
+    return {
+        graphName: String(source.graphName ?? source.name ?? '').trim() || 'Imported Graph',
+        config,
+        nodes,
+        edges,
+    };
+};
+
+/**
+ * An id for a graph that does not exist yet.
+ *
+ * Import must never overwrite the graph a file came from - or any other one - so the id is
+ * always freshly minted: a slug of the name plus a millisecond stamp, trimmed to the 100
+ * characters `BuildGraphInput` allows.
+ *
+ * @param {string} graphName imported graph name
+ * @returns {string} a new graph id
+ */
+// Two imports in the same millisecond would otherwise mint the same id and the second would
+// overwrite the first, so ties within this page session get a sequence suffix.
+let lastFreshIdStamp = 0;
+let freshIdSequence = 0;
+
+export const freshGraphId = (graphName) => {
+    const now = Date.now();
+    if (now === lastFreshIdStamp) freshIdSequence += 1;
+    else { lastFreshIdStamp = now; freshIdSequence = 0; }
+
+    const slug = String(graphName || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 60)
+        .replace(/-+$/, '');
+    const stamp = freshIdSequence === 0 ? `${now}` : `${now}-${freshIdSequence}`;
+    return `${slug || 'imported-graph'}-${stamp}`.slice(0, 100);
+};
+
+/**
+ * Import a graph file as a brand new graph.
+ *
+ * @param {File|string} source a picked file, or the raw text of one
+ * @returns {Promise<{ graphId: string, graphName: string, nodeCount: number }>}
+ * @throws {Error} when the file is not a valid graph, or the server refuses it
+ */
+export const importGraphFile = async (source) => {
+    const text = typeof source === 'string' ? source : await source.text();
+    const { graphName, config, nodes, edges } = parseGraphImport(text);
+    const graphId = freshGraphId(graphName);
+
+    const data = await fetchGraphQL(BUILD_MUTATION, { input: { graphId, graphName, nodes, edges, config } });
+    const result = data?.buildGraph;
+    if (!result?.success) throw new Error(result?.message || 'The graph could not be imported.');
+
+    return { graphId: result.graphId || graphId, graphName, nodeCount: nodes.length };
+};

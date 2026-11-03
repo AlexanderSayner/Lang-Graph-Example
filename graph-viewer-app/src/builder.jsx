@@ -11,7 +11,7 @@ import './styles-builder.css';
 import { Toast, useToast } from './components/Toast';
 
 // Shared constants from your central file
-import { fetchGraphQL, LIST_QUERY, VIEW_QUERY, SAVE_MUTATION, NODE_TYPES, HTTP_REQUEST_METHOD_OPTIONS, LLM_PROVIDER_OPTIONS, AI_NODE_TYPES, nodeClassName } from './constants';
+import { fetchGraphQL, LIST_QUERY, VIEW_QUERY, SAVE_MUTATION, BUILD_MUTATION, NODE_TYPES, HTTP_REQUEST_METHOD_OPTIONS, LLM_PROVIDER_OPTIONS, AI_NODE_TYPES, nodeClassName, parseGraphImport, freshGraphId, buildGraphExport, downloadTextFile, sanitizeFileName } from './constants';
 import ModelDatalist from './components/ModelDatalist';
 
 // --- Params ---
@@ -21,7 +21,6 @@ const URL_ID = params.get('graphId');
 const URL_NAME = params.get('graphName');
 
 // --- GraphQL Mutations specific to Builder ---
-const BUILD_MUTATION = `mutation Build($input: BuildGraphInput!) { buildGraph(input: $input) { success message } }`;
 const HTTP_REQUEST_DEBUG_MUTATION = `mutation Debug($input: HttpRequestDebugInput!) { debugHttpRequest(input: $input) { success statusCode body errorMessage } }`;
 
 // --- Custom Node ---
@@ -58,6 +57,132 @@ const promptRows = (text) => {
     return Math.min(PROMPT_MAX_ROWS, Math.max(PROMPT_MIN_ROWS, visualLines));
 };
 
+// --- Canvas <-> definition ---
+/**
+ * A graph definition (`getGraphView` payload, or the `nodes`/`edges` of an imported file) into
+ * React Flow nodes and edges.
+ *
+ * Shared by the load effect and the import path, so a graph opened from the server and one
+ * loaded from a downloaded file land on the canvas in exactly the same shape.
+ *
+ * @param {{ nodes?: Array<object>, edges?: Array<object> }} view
+ * @returns {{ nodes: Array<object>, edges: Array<object> }}
+ */
+const viewToFlow = (view) => ({
+    nodes: (view?.nodes || []).map(n => ({
+        id: n.nodeId, type: 'designNode', position: n.position || { x: 0, y: 0 },
+        data: {
+            label: n.nodeId, type: n.nodeType,
+            // Full metadata travels with the node. The save starts from this object, so keys this
+            // form has no editor for (output_variable on an AI node, include_variables,
+            // llm_temperature, llm_max_tokens) survive a re-save instead of being silently
+            // destroyed.
+            metadata: n.metadata || {},
+            prompt: n.metadata?.system_prompt || "",
+            friendlyName: n.metadata?.label || "",
+            subgraphId: n.metadata?.subgraph_id || null,
+            method: n.metadata?.method || "GET",
+            url: n.metadata?.url || "",
+            headers: n.metadata?.headers || "{}",
+            body: n.metadata?.body || "",
+            llmProvider: n.metadata?.llm_provider || "",
+            llmModel: n.metadata?.llm_model || "",
+            contextMode: n.metadata?.context_mode || "",
+            documentRefKey: n.metadata?.document_ref_key || "",
+            documentOutputVariable: n.metadata?.output_variable || "",
+            documentMetaVariable: n.metadata?.meta_variable || ""
+        },
+    })),
+    edges: (view?.edges || []).map((e, i) => ({
+        id: `e-${i}`, source: e.source, target: e.target,
+        label: e.condition || '', animated: true, markerEnd: { type: MarkerType.ArrowClosed }
+    })),
+});
+
+/**
+ * The canvas into a `BuildGraphInput` payload.
+ *
+ * The single definition of "what this canvas means as a graph definition": Save persists it and
+ * Export downloads it, so a downloaded file is byte-for-byte what a Save would write.
+ *
+ * Pure - it never touches component state. The one thing it can object to is an edge condition
+ * that is not `key == value`; that is reported back as `badEdge` so the caller can select the
+ * offending edge before failing, rather than being thrown from here.
+ *
+ * @param {{ graphId: string, graphName: string, nodes: Array<object>, edges: Array<object>,
+ *           graphConfig: object, graphLLM: { provider: string, model: string } }} input
+ * @returns {{ input: object, badEdge: ({ index: number, source: string, target: string,
+ *             condition: string }|null) }}
+ */
+const canvasToBuildInput = ({ graphId, graphName, nodes, edges, graphConfig, graphLLM }) => {
+    const payloadNodes = nodes.map(n => {
+        // Start from the metadata the server returned, then let the form fields below
+        // overwrite their OWN keys. Rebuilding meta from the form alone silently
+        // destroyed everything this panel has no editor for - output_variable on AI
+        // nodes (the whole variable hand-off of a pipeline), include_variables,
+        // llm_temperature, llm_max_tokens - and one such save turned a working graph
+        // into a chain of nodes asking for data they already had.
+        const meta = { ...(n.data?.metadata || {}) };
+        meta.system_prompt = n.data?.prompt || "";
+        meta.label = n.data?.friendlyName || "";
+        if (n.data?.type === NODE_TYPES.GRAPH) {
+            if (n.data.subgraphId) meta.subgraph_id = n.data.subgraphId;
+            else delete meta.subgraph_id;
+        }
+        if (n.data?.type === NODE_TYPES.HTTP_REQUEST) { meta.method = n.data.method || "GET"; meta.url = n.data.url || ""; meta.headers = n.data.headers || "{}"; meta.body = n.data.body || ""; }
+        // DOCUMENT carries no system prompt (it never calls a model). Its three slot
+        // names are written back, and only when non-blank: an empty value would
+        // override the engine's default with nothing.
+        if (n.data?.type === NODE_TYPES.DOCUMENT) {
+            const refKey = (n.data.documentRefKey || '').trim();
+            const outputVariable = (n.data.documentOutputVariable || '').trim();
+            const metaVariable = (n.data.documentMetaVariable || '').trim();
+            if (refKey) meta.document_ref_key = refKey; else delete meta.document_ref_key;
+            if (outputVariable) meta.output_variable = outputVariable; else delete meta.output_variable;
+            if (metaVariable) meta.meta_variable = metaVariable; else delete meta.meta_variable;
+        }
+        // Per-node AI overrides (empty = inherit the graph/server default). A cleared
+        // field must DELETE its key: with the spread above, leaving it would keep a
+        // stale value the user just tried to remove.
+        if (n.data?.llmProvider) meta.llm_provider = n.data.llmProvider;
+        else delete meta.llm_provider;
+        if (n.data?.llmModel) meta.llm_model = n.data.llmModel;
+        else delete meta.llm_model;
+        if (n.data?.contextMode) meta.context_mode = n.data.contextMode;
+        else delete meta.context_mode;
+        return { nodeId: n.id, nodeType: n.data?.type, handlerName: `${n.id}Handler`, metadata: meta, position: { x: n.position.x, y: n.position.y } };
+    });
+
+    // Trimmed so a label of stray whitespace becomes the unconditional edge it looks like;
+    // the condition rule below then sees exactly what the engine will receive.
+    const payloadEdges = edges.map(e => ({ source: e.source, target: e.target, condition: (e.label || '').trim() || null }));
+
+    // The engine rejects any condition without a key == value shape when the graph is
+    // built, and its message quotes the offending text. Catching it here instead names the
+    // edge, selects it for the user, and stops a doomed save before it reaches the server.
+    // It also flags an empty value, which the engine does parse but which can never match
+    // anything - a UI-side rule only, not a server rule.
+    const badIndex = payloadEdges.findIndex(e => {
+        if (!e.condition) return false;                     // unconditional edge
+        const [key, ...rest] = e.condition.split('==');
+        return !key.trim() || rest.length === 0 || !rest.join('==').trim();
+    });
+    const badEdge = badIndex >= 0 ? { index: badIndex, ...payloadEdges[badIndex] } : null;
+
+    // Graph-wide AI default - read by the Python service before each node's own override.
+    // Start from the config that was loaded so unrelated graph-level keys (anything set
+    // through the buildGraph API) survive a re-save, then write - or remove - the two
+    // keys this UI owns. A field reset to "" means "inherit", so its stored key must be
+    // dropped instead of being left stale.
+    const config = { ...graphConfig };
+    if (graphLLM.provider) config.llm_provider = graphLLM.provider;
+    else delete config.llm_provider;
+    if (graphLLM.model) config.llm_model = graphLLM.model;
+    else delete config.llm_model;
+
+    return { input: { graphId, graphName, nodes: payloadNodes, edges: payloadEdges, config }, badEdge };
+};
+
 // --- Builder ---
 function Builder() {
     const [nodes, setNodes, onNodesChange] = useNodesState([]);
@@ -80,6 +205,8 @@ function Builder() {
     const [graphConfig, setGraphConfig] = useState({});
 
     const reactFlowWrapper = useRef(null);
+    // Hidden <input type="file"> that the Import button opens.
+    const importInputRef = useRef(null);
     const { screenToFlowPosition } = useReactFlow();
 
     useEffect(() => {
@@ -127,37 +254,13 @@ function Builder() {
         } else if (URL_ID) {
             fetchGraphQL(VIEW_QUERY, { graphId: URL_ID }).then(data => {
                 if (!data.getGraphView) return;
-                const cfg = data.getGraphView.config || {};
+                const view = data.getGraphView;
+                const cfg = view.config || {};
                 setGraphConfig(cfg);
                 setGraphLLM({ provider: cfg.llm_provider || '', model: cfg.llm_model || '' });
-                setNodes(data.getGraphView.nodes.map(n => ({
-                    id: n.nodeId, type: 'designNode', position: n.position || { x: 0, y: 0 },
-                    data: {
-                        label: n.nodeId, type: n.nodeType,
-                        // Full metadata travels with the node. The save below starts from this
-                        // object, so keys this form has no editor for (output_variable on an
-                        // AI node, include_variables, llm_temperature, llm_max_tokens) survive
-                        // a re-save instead of being silently destroyed.
-                        metadata: n.metadata || {},
-                        prompt: n.metadata?.system_prompt || "",
-                        friendlyName: n.metadata?.label || "",
-                        subgraphId: n.metadata?.subgraph_id || null,
-                        method: n.metadata?.method || "GET",
-                        url: n.metadata?.url || "",
-                        headers: n.metadata?.headers || "{}",
-                        body: n.metadata?.body || "",
-                        llmProvider: n.metadata?.llm_provider || "",
-                        llmModel: n.metadata?.llm_model || "",
-                        contextMode: n.metadata?.context_mode || "",
-                        documentRefKey: n.metadata?.document_ref_key || "",
-                        documentOutputVariable: n.metadata?.output_variable || "",
-                        documentMetaVariable: n.metadata?.meta_variable || ""
-                    }
-                })));
-                setEdges(data.getGraphView.edges.map((e, i) => ({
-                    id: `e-${i}`, source: e.source, target: e.target,
-                    label: e.condition || '', animated: true, markerEnd: { type: MarkerType.ArrowClosed }
-                })));
+                const { nodes: loaded, edges: loadedEdges } = viewToFlow(view);
+                setNodes(loaded);
+                setEdges(loadedEdges);
             });
         }
     }, []);
@@ -212,77 +315,20 @@ function Builder() {
             if (!nodes.find(n => n.data?.type === NODE_TYPES.START)) throw new Error("Graph needs a START node");
             if (!nodes.find(n => n.data?.type === NODE_TYPES.END)) throw new Error("Graph needs an END node");
 
-            const payloadNodes = nodes.map(n => {
-                // Start from the metadata the server returned, then let the form fields below
-                // overwrite their OWN keys. Rebuilding meta from the form alone silently
-                // destroyed everything this panel has no editor for - output_variable on AI
-                // nodes (the whole variable hand-off of a pipeline), include_variables,
-                // llm_temperature, llm_max_tokens - and one such save turned a working graph
-                // into a chain of nodes asking for data they already had.
-                const meta = { ...(n.data?.metadata || {}) };
-                meta.system_prompt = n.data?.prompt || "";
-                meta.label = n.data?.friendlyName || "";
-                if (n.data?.type === NODE_TYPES.GRAPH) {
-                    if (n.data.subgraphId) meta.subgraph_id = n.data.subgraphId;
-                    else delete meta.subgraph_id;
-                }
-                if (n.data?.type === NODE_TYPES.HTTP_REQUEST) { meta.method = n.data.method || "GET"; meta.url = n.data.url || ""; meta.headers = n.data.headers || "{}"; meta.body = n.data.body || ""; }
-                // DOCUMENT carries no system prompt (it never calls a model). Its three slot
-                // names are written back, and only when non-blank: an empty value would
-                // override the engine's default with nothing.
-                if (n.data?.type === NODE_TYPES.DOCUMENT) {
-                    const refKey = (n.data.documentRefKey || '').trim();
-                    const outputVariable = (n.data.documentOutputVariable || '').trim();
-                    const metaVariable = (n.data.documentMetaVariable || '').trim();
-                    if (refKey) meta.document_ref_key = refKey; else delete meta.document_ref_key;
-                    if (outputVariable) meta.output_variable = outputVariable; else delete meta.output_variable;
-                    if (metaVariable) meta.meta_variable = metaVariable; else delete meta.meta_variable;
-                }
-                // Per-node AI overrides (empty = inherit the graph/server default). A cleared
-                // field must DELETE its key: with the spread above, leaving it would keep a
-                // stale value the user just tried to remove.
-                if (n.data?.llmProvider) meta.llm_provider = n.data.llmProvider;
-                else delete meta.llm_provider;
-                if (n.data?.llmModel) meta.llm_model = n.data.llmModel;
-                else delete meta.llm_model;
-                if (n.data?.contextMode) meta.context_mode = n.data.contextMode;
-                else delete meta.context_mode;
-                return { nodeId: n.id, nodeType: n.data?.type, handlerName: `${n.id}Handler`, metadata: meta, position: { x: n.position.x, y: n.position.y } };
+            // The whole definition (metadata merge, edge conditions, graph config) lives in one
+            // pure helper, because Export downloads exactly this payload - two copies of these
+            // rules would eventually disagree about what a graph is.
+            const { input: buildInput, badEdge } = canvasToBuildInput({
+                graphId, graphName, nodes, edges, graphConfig, graphLLM
             });
-
-            // Trimmed so a label of stray whitespace becomes the unconditional edge it looks like;
-            // the condition rule below then sees exactly what the engine will receive.
-            const payloadEdges = edges.map(e => ({ source: e.source, target: e.target, condition: (e.label || '').trim() || null }));
-
-            // The engine rejects any condition without a key == value shape when the graph is
-            // built, and its message quotes the offending text. Catching it here instead names the
-            // edge, selects it for the user, and stops a doomed save before it reaches the server.
-            // It also flags an empty value, which the engine does parse but which can never match
-            // anything - a UI-side rule only, not a server rule.
-            const badIndex = payloadEdges.findIndex(e => {
-                if (!e.condition) return false;                     // unconditional edge
-                const [key, ...rest] = e.condition.split('==');
-                return !key.trim() || rest.length === 0 || !rest.join('==').trim();
-            });
-            if (badIndex >= 0) {
-                const bad = payloadEdges[badIndex];
-                setEdges(eds => eds.map((e, i) => (i === badIndex ? { ...e, selected: true } : e)));
+            if (badEdge) {
+                setEdges(eds => eds.map((e, i) => (i === badEdge.index ? { ...e, selected: true } : e)));
                 throw new Error(
-                    `Invalid condition on ${bad.source} -> ${bad.target}: "${bad.condition}". ` +
+                    `Invalid condition on ${badEdge.source} -> ${badEdge.target}: "${badEdge.condition}". ` +
                     "Use key == value, e.g. output == true"
                 );
             }
 
-            // Graph-wide AI default - read by the Python service before each node's own override.
-            // Start from the config that was loaded so unrelated graph-level keys (anything set
-            // through the buildGraph API) survive a re-save, then write - or remove - the two
-            // keys this UI owns. A field reset to "" means "inherit", so its stored key must be
-            // dropped instead of being left stale.
-            const config = { ...graphConfig };
-            if (graphLLM.provider) config.llm_provider = graphLLM.provider;
-            else delete config.llm_provider;
-            if (graphLLM.model) config.llm_model = graphLLM.model;
-            else delete config.llm_model;
             // UI coordinates ride inside every node of the build input (NodeInput.position), so the
             // definition and the layout are persisted in one write - no parallel positions list that
             // could drift away from nodes. The saveGraphCoordinates call below stays as a redundant
@@ -292,7 +338,7 @@ function Builder() {
             // The gateway only persists a definition the engine accepted, so a rejected config
             // (unknown llm_provider, invalid node, ...) leaves nothing behind - surface the
             // server's reason instead of continuing to the coordinates write and toasting success.
-            const built = await fetchGraphQL(BUILD_MUTATION, { input: { graphId: graphId, graphName: graphName, nodes: payloadNodes, edges: payloadEdges, config } });
+            const built = await fetchGraphQL(BUILD_MUTATION, { input: buildInput });
             if (!built?.buildGraph?.success) {
                 throw new Error(built?.buildGraph?.message || "The graph was rejected by the server");
             }
@@ -301,6 +347,57 @@ function Builder() {
             showToast("Saved successfully!", "success");
             window.location.href = 'index.html';
         } catch (err) { showToast("Error: " + err.message, "error", 6000); } finally { setLoading(false); }
+    };
+
+    // --- Export / Import ---
+
+    // Download the canvas as a .json file, including edits that have not been saved yet. The
+    // payload comes from the same helper Save uses, so the file is what a Save would persist.
+    const handleExport = () => {
+        try {
+            const { input, badEdge } = canvasToBuildInput({
+                graphId, graphName, nodes, edges, graphConfig, graphLLM
+            });
+            if (!input.nodes.length) throw new Error('There is nothing on the canvas to export yet.');
+            if (badEdge) {
+                throw new Error(
+                    `Invalid condition on ${badEdge.source} -> ${badEdge.target}: "${badEdge.condition}". `
+                    + 'Use key == value, e.g. output == true'
+                );
+            }
+            const filename = `${sanitizeFileName(graphName)}.json`;
+            downloadTextFile(filename, JSON.stringify(buildGraphExport(input), null, 2));
+            showToast(`Exported ${input.nodes.length} nodes to ${filename}`, 'success');
+        } catch (err) {
+            showToast("Export failed: " + err.message, "error", 6000);
+        }
+    };
+
+    // Load a downloaded graph file onto the canvas. The graph id is replaced by a fresh one, so
+    // the next Save creates a NEW graph instead of overwriting the one the file came from -
+    // nothing is written until the user presses Save.
+    const handleImportFile = async (e) => {
+        const file = e.target.files?.[0];
+        e.target.value = ''; // reset, so picking the very same file again still fires onChange
+        if (!file) return;
+        try {
+            const imported = parseGraphImport(await file.text());
+            const { nodes: flowNodes, edges: flowEdges } = viewToFlow(imported);
+            setNodes(flowNodes);
+            setEdges(flowEdges);
+            setGraphName(imported.graphName);
+            setGraphConfig(imported.config);
+            setGraphLLM({ provider: imported.config.llm_provider || '', model: imported.config.llm_model || '' });
+            setGraphId(freshGraphId(imported.graphName));
+            setTestResult(null);
+            showToast(
+                `Loaded "${imported.graphName}" - ${flowNodes.length} nodes, ${flowEdges.length} edges. `
+                + `Review it, then Save to create it.`,
+                'success'
+            );
+        } catch (err) {
+            showToast("Import failed: " + err.message, "error", 6000);
+        }
     };
 
     // --- Panel Updates ---
@@ -389,7 +486,13 @@ function Builder() {
                     <input className="form-input" style={{width: 240}} list="llm-models-graph" value={graphLLM.model} onChange={(e) => setGraphLLM(prev => ({ ...prev, model: e.target.value }))} placeholder="graph model (optional)" />
                     <ModelDatalist id="llm-models-graph" provider={graphLLM.provider} />
                 </div>
-                <button onClick={handleSave} className="btn-save" disabled={loading}>{loading ? "Saving..." : "Save Graph"}</button>
+                <div style={{display: 'flex', alignItems: 'center', gap: 8}}>
+                    <button onClick={handleExport} className="btn-topbar" title="Download this graph as a .json file (including unsaved edits)">⬇ Export</button>
+                    <button onClick={() => importInputRef.current?.click()} className="btn-topbar" title="Load a graph from a previously exported .json file">⬆ Import</button>
+                    <input ref={importInputRef} type="file" accept=".json,application/json"
+                           style={{display: 'none'}} onChange={handleImportFile} />
+                    <button onClick={handleSave} className="btn-save" disabled={loading}>{loading ? "Saving..." : "Save Graph"}</button>
+                </div>
             </div>
 
             <div className="main-content">

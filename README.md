@@ -522,6 +522,10 @@ single-key router, and both warning texts — is in
 ### 4. Visual Graph Editor
 - React + ReactFlow UI for building, running and inspecting graphs
 - Copilot chat panel and execution state modal
+- **Export / import a graph as a `.json` file** — download from the sidebar (or the builder,
+  including unsaved edits) and import it back to get a copy as a new graph. Entirely client side
+  (`getGraphView` out, `buildGraph` in), validated before anything is written — see
+  [graph-viewer-app/README.md](graph-viewer-app/README.md) → *Export / Import*
 
 ### 5. Personal API keys (per-user, billed to the user)
 
