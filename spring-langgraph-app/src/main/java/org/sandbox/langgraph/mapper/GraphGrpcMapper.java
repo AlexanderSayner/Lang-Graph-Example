@@ -1,5 +1,7 @@
 package org.sandbox.langgraph.mapper;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.mapstruct.Mapper;
 import org.sandbox.langgraph.core.model.ExecutionEventType;
 import org.sandbox.langgraph.core.model.GraphStatus;
@@ -21,6 +23,12 @@ import java.util.stream.Collectors;
 
 @Mapper(componentModel = "spring")
 public interface GraphGrpcMapper {
+
+    // Node metadata rides the gRPC transport as map<string, string>, but a metadata VALUE is
+    // allowed to be a structured object (e.g. the deterministic "compare" config). It has to
+    // reach the engine as something the engine can parse back - JSON - instead of Java's
+    // Map.toString() spelling ("{left=doc1}"), which no other language understands.
+    ObjectMapper METADATA_JSON = new ObjectMapper();
 
     // ============== GraphQL Input -> gRPC Request ==============
 
@@ -242,7 +250,20 @@ public interface GraphGrpcMapper {
         return map.entrySet().stream()
                 .collect(Collectors.toMap(
                         Map.Entry::getKey,
-                        e -> e.getValue() != null ? e.getValue().toString() : ""
+                        e -> {
+                            Object value = e.getValue();
+                            if (value == null) {
+                                return "";
+                            }
+                            if (value instanceof String s) {
+                                return s;
+                            }
+                            try {
+                                return METADATA_JSON.writeValueAsString(value);
+                            } catch (JsonProcessingException ex) {
+                                return String.valueOf(value);
+                            }
+                        }
                 ));
     }
 }
