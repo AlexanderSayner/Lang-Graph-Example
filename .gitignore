@@ -3,6 +3,11 @@ node_modules/
 .gradle/
 target/
 
+# The repo root has no package.json, so a package-lock.json there is an accident.
+# graph-viewer-app/package-lock.json is the real, committed frontend lockfile and must
+# stay under version control - only the stray root-level one is ignored.
+/package-lock.json
+
 # Compiled Java files
 *.class
 *.jar
