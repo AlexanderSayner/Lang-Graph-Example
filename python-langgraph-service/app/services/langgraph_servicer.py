@@ -665,22 +665,30 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                             node_billing = ""
                             if isinstance(updates, dict):
                                 output_content = str(updates.get("output", ""))
+                                error_content = str(updates.get("error", "") or "")
                                 serialized_state = _serialize_state(updates)
                                 node_tokens = updates.get("total_tokens", 0)
                                 node_billing = str(updates.get("llm_billing", "") or "")
                             else:
                                 logger.warning(f"Node '{node_name}' returned non-dict update (type: {type(updates).__name__})")
                                 output_content = str(updates)
+                                error_content = ""
                                 serialized_state = _serialize_state({"raw_output": updates})
 
                             if node_billing in (BILLING_USER, BILLING_SERVICE):
                                 run_billing.add(node_billing)
 
+                            # A node that reports an error of its own (a DOCUMENT node whose slot
+                            # the run never filled -> "missing_context:doc1_ref") still ends in a
+                            # NODE_END frame, and the graph walks straight past it - so the error
+                            # rides the frame, not just the state blob: a caller that reads only
+                            # `output` would otherwise take the fallback answer for a real one.
                             await queue.put(langgraph_pb2.ExecuteGraphResponse(
                                 event_type="NODE_END",
                                 node_id=node_name,
                                 output=output_content,
                                 state=serialized_state,
+                                error_message=error_content,
                                 timestamp=int(time.time() * 1000),
                                 total_tokens=node_tokens,
                                 llm_billing=node_billing

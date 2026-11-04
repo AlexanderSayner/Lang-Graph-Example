@@ -87,14 +87,32 @@ public class HttpRequestExecutorServiceImpl implements HttpRequestExecutorServic
             return null;
         }
         StringBuilder sb = new StringBuilder();
-        Pattern pattern = Pattern.compile("\\{\\{(\\w+)}}");
+        // A dotted path walks into nested state objects: the tracker's login response lands in
+        // http_result as a JSON object, so the timesheet node's Authorization header is written
+        // {{http_result.token}}. The old \w+ pattern could not match a dotted key and shipped the
+        // placeholder to the server verbatim, which rejected it as an invalid token.
+        Pattern pattern = Pattern.compile("\\{\\{([\\w.]+)}}");
         Matcher matcher = pattern.matcher(template);
         while (matcher.find()) {
-            String key = matcher.group(1);
-            Object val = variables.get(key);
+            Object val = resolvePath(variables, matcher.group(1));
             matcher.appendReplacement(sb, Matcher.quoteReplacement(val != null ? val.toString() : ""));
         }
         matcher.appendTail(sb);
         return sb.toString();
+    }
+
+    /** Walk a dot-separated path through nested maps; a non-map step or a missing key yields null. */
+    private static Object resolvePath(Map<String, Object> root, String path) {
+        Object current = root;
+        for (String part : path.split("\\.")) {
+            if (!(current instanceof Map)) {
+                return null;
+            }
+            current = ((Map<?, ?>) current).get(part);
+            if (current == null) {
+                return null;
+            }
+        }
+        return current;
     }
 }
