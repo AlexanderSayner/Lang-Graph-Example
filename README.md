@@ -116,6 +116,9 @@ Required secrets:
     VPS_SSH_KEY: Private key created above.
 Optional secrets (Yandex Cloud billing / LLM integration):
     YC_API_KEY, YC_FOLDER_ID, YC_BILLING_ACCOUNT_ID, YC_SA_KEY_JSON
+Optional secret (OpenRouter shared key - what runs on when a graph selects
+llm_provider=openrouter and the caller brings no personal key):
+    OPENROUTER_API_KEY
 Optional - personal LLM API keys (see "Personal LLM API keys" below):
     Secret  LLM_SECRET_MASTER_KEY    openssl rand -base64 32 - MUST be a Secret and MUST stay
                                      the same across deploys: ~/myapp.env is rewritten on every
@@ -157,7 +160,7 @@ This starts all services:
 | PostgreSQL | localhost:7432 |
 | Redis | localhost:6879 |
 
-Optional environment variables consumed by `docker-compose.yml`: `OPENAI_API_KEY`, `YC_API_KEY`, `YC_FOLDER_ID`, `YC_BILLING_ACCOUNT_ID`, `YC_SA_KEY_JSON_B64`, plus the personal-key settings `LLM_SECRET_MASTER_KEY`, `LLM_CREDENTIALS_POLICY`, `LLM_SERVICE_KEY_ENABLED` (see [Personal LLM API keys](#personal-llm-api-keys)).
+Optional environment variables consumed by `docker-compose.yml`: `OPENAI_API_KEY`, `YC_API_KEY`, `YC_FOLDER_ID`, `YC_BILLING_ACCOUNT_ID`, `YC_SA_KEY_JSON_B64`, `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` (shared key and optional model pin for graphs with `llm_provider=openrouter`), plus the personal-key settings `LLM_SECRET_MASTER_KEY`, `LLM_CREDENTIALS_POLICY`, `LLM_SERVICE_KEY_ENABLED` (see [Personal LLM API keys](#personal-llm-api-keys)).
 
 ### Option B: Run services locally for development
 
