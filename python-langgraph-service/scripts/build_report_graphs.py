@@ -127,7 +127,7 @@ AUTH_HEADERS = ('{\n  "Authorization" : "Basic {{login_result.token}}",'
                 '\n  "Content-Type" : "application/json"\n}')
 MATCH_PROMPT = (
     "Данные для сопоставления.\n"
-    "1. http_result - JSON-массив участников проекта из API трекера; у каждого есть id (число),\n"
+    "1. users_result - JSON-массив участников проекта из API трекера; у каждого есть id (число),\n"
     "   fullNameRu и login. Это все люди проекта.\n"
     "2. В секции STATIC CONTEXT переменная subscribers - JSON-массив людей, которых система умеет\n"
     "   писать в Telegram: subscriberId, name, trackerId, telegramChatId, telegramUsername.\n"
@@ -138,23 +138,23 @@ MATCH_PROMPT = (
     "Подписчик без telegramChatId не адресуем - такой участник идёт в dropped.\n"
     "Участник, для которого подписчика нет, тоже идёт в dropped.\n"
     "\n"
-    "Ответ состоит из ДВУХ частей.\n"
-    "Часть 1 - одна короткая строка для человека, без фигурных скобок:\n"
-    "✅ Проект «<project_name>» (id <project_id>): запрошу отчёт у <participants_count> участника(ов);\n"
-    "не найдены в Orchestra (<dropped_count>): <dropped_names>\n"
-    "(если dropped нет - вместо второй половины напиши «все участники адресуемы»).\n"
-    "Часть 2 - с новой строки строго один JSON-объект в блоке ```json, без пояснений после него:\n"
+    "Ответ - СТРОГО один JSON-объект, и больше ничего: ни строки «для человека», ни пояснений до\n"
+    "или после него, ни markdown-обёртки. Человек этот объект не читает - процесс сам пишет\n"
+    "сообщение из его полей, а объект нужен движку процесса.\n"
     '{"project_id": 1247, "project_name": "Orkestra",\n'
     ' "participants_count": 2,\n'
     ' "participants": [{"tracker_id": 3693, "name": "Александр Ежаков",\n'
     '                   "subscriber_id": "6ae1d8af0466ce552b44ba89", "telegram_id": "705196288"}],\n'
     ' "dropped_count": 10,\n'
     ' "dropped_names": "Дамир Батыров, Татьяна Бабич",\n'
+    ' "dropped_table": "3981 - Дамир Батыров\\n3982 - Татьяна Бабич",\n'
     ' "dropped": [{"tracker_id": 3981, "name": "Дамир Батыров"}]}\n'
     "\n"
     "participants_count = число элементов participants; dropped_count = число dropped;\n"
-    "dropped_names = имена всех dropped через запятую (пустая строка, если их нет).\n"
-    "Ни одного лишнего ключа. Числа - числами, без кавычек."
+    "dropped_names = имена всех dropped через запятую (пустая строка, если их нет);\n"
+    "dropped_table = по одной строке на каждого dropped вида «<tracker_id> - <ФИО>», разделитель -\n"
+    "перевод строки; если dropped нет - напиши в dropped_table слово «нет». Ни одного лишнего ключа.\n"
+    "Числа - числами, без кавычек."
 )
 
 GATE_PROMPT = (
