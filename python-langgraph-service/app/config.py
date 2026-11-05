@@ -100,7 +100,10 @@ class Settings(BaseSettings):
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
 
     DEEPSEEK_API_KEY: str = ""
-    DEEPSEEK_MODEL: str = "deepseek-chat"
+    # Default model is the cheap Flash tier: deepseek-v4-pro costs ~4.4x the input and
+    # ~3.3x the output price of deepseek-flash (peak, per 1M tokens), so it is only ever
+    # selected explicitly through this setting - never by an unset default.
+    DEEPSEEK_MODEL: str = "deepseek-flash"
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com/v1"
 
     OPENROUTER_API_KEY: str = ""

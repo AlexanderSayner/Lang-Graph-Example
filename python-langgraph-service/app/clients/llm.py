@@ -158,7 +158,7 @@ PROVIDER_PRESETS: Dict[str, ProviderPreset] = {
                              "OPENAI_API_KEY", "OPENAI_API_KEY"),
     "groq": ProviderPreset("openai", "https://api.groq.com/openai/v1",
                            "llama-3.3-70b-versatile", "GROQ_API_KEY", "GROQ_API_KEY"),
-    "deepseek": ProviderPreset("openai", "https://api.deepseek.com/v1", "deepseek-chat",
+    "deepseek": ProviderPreset("openai", "https://api.deepseek.com/v1", "deepseek-flash",
                                "DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"),
     "openrouter": ProviderPreset("openai", "https://openrouter.ai/api/v1",
                                  "openai/gpt-4o-mini", "OPENROUTER_API_KEY", "OPENROUTER_API_KEY"),

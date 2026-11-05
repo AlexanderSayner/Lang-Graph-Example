@@ -126,6 +126,17 @@ jobs:
             # an empty value, which is exactly the behaviour before this line existed.
             # docker-compose.yml forwards it (and OPENROUTER_MODEL) to langgraph-service.
             echo "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}" >> ~/myapp.env
+            # DeepSeek shared key: graphs with llm_provider=deepseek and no personal
+            # llm_credentials_json (the B2B/orchestra path never sends one) run on it and are
+            # reported as llmBilling=service. An unset Secret expands to an empty value, which
+            # is exactly the behaviour before this line existed. docker-compose.yml already
+            # forwards it (and DEEPSEEK_MODEL) to langgraph-service.
+            echo "DEEPSEEK_API_KEY=${{ secrets.DEEPSEEK_API_KEY }}" >> ~/myapp.env
+            # Cost guard: pin the cheap Flash model. deepseek-v4-pro is ~4.4x the input and
+            # ~3.3x the output price of deepseek-flash (peak, per 1M tokens), so Pro is only
+            # ever chosen deliberately through the repo variable DEEPSEEK_MODEL - never by an
+            # unset default.
+            echo "DEEPSEEK_MODEL=${{ vars.DEEPSEEK_MODEL || 'deepseek-flash' }}" >> ~/myapp.env
             # Personal LLM API keys. LLM_SECRET_MASTER_KEY MUST be a GitHub Secret and MUST be
             # STABLE: this file is rewritten on every deploy, so a key that lives only in a
             # shell or in ~/myapp.env would be lost here and every stored personal key would
