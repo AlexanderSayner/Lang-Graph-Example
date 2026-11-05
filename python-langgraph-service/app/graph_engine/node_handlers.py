@@ -1154,6 +1154,15 @@ class NodeHandler:
                     "http_success": True,
                     "http_status_code": response.status_code
                 }
+                # A node may keep its response under a name of its own, beside the historical
+                # `http_result` (which stays, so every existing graph and router is untouched).
+                # Without it a graph can make exactly one authenticated call per chain: the
+                # tracker's login response lands in `http_result`, the very next call overwrites
+                # it with a project list, and a later node's `{{http_result.token}}` then renders
+                # an empty Authorization header - a 401 with nothing in the graph to explain it.
+                result_variable = str((n_meta or {}).get("result_variable") or "").strip()
+                if result_variable:
+                    new_vars[result_variable] = result_data
                 return {
                     "last_node": n_id,
                     "output": f"HTTP request executed successfully. Status: {response.status_code}",

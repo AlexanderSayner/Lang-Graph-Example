@@ -275,6 +275,46 @@ Output: one object per left record plus one per unpaired right record, shaped
 
 ---
 
+## An HTTP node's answer under a name of its own (`result_variable`)
+
+`HTTP_REQUEST` always writes its response body to the variable `http_result`. That is enough for one
+call and not enough for two: the tracker's login answer lands in `http_result`, the very next call
+overwrites it with a project list, and a later `Authorization: Basic {{http_result.token}}` renders an
+empty header - a 401 with nothing in the graph to explain it. A node may therefore name where **its
+own** answer is kept:
+
+| key | default | meaning |
+|---|---|---|
+| `result_variable` | *(none)* | the variable this node's response object is also written to. `http_result` is still written, so every existing graph and router is untouched |
+
+```json
+"metadata": { "url": "…/api/v1/auth/login", "result_variable": "login_result" }
+```
+
+Anything downstream then reads `Basic {{login_result.token}}`, no matter how many calls followed.
+
+---
+
+## Caller values reach `variables`, not only prompts
+
+Everything a run puts in `ExecuteGraphRequest.context` is visible to a model (through
+`format_state_context`) - and until now that was the only place it was visible. An HTTP node, though,
+templates its URL and body out of `variables` (`state_json` of `HttpRequestInput`), so a caller's
+member id or date could never reach a URL: a per-participant run had to ask a model to copy the number
+into the URL by hand, which is exactly how one participant ends up fetching another's rows.
+
+Ordinary context values are therefore **also seeded into `variables`** - on a fresh turn, and on a
+resume, where the reducer merges rather than erases what the parked turn computed. Two kinds stay out:
+
+* blanks - `None`, empty or whitespace-only strings have nothing to add, and `context` has no reducer.
+  A numeric `0` is data and stays;
+* the keys a `DOCUMENT` node reads (`document_ref_keys`) - a file handle would otherwise be rendered
+  into every prompt, which is the one thing the context scrub exists to prevent.
+
+See *Several documents in one run (slots)* for how a reference itself travels.
+
+---
+
 ## Personal API keys
 
 Service-wide keys (`.env` / settings) stay the *fallback*. A caller may additionally supply
