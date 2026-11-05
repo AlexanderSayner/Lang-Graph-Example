@@ -169,7 +169,7 @@ async for event in stub.ExecuteGraph(exec_request):
 | `YC_ASYNC_MAX_WAIT_SECONDS`     | 90     | Maximum time to wait for a deferred operation before giving up |
 | `YC_ASYNC_POLL_INTERVAL_SECONDS`| 1      | Poll interval while waiting for a deferred operation |
 | `YC_ASYNC_FALLBACK_TO_SYNC`     | true   | Fall back to the synchronous endpoint when the deferred operation times out |
-| `LLM_MAX_ATTEMPTS`              | 2      | Attempts per graph node when the LLM answer is unusable (refusal / empty text) |
+| `LLM_MAX_ATTEMPTS`              | 2      | Attempts per graph node when the LLM answer is unusable (refusal / empty text). If the answer is STILL a refusal after the last attempt (and not a data payload), the run stops with an explicit refusal message as its final output instead of letting downstream nodes answer from nothing |
 | `LLM_SERVICE_KEY_ENABLED`       | true   | Kill switch for the shared service keys (`YC_API_KEY` / `OPENAI_API_KEY` / …). `false` = the engine never reads them: a call with no personal user key for the resolved provider is refused with the "add your key" instruction instead of billed to the operator. Pair with the backend's `LLM_CREDENTIALS_POLICY=PERSONAL_ONLY` |
 | `LLM_PROVIDER`                  | yandex | Default provider: yandex / openai / groq / deepseek / openrouter / anthropic |
 | `LLM_MODEL`                     | (provider default) | Default model for `LLM_PROVIDER` **only**; empty = that provider's default. A node/graph selecting a different provider does **not** inherit it - that provider's own `YC_MODEL_NAME` / `<PROVIDER>_MODEL` (or its preset) is used |

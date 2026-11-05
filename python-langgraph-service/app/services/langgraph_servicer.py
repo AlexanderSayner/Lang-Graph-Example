@@ -33,6 +33,7 @@ from app.graph_engine.node_handlers import (
     CONFIG_REQUIRE_USER_KEY,
     CONFIG_USER_ID,
     NodeHandler,
+    TerminalNodeError,
 )
 from app.models import GraphDefinition
 from app.services.execution_registry import ExecutionRegistry, run_key
@@ -737,6 +738,70 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                 except asyncio.CancelledError:
                     logger.info(f"Graph run {run_id} was cancelled")
                     raise
+                except TerminalNodeError as stop:
+                    # The node refused (or its data was unusable) and raising was the only
+                    # way to stop downstream nodes from answering from nothing. Convert the
+                    # abort into the run's NORMAL ending: a NODE_END frame that carries the
+                    # error for the run record, then an END whose output is the message the
+                    # user reads - an ERROR event here would fail the turn instead and the
+                    # explanation would never reach the chat.
+                    logger.warning(
+                        "run %s stopped at node %s (%s): %s",
+                        run_id, stop.node_id or "?", stop.error_code,
+                        (stop.user_message or str(stop)).replace("\n", " ")[:300],
+                    )
+                    if stop.llm_billing in (BILLING_USER, BILLING_SERVICE):
+                        run_billing.add(stop.llm_billing)
+                    message = stop.user_message or str(stop)
+                    await queue.put(langgraph_pb2.ExecuteGraphResponse(
+                        event_type="NODE_END",
+                        node_id=stop.node_id or "unknown",
+                        output=message,
+                        state=_serialize_state({"last_node": stop.node_id,
+                                                "output": message,
+                                                "error": stop.error_code}),
+                        error_message=stop.error_code,
+                        timestamp=int(time.time() * 1000),
+                        total_tokens=stop.total_tokens,
+                        llm_billing=stop.llm_billing,
+                    ))
+                    # Best-effort final state: the refusing node's update never committed,
+                    # so the snapshot holds the nodes BEFORE it; only the totals and the
+                    # state blob are read from it, the answer itself is the message above.
+                    final_values: Dict[str, Any] = {}
+                    try:
+                        snapshot = await compiled_graph.aget_state(config)
+                        final_values = getattr(snapshot, "values", None) or {}
+                    except Exception:
+                        logger.warning("run %s: state unreadable after the stop", run_id,
+                                       exc_info=True)
+                    final_values = dict(final_values)
+                    final_values["output"] = message
+                    final_values["last_node"] = stop.node_id or final_values.get("last_node", "")
+                    # The refusing node's update never committed, so its tokens are not in
+                    # the snapshot - add them so the run's total stays honest.
+                    final_values["total_tokens"] = (int(final_values.get("total_tokens") or 0)
+                                                   + stop.total_tokens)
+                    run_billing_value = _aggregate_billing(run_billing)
+                    run_owner = config["configurable"].get(CONFIG_USER_ID) or "anonymous"
+                    if run_billing_value == BILLING_SERVICE:
+                        logger.warning(
+                            "run %s user=%s thread=%s tokens=%s billing=service "
+                            "(no personal key used, stopped early)",
+                            run_id, run_owner, config["configurable"]["thread_id"],
+                            final_values.get("total_tokens", 0))
+                    else:
+                        logger.info("run %s user=%s thread=%s tokens=%s billing=%s (stopped early)",
+                                    run_id, run_owner, config["configurable"]["thread_id"],
+                                    final_values.get("total_tokens", 0), run_billing_value)
+                    await queue.put(langgraph_pb2.ExecuteGraphResponse(
+                        event_type="END",
+                        output=message,
+                        state=_serialize_state(final_values),
+                        timestamp=int(time.time() * 1000),
+                        total_tokens=final_values.get("total_tokens", 0),
+                        llm_billing=run_billing_value
+                    ))
                 except Exception as exec_error:
                     logger.error(f"Execution error: {exec_error}", exc_info=True)
                     await queue.put(langgraph_pb2.ExecuteGraphResponse(
