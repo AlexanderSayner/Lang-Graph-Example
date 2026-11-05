@@ -40,8 +40,8 @@ CURATED_MODELS: Dict[str, List[Tuple[str, str]]] = {
     ],
     "groq": [("llama-3.3-70b-versatile", "LLaMA 3.3 70B Versatile")],
     "deepseek": [
-        ("deepseek-chat", "DeepSeek Chat"),
-        ("deepseek-reasoner", "DeepSeek Reasoner"),
+        ("deepseek-flash", "DeepSeek Flash (V4.1)"),
+        ("deepseek-v4-pro", "DeepSeek V4 Pro (expensive)"),
     ],
     "openrouter": [("openai/gpt-4o-mini", "GPT-4o mini (OpenRouter)")],
     "anthropic": [

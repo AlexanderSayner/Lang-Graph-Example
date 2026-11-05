@@ -216,7 +216,7 @@ Graph-wide default (same keys in the graph `config`):
 | `yandex` (default) | YandexGPT HTTP client | `yandexgpt` | Yandex Cloud |
 | `openai` | ChatOpenAI | `gpt-4o-mini` | `https://api.openai.com/v1` |
 | `groq` | ChatOpenAI | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1` |
-| `deepseek` | ChatOpenAI | `deepseek-chat` | `https://api.deepseek.com/v1` |
+| `deepseek` | ChatOpenAI | `deepseek-flash` | `https://api.deepseek.com/v1` |
 | `openrouter` | ChatOpenAI | `openai/gpt-4o-mini` | `https://openrouter.ai/api/v1` |
 | `anthropic` | ChatAnthropic | `claude-3-5-sonnet-latest` | `https://api.anthropic.com` |
 
@@ -225,6 +225,11 @@ only by base URL); Anthropic needs the extra `langchain-anthropic` dependency. O
 selected provider key must be set. An unknown `llm_provider` fails fast when the graph is
 compiled, naming the supported values - and because the gateway persists a definition only
 after the engine accepted it, a rejected config is not written to Postgres either.
+
+> **Cost note:** `deepseek` defaults to `deepseek-flash`, the cheap tier. `deepseek-v4-pro`
+> costs ~4.4x the input and ~3.3x the output price per 1M tokens (peak rates), so it is
+> only used when a node/graph sets `llm_model` explicitly or the service pins
+> `DEEPSEEK_MODEL`.
 
 A *missing* API key deliberately does **not** fail the build: the provider client is
 resolved lazily on the node's first model call (`LazyLLMClient`), so a graph can be built

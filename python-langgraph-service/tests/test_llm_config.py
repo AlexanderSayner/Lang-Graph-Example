@@ -30,7 +30,7 @@ BASE_SETTINGS = {
     "YC_MODEL_NAME": "yandexgpt",
     "OPENAI_MODEL": "gpt-4o-mini",
     "GROQ_MODEL": "llama-3.3-70b-versatile",
-    "DEEPSEEK_MODEL": "deepseek-chat",
+    "DEEPSEEK_MODEL": "deepseek-flash",
     "OPENROUTER_MODEL": "openai/gpt-4o-mini",
     "ANTHROPIC_MODEL": "claude-3-5-sonnet-latest",
 }
@@ -135,6 +135,21 @@ def test_yc_model_name_is_honoured_for_yandex():
     assert resolve_llm_config(
         {"llm_provider": "groq"}, {}
     ).model == "llama-3.3-70b-versatile"
+
+
+def test_deepseek_default_model_is_the_cheap_flash_model(monkeypatch):
+    """Cost guard: the DeepSeek default must be Flash, never the expensive Pro tier.
+
+    deepseek-v4-pro costs ~4.4x the input and ~3.3x the output price per 1M tokens, so a
+    default that silently pointed at Pro would burn budget on every shared-key run.
+    """
+    monkeypatch.setattr(settings, "DEEPSEEK_MODEL", "")
+
+    assert PROVIDER_PRESETS["deepseek"].default_model == "deepseek-flash"
+    assert resolve_llm_config({"llm_provider": "deepseek"}, {}).model == "deepseek-flash"
+    # An explicitly pinned setting still wins - the guard is on the default only.
+    monkeypatch.setattr(settings, "DEEPSEEK_MODEL", "deepseek-v4-pro")
+    assert resolve_llm_config({"llm_provider": "deepseek"}, {}).model == "deepseek-v4-pro"
 
 
 def test_provider_model_setting_name_mapping():
