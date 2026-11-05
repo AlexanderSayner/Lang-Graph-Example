@@ -43,7 +43,10 @@ class Settings(BaseSettings):
 
     # How many attempts a graph node makes when the LLM answer is unusable (refusal,
     # empty text or unparsable JSON). YandexGPT occasionally refuses a benign prompt,
-    # so one quiet retry with a stricter instruction usually saves the run.
+    # so one quiet retry with a stricter instruction usually saves the run. If the
+    # budget is spent and the answer is still a refusal (and not a data payload), the
+    # run STOPS with an explicit refusal message instead of feeding it downstream
+    # (LLMRefusalError -> the servicer ends the run with that message as its output).
     LLM_MAX_ATTEMPTS: int = 2
 
     # -------------------------------------------------

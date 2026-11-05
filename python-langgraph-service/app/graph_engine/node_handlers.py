@@ -461,7 +461,10 @@ def _accepts_credentials(client: Any) -> bool:
 
 # YandexGPT occasionally refuses a perfectly benign prompt ("не могу обсуждать эту тему") or
 # answers with prose instead of the requested JSON. Such an answer is unusable for a node, so we
-# re-ask once with a stricter, blunter instruction instead of failing the whole run.
+# re-ask once with a stricter, blunter instruction instead of failing the whole run. If the
+# budget is spent and the answer is STILL prose (and not a data payload - see looks_like_data),
+# the run stops with an explicit refusal message instead of feeding the refusal downstream:
+# see LLMRefusalError / TerminalNodeError.
 REFUSAL_MARKERS = (
     "не могу", "не могу обсуждать", "не буду", "не имею возможности", "извините",
     "к сожалению, я", "i can't", "i cannot", "i'm sorry", "i am unable", "as an ai",
@@ -496,6 +499,88 @@ def is_unusable_answer(text: str) -> bool:
         return True
     lowered = text.lower()
     return any(marker in lowered for marker in REFUSAL_MARKERS)
+
+
+def looks_like_data(text: str) -> bool:
+    """True when an unusable-looking answer is still shaped like a data payload.
+
+    The refusal markers are substring matches, and real payloads contain them: a task
+    literally named «Не могу подтвердить отчёт» matches "не могу", and a normalisation
+    table or a JSON array carrying that name is DATA, not a refusal. Such answers were
+    handed downstream unchanged after the retry budget and still must be - so before a
+    run is stopped, the shape decides: a JSON array/object, a fenced block or a
+    markdown table is a payload; prose is a refusal (or an empty answer).
+    """
+    t = (text or "").lstrip()
+    if not t:
+        return False
+    if t.startswith("```"):
+        return True                      # fenced payload (json / code / table)
+    if t[:1] in ("[", "{"):
+        return True                      # json array / object
+    return t.splitlines()[0].lstrip().startswith("|")   # markdown table
+
+
+class TerminalNodeError(Exception):
+    """A node cannot produce a usable result: the run must STOP here.
+
+    The servicer turns it into a NODE_END frame (the `error` rides the frame for the
+    run record) plus an END event whose output is ``user_message`` - the caller is
+    told why the graph stopped instead of a downstream node answering from nothing
+    and inventing a result (the "Расхождений не найдено" report built on a refusal
+    that poisoned ``doc1`` - the exact failure this exists for). ``error_code`` is the
+    machine-readable form; it also goes to the logs and the NODE_END frame.
+    """
+
+    def __init__(self, *, error_code: str, user_message: str = "",
+                 llm_billing: str = "", total_tokens: int = 0):
+        super().__init__(error_code)
+        self.error_code = error_code
+        self.user_message = user_message
+        self.llm_billing = llm_billing
+        self.total_tokens = total_tokens
+        # Filled by the node handler that lets it through - only the handler knows
+        # which node it was (and, for subgraphs, which OUTER node carries the frame).
+        self.node_id = ""
+        self.node_label = ""
+
+
+class LLMRefusalError(TerminalNodeError):
+    """The model refused (safety filter / policy) or answered empty on every attempt."""
+
+    def __init__(self, *, provider: str, model: str, attempts: int, answer: str,
+                 llm_billing: str = "", total_tokens: int = 0):
+        super().__init__(error_code=f"llm_refusal:{provider or 'unknown'}",
+                         llm_billing=llm_billing, total_tokens=total_tokens)
+        self.provider = provider
+        self.model = model
+        self.attempts = attempts
+        self.answer = answer or ""
+
+
+def refusal_message(exc: LLMRefusalError) -> str:
+    """The user-facing text for a refusal - it becomes the graph's final output.
+
+    Russian on purpose: the message is bound for the end user's chat (the graph's
+    prompts and the deterministic compare summary are Russian too), and it must say
+    not only THAT the model refused but WHY STOPPING was the only honest option -
+    a run continued without the model's data ends in an invented result.
+    """
+    who = f"{exc.provider}/{exc.model}" if exc.model else (exc.provider or "модель")
+    where = f" (узел «{exc.node_label}»)" if exc.node_label else ""
+    if exc.answer.strip():
+        quote = " ".join(exc.answer.split())
+        if len(quote) > 300:
+            quote = quote[:297] + "..."
+        head = (f"⛔ Модель {who} отказалась обрабатывать запрос "
+                f"(фильтр безопасности провайдера){where}, попыток: {exc.attempts}. "
+                f"Ответ модели: «{quote}».")
+    else:
+        head = (f"⛔ Модель {who} вернула пустой ответ{where} "
+                f"после {exc.attempts} попыток.")
+    return (head +
+            " Граф остановлен — без ответа модели продолжать нельзя: "
+            "дальнейшие шаги выдали бы недостоверный результат.")
 
 
 HISTORY_MARKER = "=== CONVERSATION HISTORY ==="
@@ -615,6 +700,11 @@ class NodeHandler:
                         caller_kind: str = "") -> Tuple[Any, str]:
         """Call the LLM, retrying once when the answer is a refusal or empty text.
 
+        After the retry budget is spent, an answer that is still prose raises
+        ``LLMRefusalError`` (the run stops with an explicit message - see
+        TerminalNodeError); an answer that is a data payload (looks_like_data) is
+        returned as-is, refusal markers inside real data notwithstanding.
+
         Transient provider failures (HTTP 429 / 5xx, timeouts, connection resets) retry on
         the same budget with a short pause instead of failing the node - a rate limit says
         nothing about the prompt, and a node that dies on one leaves downstream nodes with
@@ -689,13 +779,32 @@ class NodeHandler:
                                "retrying in %.0fs", attempt, attempts, e, delay)
                 await asyncio.sleep(delay)
                 continue
-            text = str(response)
+            # str(LLMResponse) is the text itself; a raw string response passes through
+            # unchanged. Extract .content explicitly so test doubles that return a
+            # SimpleNamespace are read as their payload, not as their repr.
+            text = str(getattr(response, "content", response))
             if not is_unusable_answer(text):
                 return response, billing
             if attempt == attempts:
                 logger.warning("LLM returned an unusable answer after %d attempt(s): %s",
                                attempt, text[:120].replace("\n", " "))
-                return response, billing
+                if looks_like_data(text):
+                    # Marker words INSIDE a real payload (a task named «Не могу
+                    # подтвердить отчёт» inside a JSON array or a table) are data, not
+                    # a refusal: hand the payload back unchanged, as before.
+                    return response, billing
+                # Still prose after the whole retry budget: a refusal or an empty answer.
+                # Passing it on would poison output_variable and let downstream nodes
+                # answer from nothing - the run stops with an explicit message instead.
+                usage = getattr(response, "usage", {})
+                raise LLMRefusalError(
+                    provider=provider or "unknown",
+                    model=str(getattr(client, "model", "") or ""),
+                    attempts=attempt,
+                    answer=text,
+                    llm_billing=billing,
+                    total_tokens=usage.get("total_tokens", 0) if isinstance(usage, dict) else 0,
+                )
             logger.warning("LLM refused or returned an empty answer (attempt %d), retrying", attempt)
             prompt = system_message + retry_hint_for(client)
             message = drop_history_block(user_message)
@@ -789,6 +898,14 @@ class NodeHandler:
                 "llm_billing": billing,
                 "history": [{"node": n_id, "output": output_content, "tokens_used": tokens}]
             }
+        except LLMRefusalError as e:
+            # A router answers JSON; a refusal or an empty answer means no branch keys
+            # can exist. Ending the run with an explanation beats "no condition matched"
+            # plus the raw refusal as the run's output.
+            e.node_id = n_id
+            e.node_label = str((n_meta or {}).get("label") or "")
+            e.user_message = refusal_message(e)
+            raise
         except MissingUserApiKeyError as e:
             # An expected, actionable condition under policy=REQUIRE: a warning plus a
             # readable node output, not a stack dump - the message already says where to
@@ -816,6 +933,27 @@ class NodeHandler:
         # before the prompt handling because such a node legitimately has no prompt at all.
         deterministic = _deterministic_compare(n_id, n_meta, state)
         if deterministic is not None:
+            if str(deterministic.get("error") or "").startswith("unparseable_arrays"):
+                # The inputs EXIST but are garbage: nothing downstream can fix that, and
+                # the report node, answering from nothing, would invent a result («0
+                # расхождений» built on unparseable data). Missing variables stay a
+                # walk-past error on purpose - the attachment flow relies on the run
+                # continuing and re-asking for the file.
+                label = str((n_meta or {}).get("label") or "")
+                reason = str(deterministic.get("error") or "").partition(":")[2]
+                stop = TerminalNodeError(
+                    error_code=str(deterministic.get("error")),
+                    user_message=(
+                        "⛔ Данные для сравнения не удалось разобрать"
+                        + (f" (узел «{label}»)" if label else "")
+                        + (f": {reason}." if reason else ".")
+                        + " Граф остановлен — без корректных данных отчёт выдал бы "
+                          "недостоверный результат."
+                    ),
+                )
+                stop.node_id = n_id
+                stop.node_label = label
+                raise stop
             return deterministic
 
         user_input = state.get("input") or ""
@@ -877,6 +1015,21 @@ class NodeHandler:
             if output_variable:
                 update["variables"] = {output_variable: output_content}
             return update
+        except LLMRefusalError as e:
+            if e.answer.strip() and not str((n_meta or {}).get("output_variable") or "").strip():
+                # A prose node's answer IS the output: the model's own words reached the
+                # caller that way before and still must - wrapping them would swallow
+                # answers that merely QUOTE refusal phrases («Не могу подтвердить...»
+                # inside a report). An empty answer has nothing to pass on and falls
+                # through to the terminal stop below.
+                return {"last_node": n_id, "output": e.answer,
+                        "history": [{"node": n_id, "output": e.answer,
+                                     "tokens_used": e.total_tokens}],
+                        "total_tokens": e.total_tokens, "llm_billing": e.llm_billing}
+            e.node_id = n_id
+            e.node_label = str((n_meta or {}).get("label") or "")
+            e.user_message = refusal_message(e)
+            raise
         except MissingUserApiKeyError as e:
             # Refused, so no model call and no tokens: llm_billing must stay "" (see the
             # router branch) rather than claim the service paid for a run that never spent.
@@ -939,6 +1092,12 @@ class NodeHandler:
             }
         except GraphInterrupt:
             logger.info(f"Node {n_id}: Subgraph '{subgraph_id}' requested a pause. Propagating interrupt...")
+            raise
+        except LLMRefusalError as e:
+            # The inner graph already aborted at the refusing node (ainvoke raised); the
+            # frame belongs to THIS graph's node, so relabel it - the inner label stays
+            # in the message, it says which nested step actually refused.
+            e.node_id = n_id
             raise
         except Exception as e:
             logger.error(f"Subgraph execution failed in {n_id}: {e}", exc_info=True)
