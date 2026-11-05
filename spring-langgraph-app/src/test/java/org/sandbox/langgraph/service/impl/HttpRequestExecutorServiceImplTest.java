@@ -117,4 +117,45 @@ class HttpRequestExecutorServiceImplTest {
         assertThat(output.isSuccess()).isTrue();
         mockServer.verify();
     }
+
+    @Test
+    @DisplayName("resolves a dotted placeholder against a nested state object")
+    void resolvesDottedPath() {
+        // The tracker's login response is stored in http_result as an object, so the timesheet
+        // node's header is written {{http_result.token}}. The old \w+-only pattern could not match
+        // a dotted key and sent the placeholder to the server, which rejected it as a bad token.
+        mockServer.expect(requestTo(URL))
+                .andExpect(header(HttpHeaders.AUTHORIZATION, "Basic eyJhbGciOiJIUzI1NiJ9"))
+                .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+        HttpRequestOutput output = service.executeHttpRequest(
+                "GET",
+                URL,
+                Map.of(HttpHeaders.AUTHORIZATION, "Basic {{http_result.token}}"),
+                null,
+                "{\"http_result\":{\"token\":\"eyJhbGciOiJIUzI1NiJ9\"}}");
+
+        assertThat(output.isSuccess()).isTrue();
+        mockServer.verify();
+    }
+
+    @Test
+    @DisplayName("an unresolved dotted placeholder becomes empty, never the literal")
+    void unresolvedDottedPathIsEmpty() {
+        // A missing nested key must not leak "{{...}}" into the request: the server would answer
+        // with a confusing error for a query parameter that never existed. A query value is used
+        // for the assertion because the client normalises empty path segments away.
+        mockServer.expect(requestTo("https://api.example.com/x?token="))
+                .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+        HttpRequestOutput output = service.executeHttpRequest(
+                "GET",
+                "https://api.example.com/x?token={{missing.path}}",
+                Map.of(),
+                null,
+                "{\"other\":\"value\"}");
+
+        assertThat(output.isSuccess()).isTrue();
+        mockServer.verify();
+    }
 }

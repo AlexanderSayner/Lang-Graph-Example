@@ -83,6 +83,13 @@ class GraphState(TypedDict):
     timestamp: float
     last_node: str
     output: str
+    # A node's own failure ("missing_context:doc1_ref", "llm_refusal:yandex", ...). This
+    # MUST be declared: langgraph silently drops keys that are not part of the state
+    # schema, so before it was declared here the key never survived into the update
+    # event and the NODE_END frame's `error_message` was always empty in real runs
+    # (only the fake-graph tests ever saw it). Not rendered into prompts -
+    # format_state_context reads variables/history/input only.
+    error: str
     # Automatically append new history items
     variables: Annotated[Dict[str, Any], merge_dicts]
     history: Annotated[List[Dict[str, Any]], operator.add]

@@ -119,6 +119,13 @@ jobs:
             echo "YC_BILLING_ACCOUNT_ID=${{ secrets.YC_BILLING_ACCOUNT_ID }}" >> ~/myapp.env
             echo "YC_SA_KEY_JSON_B64=${{ steps.prepare-secrets.outputs.SA_KEY_B64 }}" >> ~/myapp.env
             echo "B2B_API_KEY=${{ secrets.B2B_API_KEY }}" >> ~/myapp.env
+            # OpenRouter shared key. Runs whose graph selects llm_provider=openrouter and that
+            # carry no personal llm_credentials_json (the B2B/orchestra path never does) run on
+            # it, reported as llmBilling=service - without it the first model call fails with
+            # "No API key for LLM provider 'openrouter'". Optional: an unset Secret expands to
+            # an empty value, which is exactly the behaviour before this line existed.
+            # docker-compose.yml forwards it (and OPENROUTER_MODEL) to langgraph-service.
+            echo "OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}" >> ~/myapp.env
             # Personal LLM API keys. LLM_SECRET_MASTER_KEY MUST be a GitHub Secret and MUST be
             # STABLE: this file is rewritten on every deploy, so a key that lives only in a
             # shell or in ~/myapp.env would be lost here and every stored personal key would
