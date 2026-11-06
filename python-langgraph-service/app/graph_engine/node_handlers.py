@@ -848,12 +848,18 @@ class NodeHandler:
         system_prompt = n_meta.get("system_prompt", "You are a helpful assistant.")
         keys_list = ", ".join(router_keys) if router_keys else "intent"
 
+        # A router answers with the keys the outgoing edges are conditioned on - and only those.
+        # The engine merges the answer into `variables` itself (see below), so the model used to be
+        # told to echo the whole state back: on the first turn of a chat run that state can hold
+        # every subscriber (names, telegram ids), and that echo became the node's visible output -
+        # in Orchestra it was then read as "the question" and sent to the chat.
         system_prompt = (
             f"{system_prompt}\n\n"
             f"You are a routing classifier. You must determine the next step. "
-            f"You MUST extract or determine the value for these specific keys: [{keys_list}]. "
-            f"Output ONLY a valid JSON object merging the CURRENT STATE VARIABLES with these new keys. "
-            f"DO NOT drop existing variables."
+            f"Determine the value for exactly these key(s): [{keys_list}]. "
+            f"Output ONLY a valid JSON object containing those key(s) - no other keys, "
+            f"no prose, no explanation. Do not repeat or copy the existing state variables: "
+            f"the run keeps them itself."
         )
 
         try:

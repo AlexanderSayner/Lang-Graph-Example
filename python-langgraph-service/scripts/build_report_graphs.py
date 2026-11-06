@@ -12,6 +12,9 @@ A  ``report-project-picker``  (source ``graph-1793864456734``, "Трекер: в
      them, and an HTTP node templates out of ``variables``, never out of ``context``;
    * an ACTION gate in front of the question node, so a run whose first message already names the
      project goes to the tracker on that same turn instead of asking for it a second time;
+   * an ACTION asking for the name in ONE human line when the message has none: the pause the gate
+     falls into is entered BEFORE the HUMAN node runs, so the question has to come from a node that
+     actually speaks - otherwise the gate's own JSON becomes the "question" the chat is shown;
    * HTTP ``GET /api/v1/project/{projectId}/users`` - the members the prod graph never fetched;
    * an ACTION joining those members with the ``subscribers`` snapshot Orchestra hands the run
      (``sendSubscribers: true`` on the node) and answering ONE JSON: project, participants
@@ -168,13 +171,27 @@ GATE_PROMPT = (
     '{"has_query": 0} - названия нет ни там, ни там.'
 )
 
+# The gate's `has_query == 0` branch used to fall straight into the pause, and the pause is entered
+# BEFORE the HUMAN node runs - so nothing had asked the question yet, and the last thing the run
+# said was the gate's own JSON (every subscriber of the process, in the chat). This node speaks
+# first: one human line, nothing else, and only `query` in its context - never the subscriber list.
+ASK_PROMPT = (
+    "Сообщение инициатора не содержит названия проекта. Спроси у него название проекта ОДНОЙ "
+    "короткой строкой - например: «Какой проект? Нужно название из трекера.» "
+    "Ничего не перечисляй: ни JSON, ни списков, ни пояснений, ни вариантов."
+)
+
 
 
 # --- A: project picker + members + subscriber join ---------------------------------------------
 
-def build_picker():
-    nodes, edges = source_view(PICKER_SOURCE)
-    by_id = {n["nodeId"]: n for n in nodes}
+def wire_picker(nodes, edges):
+    """The picker's own nodes and edges, applied on top of the prod view it starts from.
+
+    Split out of ``build_picker`` so the wiring can be asserted without a network call: which node
+    the gate's "no name yet" branch reaches, and that the pause still sits behind a node that
+    actually speaks. Mutates both lists and returns ``(nodes, edges, ids)``.
+    """
     start = next(n for n in nodes if n["nodeType"] == "START")
     end = next(n for n in nodes if n["nodeType"] == "END")
     search = next(n for n in nodes
@@ -219,6 +236,15 @@ def build_picker():
             "llm_max_tokens": "80", "llm_temperature": "0",
             "system_prompt": GATE_PROMPT,
         }, 690, 380),
+        # Speaks before the pause: the question the chat is shown comes from here, not from the
+        # gate's JSON. Only `query` is in its context, so the subscriber list never reaches a
+        # prompt (or a message) on this branch.
+        node("pk_ask", "ACTION", {
+            "label": "какой проект?", "context_mode": "minimal",
+            "include_variables": "query",
+            "llm_max_tokens": "80", "llm_temperature": "0",
+            "system_prompt": ASK_PROMPT,
+        }, 470, 380),
         node("pk_project_id", "ACTION", {
             "label": "id проекта", "context_mode": "slim",
             "output_variable": "project_id", "llm_max_tokens": "60", "llm_temperature": "0",
@@ -258,17 +284,28 @@ def build_picker():
     edges += [
         edge(start["nodeId"], "pk_gate"),
         edge("pk_gate", login["nodeId"], "has_query == 1"),
-        edge("pk_gate", asked["nodeId"], "has_query == 0"),
+        # No name in the message: ask for it in one human line, THEN pause for the answer. The
+        # pause is entered before the HUMAN node runs, so without this step the last thing the run
+        # said was the gate's own JSON - and that is what the chat was shown as the question.
+        edge("pk_gate", "pk_ask", "has_query == 0"),
+        edge("pk_ask", asked["nodeId"]),
         edge(search["nodeId"], "pk_project_id", "output == 0"),
         edge("pk_project_id", "pk_project_name"),
         edge("pk_project_name", "pk_users"),
         edge("pk_users", "pk_match"),
         edge("pk_match", end["nodeId"]),
     ]
+    ids = {"start": start["nodeId"], "end": end["nodeId"], "search": search["nodeId"],
+           "asked": asked["nodeId"], "login": login["nodeId"], "clarify": clarify["nodeId"]}
+    return nodes, edges, ids
+
+
+def build_picker():
+    nodes, edges, ids = wire_picker(*source_view(PICKER_SOURCE))
     build("report-project-picker", "Отчёты: выбор проекта и участников", nodes, edges,
           {"llm_provider": "deepseek"})
-    print("  prod ids - start:", start["nodeId"], "end:", end["nodeId"],
-          "search:", search["nodeId"], "clarify:", clarify["nodeId"],
+    print("  prod ids - start:", ids["start"], "end:", ids["end"],
+          "search:", ids["search"], "clarify:", ids["clarify"],
           "| nodes", len(nodes), "edges", len(edges))
 
 

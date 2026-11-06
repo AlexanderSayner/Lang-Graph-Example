@@ -16,7 +16,9 @@ from app.generated import langgraph_pb2_grpc as pb_grpc
 
 PICKER = "report-project-picker"
 COMPARED = "report-participant-compare"
-THREAD = "live-report-picker-1"
+# A fresh thread on purpose: turn 1 has to START the run, otherwise the pause that is already
+# stored for an older thread would be resumed and the question would never be produced.
+THREAD = "live-report-picker-ask-2"
 
 # Exactly the shape LangGraphNodeHandler.directoryOf() writes for sendSubscribers=true.
 SUBSCRIBERS = json.dumps([
@@ -46,7 +48,9 @@ def report(frames):
     for e in frames:
         if e.event_type == "NODE_END":
             err = f" ERROR={e.error_message}" if e.error_message else ""
-            print(f"  NODE_END {e.node_id} tokens={e.total_tokens} billing={e.llm_billing}{err}")
+            out = (e.output or "").replace("\n", " ")[:160]
+            print(f"  NODE_END {e.node_id} tokens={e.total_tokens} billing={e.llm_billing}{err}"
+                  f" | {out}")
         elif e.event_type == "WAITING_FOR_INPUT":
             print(f"  WAITING at {e.node_id}: {e.output[:160]}")
         elif e.event_type == "END":
@@ -55,12 +59,42 @@ def report(frames):
             print(f"  ERROR {e.node_id}: {e.output[:300]}")
 
 
+def spoken_question(frames):
+    """What the chat would be shown as the question: the last NODE_END that carries text.
+
+    Mirrors Orchestra's ``LangGraphNodeHandler`` (it reads the last spoken frame and skips the
+    ``__interrupt__`` one, which carries no text of its own) - the WAITING frame itself only says
+    "Action required", so guarding on it would prove nothing.
+    """
+    last = ""
+    for e in frames:
+        if e.event_type == "NODE_END" and e.node_id != "__interrupt__" and (e.output or "").strip():
+            last = e.output
+    return last
+
+
 async def main():
     async with grpc.aio.insecure_channel("localhost:50051") as channel:
         stub = pb_grpc.LangGraphServiceStub(channel)
 
         print(f"--- {PICKER} turn 1 (ждём паузы на HUMAN) ---")
-        report(await turn(stub, PICKER, THREAD, "привет"))
+        turn1 = await turn(stub, PICKER, THREAD, "привет")
+        report(turn1)
+
+        # The question the chat is shown is the last thing the run said before pausing (Orchestra
+        # reads the last spoken frame, skipping __interrupt__). It must be a human line: a JSON
+        # dump here means the state (subscribers!) leaked into the message again.
+        question = spoken_question(turn1)
+        print("  вопрос на паузе:", question)
+        if not question:
+            print("  !! пустой вопрос - перед паузой никто не заговорил")
+            return
+        if question.lstrip().startswith("{") or "subscriber" in question.lower():
+            print("  !! ВОПРОС СОДЕРЖИТ МАШИННЫЕ ДАННЫЕ (JSON/подписчики) - регресс")
+            return
+        if "?" not in question:
+            print("  !! вопрос без знака вопроса - на паузу ушло не то")
+            return
 
         print(f"--- {PICKER} turn 2: 'Orkestra' + subscribers ---")
         frames = await turn(stub, PICKER, THREAD, "Orkestra", {"subscribers": SUBSCRIBERS})
