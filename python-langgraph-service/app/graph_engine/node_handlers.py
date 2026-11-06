@@ -19,6 +19,7 @@ from app.graph_engine.document_parser import (
     DocumentParseError,
     parse_document,
 )
+from app.graph_engine.table_normalize import NormalizeOptions
 from app.graph_engine.graph_utils import format_state_context, extract_json_from_response, JsonGenerationError, \
     parse_literal, GraphState, DOCUMENT_REF_KEY, document_variables_of
 
@@ -847,12 +848,18 @@ class NodeHandler:
         system_prompt = n_meta.get("system_prompt", "You are a helpful assistant.")
         keys_list = ", ".join(router_keys) if router_keys else "intent"
 
+        # A router answers with the keys the outgoing edges are conditioned on - and only those.
+        # The engine merges the answer into `variables` itself (see below), so the model used to be
+        # told to echo the whole state back: on the first turn of a chat run that state can hold
+        # every subscriber (names, telegram ids), and that echo became the node's visible output -
+        # in Orchestra it was then read as "the question" and sent to the chat.
         system_prompt = (
             f"{system_prompt}\n\n"
             f"You are a routing classifier. You must determine the next step. "
-            f"You MUST extract or determine the value for these specific keys: [{keys_list}]. "
-            f"Output ONLY a valid JSON object merging the CURRENT STATE VARIABLES with these new keys. "
-            f"DO NOT drop existing variables."
+            f"Determine the value for exactly these key(s): [{keys_list}]. "
+            f"Output ONLY a valid JSON object containing those key(s) - no other keys, "
+            f"no prose, no explanation. Do not repeat or copy the existing state variables: "
+            f"the run keeps them itself."
         )
 
         try:
@@ -1154,6 +1161,15 @@ class NodeHandler:
                     "http_success": True,
                     "http_status_code": response.status_code
                 }
+                # A node may keep its response under a name of its own, beside the historical
+                # `http_result` (which stays, so every existing graph and router is untouched).
+                # Without it a graph can make exactly one authenticated call per chain: the
+                # tracker's login response lands in `http_result`, the very next call overwrites
+                # it with a project list, and a later node's `{{http_result.token}}` then renders
+                # an empty Authorization header - a 401 with nothing in the graph to explain it.
+                result_variable = str((n_meta or {}).get("result_variable") or "").strip()
+                if result_variable:
+                    new_vars[result_variable] = result_data
                 return {
                     "last_node": n_id,
                     "output": f"HTTP request executed successfully. Status: {response.status_code}",
@@ -1259,8 +1275,9 @@ class NodeHandler:
             }
 
         limits = DocumentLimits.from_metadata(n_meta)
+        normalize = NormalizeOptions.from_metadata(n_meta)
         try:
-            parsed = parse_document(content, limits, filename=filename)
+            parsed = parse_document(content, limits, filename=filename, normalize=normalize)
         except DocumentParseError as e:
             logger.error("Node %s: could not parse document: %s", n_id, e)
             return {

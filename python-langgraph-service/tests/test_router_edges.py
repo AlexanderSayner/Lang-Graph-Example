@@ -216,3 +216,74 @@ def test_a_router_answer_missing_the_expected_key_is_flagged(caplog):
         assert "output" in flagged[0] and "answer" in flagged[0]
 
     asyncio.run(scenario())
+
+
+class _RecordingLLM(_StubLLM):
+    """Keeps every system message the model was asked with, so a test can pin the router prompt."""
+
+    def __init__(self, router_answer, captured):
+        super().__init__(router_answer)
+        self.captured = captured
+
+    async def generate(self, user_message, system_message):
+        self.captured.setdefault("prompts", []).append(system_message)
+        return await super().generate(user_message, system_message)
+
+
+class _RecordingRegistry(_StubRegistry):
+    def __init__(self, router_answer, captured):
+        super().__init__(router_answer)
+        self.answer = _RecordingLLM(router_answer, captured)
+
+
+def test_router_prompt_asks_only_for_the_declared_keys():
+    """The prompt must not ask the model to echo the state back.
+
+    On the first turn of a chat run the state can hold every subscriber (names, telegram ids) -
+    and that echo became the node's visible output: Orchestra reads the last spoken NODE_END frame
+    as the question, so the JSON of the whole state went straight into the chat. The engine merges
+    the answer into `variables` itself, so the model has no reason to repeat what the state holds.
+    """
+    captured = {}
+    servicer = _build_servicer('{"output": true}')
+    servicer._llm_registry = _RecordingRegistry('{"output": true}', captured)
+
+    async def scenario():
+        graph = servicer._build_langgraph(GraphDefinition(**QUIZ_GRAPH))
+        config = {"configurable": {"thread_id": "t-router-prompt"}}
+        # First turn runs START (the "2+2" question) and pauses; the second turn is the router
+        # itself - its system message is the one under test (picked out of every recorded prompt).
+        await graph.ainvoke({"input": "4", "context": {}, "timestamp": 1.0}, config=config)
+        assert list((await graph.aget_state(config)).next) == ["judge"]
+        await graph.ainvoke(None, config=config)
+
+    asyncio.run(scenario())
+
+    prompts = captured["prompts"]
+    router_prompts = [p for p in prompts if "routing classifier" in p]
+    assert router_prompts, "the router's system message must be recorded"
+    prompt = router_prompts[0]
+    assert "merging the CURRENT STATE VARIABLES" not in prompt
+    assert "DO NOT drop existing variables" not in prompt
+    assert "[output]" in prompt
+    assert "no other keys" in prompt
+
+
+def test_router_answer_does_not_have_to_repeat_existing_variables():
+    """Merging into `variables` is the engine's job: a router that answers only its own keys must
+    not lose what the state already holds - which is exactly what made the echo instruction
+    redundant (and dangerous) in the first place."""
+    async def scenario():
+        servicer = _build_servicer('{"output": true}')
+        graph = servicer._build_langgraph(GraphDefinition(**QUIZ_GRAPH))
+        config = {"configurable": {"thread_id": "t-merge"}}
+        await graph.ainvoke({"input": "4", "context": {}, "timestamp": 1.0,
+                             "variables": {"keep": "секрет"}},
+                            config=config)
+        assert list((await graph.aget_state(config)).next) == ["judge"]
+        final = await graph.ainvoke(None, config=config)
+        assert final["last_node"] == "congrats"
+        assert final["variables"]["keep"] == "секрет"
+        assert final["variables"]["output"] is True
+
+    asyncio.run(scenario())

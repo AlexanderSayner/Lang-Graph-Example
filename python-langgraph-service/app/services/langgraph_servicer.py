@@ -104,6 +104,35 @@ RUN_CONTEXT_KEYS = frozenset({
 })
 
 
+def seedable_variables(
+    state_context: Dict[str, Any],
+    document_ref_keys: Optional[set] = None,
+) -> Dict[str, Any]:
+    """The caller's context values a run may also read as graph VARIABLES.
+
+    `context` reaches a prompt (see ``scrub_prompt_context``), but it reaches nothing else:
+    the HTTP executor templates ``{{user_id}}`` out of `variables` (the `state_json` of
+    ``HttpRequestInput``), and ``format_state_context`` shows the model its variables table.
+    A caller that hands a graph a member id, a date or a list therefore had to have the model
+    copy it by hand — and a URL built from a quoted copy is exactly how a per-member run ends
+    up fetching somebody else's rows.
+
+    Blank values are dropped - `None`, an empty or a whitespace-only string: nothing to add, and
+    `context` has no reducer. A numeric 0 is data and stays. The keys a DOCUMENT node reads are
+    kept out of the variables too: a file handle there would be rendered into every prompt, which
+    is the one thing the context scrub exists to prevent.
+    """
+    hidden = document_ref_keys or set()
+    seeded: Dict[str, Any] = {}
+    for key, value in (state_context or {}).items():
+        if str(key) in hidden or value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        seeded[str(key)] = value
+    return seeded
+
+
 def _split_run_context(request_context: Any) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Split a gRPC request context into ``(state context, configurable extras)``.
 
@@ -625,6 +654,13 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                     merged_context = dict(previous_values.get("context") or {})
                     merged_context.update(state_context)
                     updates["context"] = merged_context
+                    # Same lift as the fresh branch below: a resume may carry values the graph
+                    # only now needs (a fan-out parent re-sending the member of this pass), and
+                    # `variables` has a merge reducer, so this adds without erasing what the
+                    # parked turn already computed.
+                    seeded = seedable_variables(state_context, document_ref_keys)
+                    if seeded:
+                        updates["variables"] = seeded
                 if updates:
                     await compiled_graph.aupdate_state(config, updates, as_node=None)
                 stream_input = None
@@ -633,6 +669,15 @@ class LangGraphServiceServicer(langgraph_pb2_grpc.LangGraphServiceServicer):
                 stream_input = {
                     "input": request.input,
                     "context": state_context,
+                    # Ordinary caller values are ALSO seeded into `variables`, because that is
+                    # the map every consumer of data reads: the HTTP executor templates
+                    # `{{user_id}}` out of `state_json` (= variables, see
+                    # HttpRequestGrpcService), and `format_state_context` renders variables to
+                    # every LLM node. Without the lift a caller could hand the graph a value it
+                    # could only ever use from a prompt, never from a URL.
+                    # Document references stay out of the variables: a handle there would be
+                    # rendered into prompts exactly the way the one in `context` is hidden.
+                    "variables": seedable_variables(state_context, document_ref_keys),
                     "timestamp": time.time()
                 }
                 start_event = langgraph_pb2.ExecuteGraphResponse(

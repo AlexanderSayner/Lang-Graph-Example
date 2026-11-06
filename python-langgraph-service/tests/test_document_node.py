@@ -115,6 +115,59 @@ def test_node_metadata_overrides_the_size_caps():
     assert "row" in result["variables"]["document_text"]  # capped to "row"
 
 
+def report_shaped_xlsx():
+    """An export with a title above the table, a merged person cell and a totals row."""
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.append(["Отчет по компании"])
+    sheet.append(["ФИО", "Проект", "Задача", "Дата", "Billable"])
+    sheet.append(["Миронов Сергей Андреевич", "Инвитро", "INTGR-4914 Название",
+                  "01.10.2026", "8"])
+    sheet.append(["", "Инвитро", "INTGR-4914 Название", "02.10.2026", "8"])  # merged person
+    sheet.append(["Всего billable:", "", "", "", "16"])
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+def test_node_metadata_can_ask_for_table_normalization():
+    payload = report_shaped_xlsx()
+
+    async def fetcher(ref):
+        return payload, "report.xlsx", "application/octet-stream"
+
+    state = {"context": {"document_ref": "r1"}}
+    result = run_node(make_handler(fetcher), state, {"normalize": "table"})
+
+    meta = result["variables"]["document_meta"]
+    assert meta["stats"]["normalized_sheets"] == 1
+    assert meta["stats"]["rows_kept"] == 2
+    assert meta["stats"]["rows_dropped"] == 1  # the totals row
+    assert meta["stats"]["header_row"] == 2
+    assert meta["truncated"] is False  # dropping noise is not truncation
+
+    text = result["variables"]["document_text"]
+    assert "| ФИО | Дата | Ключ | Задача | Часы |" in text
+    assert text.count("Миронов Сергей Андреевич") == 2  # the merged cell was filled down
+    assert "Всего billable" not in text
+    assert "Отчет по компании" not in text
+
+
+def test_the_same_node_without_the_metadata_does_not_normalize():
+    payload = report_shaped_xlsx()
+
+    async def fetcher(ref):
+        return payload, "report.xlsx", "application/octet-stream"
+
+    state = {"context": {"document_ref": "r1"}}
+    result = run_node(make_handler(fetcher), state)
+
+    meta = result["variables"]["document_meta"]
+    # The historical contract: exactly the two keys, no normalization bookkeeping.
+    assert set(meta["stats"]) == {"sheets_read", "rows_read"}
+    assert "| Отчет по компании |" in result["variables"]["document_text"]
+
+
 # --- Failure paths --------------------------------------------------------------------
 
 

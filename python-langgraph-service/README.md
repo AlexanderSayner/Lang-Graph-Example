@@ -275,6 +275,46 @@ Output: one object per left record plus one per unpaired right record, shaped
 
 ---
 
+## An HTTP node's answer under a name of its own (`result_variable`)
+
+`HTTP_REQUEST` always writes its response body to the variable `http_result`. That is enough for one
+call and not enough for two: the tracker's login answer lands in `http_result`, the very next call
+overwrites it with a project list, and a later `Authorization: Basic {{http_result.token}}` renders an
+empty header - a 401 with nothing in the graph to explain it. A node may therefore name where **its
+own** answer is kept:
+
+| key | default | meaning |
+|---|---|---|
+| `result_variable` | *(none)* | the variable this node's response object is also written to. `http_result` is still written, so every existing graph and router is untouched |
+
+```json
+"metadata": { "url": "…/api/v1/auth/login", "result_variable": "login_result" }
+```
+
+Anything downstream then reads `Basic {{login_result.token}}`, no matter how many calls followed.
+
+---
+
+## Caller values reach `variables`, not only prompts
+
+Everything a run puts in `ExecuteGraphRequest.context` is visible to a model (through
+`format_state_context`) - and until now that was the only place it was visible. An HTTP node, though,
+templates its URL and body out of `variables` (`state_json` of `HttpRequestInput`), so a caller's
+member id or date could never reach a URL: a per-participant run had to ask a model to copy the number
+into the URL by hand, which is exactly how one participant ends up fetching another's rows.
+
+Ordinary context values are therefore **also seeded into `variables`** - on a fresh turn, and on a
+resume, where the reducer merges rather than erases what the parked turn computed. Two kinds stay out:
+
+* blanks - `None`, empty or whitespace-only strings have nothing to add, and `context` has no reducer.
+  A numeric `0` is data and stays;
+* the keys a `DOCUMENT` node reads (`document_ref_keys`) - a file handle would otherwise be rendered
+  into every prompt, which is the one thing the context scrub exists to prevent.
+
+See *Several documents in one run (slots)* for how a reference itself travels.
+
+---
+
 ## Personal API keys
 
 Service-wide keys (`.env` / settings) stay the *fallback*. A caller may additionally supply
@@ -462,6 +502,43 @@ What the parser does instead of thinking is *bounding* — see
 Every cap is **reported, not silent**: a truncated extraction sets `truncated` and appends a
 warning to `document_meta`, so a reader can tell "the file said this" from "the file said
 this about the first 500 rows".
+
+### Opt-in: normalizing a time report (`normalize: "table"`)
+
+A real export is written for people, and three of its habits make a model invent facts: the
+title and period rows **above** the table (a parser trusting the first row renders
+`| Отчет по компании |` as the column names), the person's name **merged** down their block
+(most rows carry no name at all), and totals / pivot blocks appended **below** the data in
+the same columns (`Всего billable:`, `Показатели`, `*Направление QA` — each with a non-empty
+"date" cell and a non-empty "hours" cell). Handed to a model verbatim, that turned a 39-row
+file into 61 invented discrepancies and a message Telegram refused.
+
+A node that sets `normalize: "table"` gets the sheet pre-shaped by
+`app/graph_engine/table_normalize.py` instead; every other node is untouched, byte for byte:
+
+| Metadata | Default | Meaning |
+|---|---|---|
+| `normalize` | off | `"table"` (also `1` / `true` / `yes` / `on`) enables it; any other value logs a warning and parses as-is |
+| `normalize_header_scan` | 25 | how many rows below the top may still hold the real header |
+| `normalize_columns` | `person,date,key,task,hours` | output columns in order; unknown names are dropped with a warning, `person` cannot be removed |
+
+The shaping is all deterministic — no model in the loop: the header row is found by column
+aliases (`Дата` wins its column over `Дата приема на работу`), merged person/project cells
+are filled down, a row survives only if it has a person-shaped name (`Миронов Сергей
+Андреевич` — no `Показатели`, no `Отдел продаж ML`), a date-looking date and hours-looking
+hours, the task key is carved out of the task text (`INTGR-4931 Название` → `Ключ` +
+`Задача`, falling back to a separate `#` / `Ключ задачи` column when the text has no key),
+dates are rendered `YYYY-MM-DD`, and the sheet comes out as a narrow five-column table.
+
+What it deliberately does **not** do is filter rows to one participant: whose rows count is a
+business rule, and it belongs to the graph's prompt. Every row of a company-wide file
+survives.
+
+`document_meta.stats` reports `normalized_sheets`, `rows_seen`, `rows_kept`, `rows_dropped`,
+`dropped_not_person`, `dropped_no_date`, `dropped_no_hours` and (one normalized sheet)
+`header_row`. **The safety rule is the last one**: a sheet with no recognizable header, or
+one where no row survives validation, is parsed exactly as it would have been without the
+option, plus a warning — an unfamiliar format is never normalized into nothing.
 
 ### A stylesheet Excel accepts is accepted here
 
