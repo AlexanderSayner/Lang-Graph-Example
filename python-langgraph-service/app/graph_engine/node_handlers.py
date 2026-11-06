@@ -19,6 +19,7 @@ from app.graph_engine.document_parser import (
     DocumentParseError,
     parse_document,
 )
+from app.graph_engine.table_normalize import NormalizeOptions
 from app.graph_engine.graph_utils import format_state_context, extract_json_from_response, JsonGenerationError, \
     parse_literal, GraphState, DOCUMENT_REF_KEY, document_variables_of
 
@@ -1268,8 +1269,9 @@ class NodeHandler:
             }
 
         limits = DocumentLimits.from_metadata(n_meta)
+        normalize = NormalizeOptions.from_metadata(n_meta)
         try:
-            parsed = parse_document(content, limits, filename=filename)
+            parsed = parse_document(content, limits, filename=filename, normalize=normalize)
         except DocumentParseError as e:
             logger.error("Node %s: could not parse document: %s", n_id, e)
             return {

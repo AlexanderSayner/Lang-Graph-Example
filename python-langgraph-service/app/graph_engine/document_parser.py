@@ -9,7 +9,12 @@ truncated mid-answer by the provider. The caps below make that truncation explic
 
 Anything semantic ("which column is the amount?") stays an ordinary ACTION node downstream:
 the extracted text lands in ``variables.document_text``, and the engine's existing
-``extract_json_from_response`` + ``merge_dicts`` reducers do the mapping.
+``extract_json_from_response`` + ``merge_dicts`` reducers do the mapping. One structural
+exception is OPT-IN: a node that sets ``normalize: "table"`` gets the sheet pre-shaped by
+:mod:`app.graph_engine.table_normalize` (header found under the title rows, merged person
+cells filled down, appendix blocks dropped, task key pulled out of the task text) - still
+deterministically, still no model in the loop, and still identical to the output above for
+every node that does not ask for it.
 
 A file that Excel accepts is accepted here too. The one thing openpyxl is strict about is
 the shape of a colour (aRGB hex in the stylesheet), and exported spreadsheets do emit
@@ -25,6 +30,8 @@ import zipfile
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from typing import Any, Dict, List, Optional, Tuple
+
+from app.graph_engine.table_normalize import NormalizeOptions, normalize_timesheet
 
 logger = logging.getLogger(__name__)
 
@@ -242,7 +249,8 @@ def _repair_xlsx_styles(content: bytes) -> Optional[bytes]:
     return output.getvalue()
 
 
-def _parse_xlsx(content: bytes, limits: DocumentLimits) -> ParsedDocument:
+def _parse_xlsx(content: bytes, limits: DocumentLimits,
+                normalize: Optional[NormalizeOptions] = None) -> ParsedDocument:
     # read_only + data_only: stream the rows instead of materialising the sheet, and take the
     # CACHED computed values - a formula string would be noise to a model asked about numbers.
     import openpyxl
@@ -270,6 +278,8 @@ def _parse_xlsx(content: bytes, limits: DocumentLimits) -> ParsedDocument:
     warnings: List[str] = []
     sections: List[str] = []
     total_rows = 0
+    normalize_totals: Dict[str, int] = {}
+    normalized_header_rows: List[int] = []
     sheet_count = len(workbook.worksheets)
     try:
         if sheet_count > limits.max_sheets:
@@ -293,6 +303,26 @@ def _parse_xlsx(content: bytes, limits: DocumentLimits) -> ParsedDocument:
             if not rows:
                 sections.append(f"## Sheet: {sheet.title}\n\n(empty sheet)")
                 continue
+
+            # Opt-in: with `normalize: "table"` the sheet is narrowed to the columns the
+            # graph compares, dead rows removed first. A sheet the normalizer does not
+            # recognize (or one where no row survives its rules) is rendered exactly as it
+            # would have been without the option, plus a warning saying which it was.
+            if normalize is not None and normalize.enabled:
+                normalized = normalize_timesheet(rows, normalize)
+                if normalized is None:
+                    warnings.append(
+                        f"Sheet '{sheet.title}': no table could be normalized, parsed as-is.")
+                else:
+                    sections.append(
+                        f"## Sheet: {sheet.title}\n\n"
+                        f"{_markdown_table(normalized.header, normalized.rows)}")
+                    warnings.extend(normalized.warnings)
+                    normalized_header_rows.append(normalized.header_row)
+                    for key, value in normalized.stats.items():
+                        normalize_totals[key] = normalize_totals.get(key, 0) + value
+                    continue
+
             header, body = rows[0], rows[1:]
             sections.append(f"## Sheet: {sheet.title}\n\n{_markdown_table(header, body)}")
     finally:
@@ -302,12 +332,33 @@ def _parse_xlsx(content: bytes, limits: DocumentLimits) -> ParsedDocument:
     if not sections:
         warnings.append("The spreadsheet contains no rows.")
 
+    stats: Dict[str, Any] = {
+        "sheets_read": min(sheet_count, limits.max_sheets),
+        "rows_read": total_rows,
+    }
+    if normalize is not None and normalize.enabled:
+        # Reported even when nothing normalized (all sheets fell back): zeros are the
+        # honest answer, and a graph that asked for normalization should see it tried.
+        stats.update({
+            "normalized_sheets": len(normalized_header_rows),
+            "rows_seen": normalize_totals.get("rows_seen", 0),
+            "rows_kept": normalize_totals.get("rows_kept", 0),
+            "rows_dropped": normalize_totals.get("rows_dropped", 0),
+            "dropped_not_person": normalize_totals.get("dropped_not_person", 0),
+            "dropped_no_date": normalize_totals.get("dropped_no_date", 0),
+            "dropped_no_hours": normalize_totals.get("dropped_no_hours", 0),
+        })
+        if len(normalized_header_rows) == 1:
+            # On which row the real table started - the fact that explains most
+            # "the model invented a column" reports, worth keeping visible.
+            stats["header_row"] = normalized_header_rows[0]
+
     return ParsedDocument(
         text="\n\n".join(sections),
         kind=KIND_XLSX,
         truncated=bool(warnings),
         warnings=warnings,
-        stats={"sheets_read": min(sheet_count, limits.max_sheets), "rows_read": total_rows},
+        stats=stats,
     )
 
 
@@ -362,12 +413,18 @@ def _parse_docx(content: bytes, limits: DocumentLimits) -> ParsedDocument:
 
 
 def parse_document(content: bytes, limits: Optional[DocumentLimits] = None,
-                   filename: str = "") -> ParsedDocument:
+                   filename: str = "",
+                   normalize: Optional[NormalizeOptions] = None) -> ParsedDocument:
     """Extract prompt-ready text from an .xlsx or .docx.
 
     Raises ``UnsupportedDocumentError`` for anything that is not one of those two containers
     and ``CorruptDocumentError`` for one that is ours but cannot be read - the DOCUMENT node
     turns both into a node error rather than silently producing an empty prompt.
+
+    ``normalize`` opts a spreadsheet into :mod:`app.graph_engine.table_normalize` (header
+    row under the preamble, merged person cells filled down, appendix blocks removed). It
+    is None for every node that does not ask for it, and .docx is never normalized - the
+    option describes columns of a sheet.
     """
     if not content:
         raise UnsupportedDocumentError("The document is empty.")
@@ -379,7 +436,8 @@ def parse_document(content: bytes, limits: Optional[DocumentLimits] = None,
             f"'{filename or 'document'}' is not a readable .xlsx or .docx file."
         )
 
-    parsed = _parse_xlsx(content, limits) if kind == KIND_XLSX else _parse_docx(content, limits)
+    parsed = (_parse_xlsx(content, limits, normalize) if kind == KIND_XLSX
+              else _parse_docx(content, limits))
 
     # The per-sheet caps bound the WORK; this final cap bounds the PROMPT.
     if limits.max_total_chars and len(parsed.text) > limits.max_total_chars:

@@ -503,6 +503,43 @@ Every cap is **reported, not silent**: a truncated extraction sets `truncated` a
 warning to `document_meta`, so a reader can tell "the file said this" from "the file said
 this about the first 500 rows".
 
+### Opt-in: normalizing a time report (`normalize: "table"`)
+
+A real export is written for people, and three of its habits make a model invent facts: the
+title and period rows **above** the table (a parser trusting the first row renders
+`| Отчет по компании |` as the column names), the person's name **merged** down their block
+(most rows carry no name at all), and totals / pivot blocks appended **below** the data in
+the same columns (`Всего billable:`, `Показатели`, `*Направление QA` — each with a non-empty
+"date" cell and a non-empty "hours" cell). Handed to a model verbatim, that turned a 39-row
+file into 61 invented discrepancies and a message Telegram refused.
+
+A node that sets `normalize: "table"` gets the sheet pre-shaped by
+`app/graph_engine/table_normalize.py` instead; every other node is untouched, byte for byte:
+
+| Metadata | Default | Meaning |
+|---|---|---|
+| `normalize` | off | `"table"` (also `1` / `true` / `yes` / `on`) enables it; any other value logs a warning and parses as-is |
+| `normalize_header_scan` | 25 | how many rows below the top may still hold the real header |
+| `normalize_columns` | `person,date,key,task,hours` | output columns in order; unknown names are dropped with a warning, `person` cannot be removed |
+
+The shaping is all deterministic — no model in the loop: the header row is found by column
+aliases (`Дата` wins its column over `Дата приема на работу`), merged person/project cells
+are filled down, a row survives only if it has a person-shaped name (`Миронов Сергей
+Андреевич` — no `Показатели`, no `Отдел продаж ML`), a date-looking date and hours-looking
+hours, the task key is carved out of the task text (`INTGR-4931 Название` → `Ключ` +
+`Задача`, falling back to a separate `#` / `Ключ задачи` column when the text has no key),
+dates are rendered `YYYY-MM-DD`, and the sheet comes out as a narrow five-column table.
+
+What it deliberately does **not** do is filter rows to one participant: whose rows count is a
+business rule, and it belongs to the graph's prompt. Every row of a company-wide file
+survives.
+
+`document_meta.stats` reports `normalized_sheets`, `rows_seen`, `rows_kept`, `rows_dropped`,
+`dropped_not_person`, `dropped_no_date`, `dropped_no_hours` and (one normalized sheet)
+`header_row`. **The safety rule is the last one**: a sheet with no recognizable header, or
+one where no row survives validation, is parsed exactly as it would have been without the
+option, plus a warning — an unfamiliar format is never normalized into nothing.
+
 ### A stylesheet Excel accepts is accepted here
 
 `openpyxl` is strict about exactly one thing that real exports get wrong: every `rgb`

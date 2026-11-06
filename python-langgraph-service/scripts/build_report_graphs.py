@@ -274,8 +274,9 @@ def build_picker():
 
 # --- B: per-participant comparison --------------------------------------------------------------
 
-def build_compare():
-    nodes, edges = source_view(COMPARE_SOURCE)
+def patch_compare_urls(nodes):
+    """The parametrised timesheet URL and the saved login token - shared by every build of
+    this graph: they are fixes to the source definition, not to any one version of it."""
     patched = 0
     for n in nodes:
         url = n["metadata"].get("url", "")
@@ -286,6 +287,12 @@ def build_compare():
             patched += 1
         elif "/auth/login" in url:
             n["metadata"]["result_variable"] = "login_result"
+    return patched
+
+
+def build_compare():
+    nodes, edges = source_view(COMPARE_SOURCE)
+    patched = patch_compare_urls(nodes)
     print(f"  timesheet URLs parametrised: {patched}")
     build("report-participant-compare", "Отчёты: сверка отчёта участника", nodes, edges,
           {"llm_provider": "deepseek"})
@@ -294,9 +301,123 @@ def build_compare():
     print("  humans:", humans, "documents:", docs)
 
 
+# --- B2: the same comparison, with the uploaded file normalized before the model reads it ----
+# The v1 graph handed the model the export AS IT COMES OUT OF EXCEL: the title row read as
+# the table's header, merged person cells as blank names, and the totals/pivot blocks below
+# the data as if they were working days. On a real company-wide export that produced 61
+# invented discrepancies and a message too long for Telegram. v2 lets the DOCUMENT node
+# normalize the sheet first (node metadata "normalize": "table") and rewrites the two parse
+# prompts around the shape that comes out.
+
+TIMESHEET_PARSE_PROMPT_V2 = (
+    "Ниже — ответ API трекера (переменная http_result): список таймшитов одного пользователя. "
+    "Преврати его в JSON-массив записей.\n\n"
+    "Каждый элемент — объект с РОВНО такими ключами:\n"
+    '{"person": "фамилия", "date": "YYYY-MM-DD", "task": "ключ и название", "hours": 4.5}\n\n'
+    "ПРАВИЛА:\n"
+    "- person — фамилия участника из переменной participant_name («Александр Ежаков» → «Ежаков»): "
+    "бери слово-фамилию — оканчивается на -ов/-ев/-ин/-ский/-цкий и их женские формы "
+    "-ова/-ева/-ина/-ская/-цкая, а также -ко; если слово одно — оно и есть фамилия. "
+    "Если participant_name в контексте нет — верни пустой массив [] (сравнивать не с чем);\n"
+    "- date — поле onDate, формат уже YYYY-MM-DD;\n"
+    '- task — "{project.prefix}-{task.id} {task.name}", например '
+    "«ORK-104256 Поддержка human in the loop»;\n"
+    '- hours — поле spentTime, число ("8.00" → 8.0).\n'
+    "Если у даты несколько записей — каждая отдельным элементом массива. Ничего не выдумывай: "
+    "только то, что есть в ответе.\n"
+    "Выведи ТОЛЬКО JSON-массив, каждый объект на отдельной строке, без markdown-обёртки и без "
+    "текста до и после.\n\n"
+    "Если в http_result нет списка записей (например, ошибка HTTP), верни пустой массив []."
+)
+
+FILE_PARSE_PROMPT_V2 = (
+    "Прочитай переменную file_text — загруженный пользователем отчёт. Преврати его в JSON-массив "
+    "записей.\n\n"
+    "Каждый элемент — объект с РОВНО такими ключами:\n"
+    '{"person": "фамилия", "date": "YYYY-MM-DD", "task": "ключ и название", "hours": 4.5}\n\n'
+    "ВИД 1 — НОРМАЛИЗОВАННАЯ ТАБЛИЦА (первый рядок таблицы: ФИО | Дата | Ключ | Задача | Часы):\n"
+    "- person — фамилия ОДНИМ словом из колонки ФИО (слово оканчивается на -ов/-ев/-ин/-ский/"
+    "-цкий и их женские формы -ова/-ева/-ина/-ская/-цкая, а также -ко; если слов одно — оно и "
+    "есть фамилия);\n"
+    "- date — как есть: колонка Дата уже в формате YYYY-MM-DD;\n"
+    "- task — «{Ключ} {Задача}» если Ключ не пустой, иначе только Задача; на выходе должен "
+    "получиться «KEY-123 Название», ровно в таком виде, как в отчёте трекера;\n"
+    "- hours — число из колонки Часы; дробные не округляй (4.5 остаётся 4.5).\n"
+    "Такая таблица уже очищена: заголовки, итоги и сводные блоки в ней отсутствуют. НЕ "
+    "фильтруй строки по сотруднику и не отбрасывай «лишние»: включай ВСЕ строки подряд — файл "
+    "может быть отчётом на всю компанию сразу.\n\n"
+    "ВИД 2 — ИСХОДНАЯ ТАБЛИЦА (нормализация не сработала: первая строка — заголовок вида "
+    "«Отчет по компании» или вообще без названия, колонки вроде «Дата приема на работу», "
+    "«Ключ задачи», «Billable»):\n"
+    "- настоящую шапку (ФИО, Дата, Задача, …) ищи среди первых 25 строк и считай таблицу от неё;\n"
+    "- person — фамилия ОДНИМ словом из ячейки ФИО (то же правило, что выше);\n"
+    "- date — YYYY-MM-DD, в какой бы записи ни был оригинал (ДД.ММ.ГГГГ, ДД.ММ, YYYY-MM-DD);\n"
+    "- task — ключ или номер задачи, если он есть (любой формат: INTGR-4914, INV-64371, TB-104268, "
+    "T-123) и название через пробел; ключа нет — просто название;\n"
+    "- hours — число из колонки затраченных часов; текстовое время («4h 30m», «4 ч 30 мин») "
+    "переведи в часы (4.5), не вставляй текст и не округляй.\n"
+    "ИГНОРИРУЙ: строки заголовков и пустые; итоговые («Всего billable:», «Всего часов:»); "
+    "сводные блоки, где в колонке даты стоит название раздела («Показатели», "
+    "«*Направление QA», «MLSense(Ульяновск)») — это не рабочие дни.\n\n"
+    "ОБЩЕЕ:\n"
+    "- каждая строка задачи попадает в массив ровно один раз, без пропусков и дублей; дойди до "
+    "самого конца текста;\n"
+    "- ПЕРЕД ОТВЕТОМ ПЕРЕСЧИТАЙ: сколько строк задач в исходнике — ровно столько объектов; "
+    "если не сошлось — допиши недостающие.\n\n"
+    "Верни ТОЛЬКО JSON-массив, каждый объект на отдельной строке, без markdown-обёртки и без "
+    "текста до и после."
+)
+
+REPORT_LENGTH_RULE = (
+    "ДЛИНА ОТВЕТА: сообщение уходит в Telegram одним сообщением с жёстким пределом 4096 "
+    "символов, поэтому отвечай не длиннее 3400 символов. Если в какой-то секции больше 12 "
+    "пунктов — не перечисляй все: оставь первые 12 и допиши строкой вида «… и ещё K расхождений "
+    "(даты: ДД.ММ, ДД.ММ)», где K — число НЕ перечисленных пунктов этой секции. Заголовок секции "
+    "всё равно называет общее число находок N. Правило 1:1 из шага 4 действует для "
+    "перечисленных пунктов; сокращение помечается строкой «… и ещё», и вместе с ней строки "
+    "покрывают находки секции без выдуманных строк."
+)
+
+
+
+def build_compare_v2():
+    """Copy of ``report-participant-compare`` with normalization + bounded output.
+
+    Same source graph and the same URL fixes as v1 - the point is that v1 stays deployable
+    and untouched while the new behaviour is exercised by the flow that opts in.
+    """
+    nodes, edges = source_view(COMPARE_SOURCE)
+    print(f"  timesheet URLs parametrised: {patch_compare_urls(nodes)}")
+
+    document = next(n for n in nodes if n["nodeType"] == "DOCUMENT")
+    timesheet = next(n for n in nodes if n["nodeType"] == "ACTION"
+                     and n["metadata"].get("output_variable") == "doc1")
+    file_parse = next(n for n in nodes if n["nodeType"] == "ACTION"
+                      and n["metadata"].get("output_variable") == "doc2")
+    report = next(n for n in nodes if n["nodeType"] == "ACTION"
+                  and "массив matched" in n["metadata"].get("system_prompt", ""))
+
+    # The sheet arrives pre-shaped: header found under the title rows, merged person cells
+    # filled down, totals and pivots dropped, task key on its own, five narrow columns.
+    document["metadata"]["normalize"] = "table"
+    # The timesheet side now names its person from the run instead of a hardcoded one.
+    timesheet["metadata"]["include_variables"] = "http_result,participant_name"
+    timesheet["metadata"]["system_prompt"] = TIMESHEET_PARSE_PROMPT_V2
+    file_parse["metadata"]["system_prompt"] = FILE_PARSE_PROMPT_V2
+    report["metadata"]["system_prompt"] = (
+        report["metadata"].get("system_prompt", "").rstrip() + "\n\n" + REPORT_LENGTH_RULE)
+
+    build("report-participant-compare-v2", "Отчёты: сверка отчёта участника v2", nodes, edges,
+          {"llm_provider": "deepseek"})
+    print("  normalize:", document["nodeId"], "| doc1:", timesheet["nodeId"],
+          "| doc2:", file_parse["nodeId"], "| report:", report["nodeId"])
+
+
+
 if __name__ == "__main__":
     build_picker()
     build_compare()
+    build_compare_v2()
     listed = gql("query { listGraphs(pageSize: 50, pageToken: \"\") { graphs { graphId graphName "
                  "status nodeCount } } }")
     data = (listed.get("data") or {}).get("listGraphs") or {}
