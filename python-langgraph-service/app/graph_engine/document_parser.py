@@ -107,6 +107,11 @@ class ParsedDocument:
     truncated: bool = False
     warnings: List[str] = field(default_factory=list)
     stats: Dict[str, Any] = field(default_factory=dict)
+    # LLM normalization mode: sheet title -> the mapping that was applied to it (the model's
+    # JSON plus its ``source``), empty for every other mode. The DOCUMENT node copies this
+    # into ``document_meta.normalize`` so an operator can see what decided the layout - the
+    # one thing that makes "the model read my file" checkable rather than a claim.
+    sheet_mappings: Dict[str, Any] = field(default_factory=dict)
 
 
 def _cell_text(value: Any, max_cell_chars: int) -> str:
@@ -249,14 +254,17 @@ def _repair_xlsx_styles(content: bytes) -> Optional[bytes]:
     return output.getvalue()
 
 
-def _parse_xlsx(content: bytes, limits: DocumentLimits,
-                normalize: Optional[NormalizeOptions] = None) -> ParsedDocument:
-    # read_only + data_only: stream the rows instead of materialising the sheet, and take the
-    # CACHED computed values - a formula string would be noise to a model asked about numbers.
+def _open_workbook(content: bytes):
+    """Load the workbook, repairing the stylesheet once and failing loudly afterwards.
+
+    Moved out of ``_parse_xlsx`` so the mapping-proposal path can read the same grid with
+    the same code: two reads of a bounded workbook are cheaper than a parser that is able
+    to call a model.
+    """
     import openpyxl
 
     try:
-        workbook = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        return openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
     except Exception as exc:  # openpyxl raises a zoo of types for a damaged package
         # One retry, with the stylesheet normalised: openpyxl's strict colour validation is
         # the single most common reason a file that opens fine in Excel is refused here, and
@@ -267,21 +275,29 @@ def _parse_xlsx(content: bytes, limits: DocumentLimits,
         if repaired is None:
             raise CorruptDocumentError(f"Could not read the spreadsheet: {exc}") from exc
         try:
-            workbook = openpyxl.load_workbook(io.BytesIO(repaired), read_only=True,
-                                              data_only=True)
+            return openpyxl.load_workbook(io.BytesIO(repaired), read_only=True,
+                                          data_only=True)
         except Exception as repaired_exc:
             # The stylesheet was not the real problem after all: report the failure the
             # caller saw, chained to what the retry found, so nothing is hidden.
             raise CorruptDocumentError(f"Could not read the spreadsheet: {exc}") \
                 from repaired_exc
 
+
+def read_sheets(content: bytes, limits: DocumentLimits
+                ) -> Tuple[List[Tuple[str, List[List[str]]]], List[str], int]:
+    """Stream every sheet's rows under the caps: ``(sheets, warnings, total_rows)``.
+
+    The grid itself, before any rendering - what a mapping proposal is asked about and what
+    the parser later renders, read with the SAME row rules (cell caps, trailing empty cells
+    and spacer rows dropped) so the two can never disagree about what a row IS.
+    """
+    workbook = _open_workbook(content)
     warnings: List[str] = []
-    sections: List[str] = []
+    sheets: List[Tuple[str, List[List[str]]]] = []
     total_rows = 0
-    normalize_totals: Dict[str, int] = {}
-    normalized_header_rows: List[int] = []
-    sheet_count = len(workbook.worksheets)
     try:
+        sheet_count = len(workbook.worksheets)
         if sheet_count > limits.max_sheets:
             warnings.append(
                 f"Only the first {limits.max_sheets} of {sheet_count} sheet(s) were read.")
@@ -299,41 +315,68 @@ def _parse_xlsx(content: bytes, limits: DocumentLimits,
                     continue  # a fully blank spacer row carries no fact
                 rows.append(cells)
             total_rows += len(rows)
-
-            if not rows:
-                sections.append(f"## Sheet: {sheet.title}\n\n(empty sheet)")
-                continue
-
-            # Opt-in: with `normalize: "table"` the sheet is narrowed to the columns the
-            # graph compares, dead rows removed first. A sheet the normalizer does not
-            # recognize (or one where no row survives its rules) is rendered exactly as it
-            # would have been without the option, plus a warning saying which it was.
-            if normalize is not None and normalize.enabled:
-                normalized = normalize_timesheet(rows, normalize)
-                if normalized is None:
-                    warnings.append(
-                        f"Sheet '{sheet.title}': no table could be normalized, parsed as-is.")
-                else:
-                    sections.append(
-                        f"## Sheet: {sheet.title}\n\n"
-                        f"{_markdown_table(normalized.header, normalized.rows)}")
-                    warnings.extend(normalized.warnings)
-                    normalized_header_rows.append(normalized.header_row)
-                    for key, value in normalized.stats.items():
-                        normalize_totals[key] = normalize_totals.get(key, 0) + value
-                    continue
-
-            header, body = rows[0], rows[1:]
-            sections.append(f"## Sheet: {sheet.title}\n\n{_markdown_table(header, body)}")
+            sheets.append((sheet.title, rows))
     finally:
         # read_only workbooks keep the archive handle open until closed.
         workbook.close()
+    return sheets, warnings, total_rows
+
+
+def _parse_xlsx(content: bytes, limits: DocumentLimits,
+                normalize: Optional[NormalizeOptions] = None) -> ParsedDocument:
+    sheets, warnings, total_rows = read_sheets(content, limits)
+    sections: List[str] = []
+    normalize_totals: Dict[str, int] = {}
+    normalized_header_rows: List[int] = []
+    # LLM mode: which sheet was rendered from a mapping, and what that mapping was. The
+    # parser never proposes - the DOCUMENT node resolved these before parsing (see
+    # node_handlers._process_document) - it only reports what it was handed and applied.
+    sheet_mappings: Dict[str, Any] = {}
+    mapped_sheets = 0
+    fallback_sheets = 0
+
+    for sheet_title, rows in sheets:
+        if not rows:
+            sections.append(f"## Sheet: {sheet_title}\n\n(empty sheet)")
+            continue
+
+        # Opt-in: with `normalize: "table"` the sheet is narrowed to the columns the
+        # graph compares, dead rows removed first. With `normalize: "llm"` the sheet is
+        # narrowed by the mapping the DOCUMENT node resolved before parsing (or, when there
+        # was none, by these very rules - see table_normalize._fall_back_to_rules). A sheet
+        # neither can read is rendered exactly as it would have been without the option,
+        # plus a warning saying which it was.
+        if normalize is not None and normalize.enabled:
+            normalized = normalize_timesheet(rows, normalize, sheet_title=sheet_title)
+            if normalize.is_llm:
+                if normalized is not None and normalized.mapping is not None:
+                    mapped_sheets += 1
+                    sheet_mappings[sheet_title] = {
+                        **normalized.mapping, "source": normalized.mapping_source}
+                else:
+                    fallback_sheets += 1
+            if normalized is None:
+                warnings.append(
+                    f"Sheet '{sheet_title}': no table could be normalized, parsed as-is.")
+            else:
+                sections.append(
+                    f"## Sheet: {sheet_title}\n\n"
+                    f"{_markdown_table(normalized.header, normalized.rows)}")
+                warnings.extend(normalized.warnings)
+                normalized_header_rows.append(normalized.header_row)
+                for key, value in normalized.stats.items():
+                    normalize_totals[key] = normalize_totals.get(key, 0) + value
+                continue
+
+        header, body = rows[0], rows[1:]
+        sections.append(f"## Sheet: {sheet_title}\n\n{_markdown_table(header, body)}")
 
     if not sections:
         warnings.append("The spreadsheet contains no rows.")
 
     stats: Dict[str, Any] = {
-        "sheets_read": min(sheet_count, limits.max_sheets),
+        # len(sheets) IS min(sheets_in_workbook, max_sheets): read_sheets applies the cap.
+        "sheets_read": len(sheets),
         "rows_read": total_rows,
     }
     if normalize is not None and normalize.enabled:
@@ -348,6 +391,12 @@ def _parse_xlsx(content: bytes, limits: DocumentLimits,
             "dropped_no_date": normalize_totals.get("dropped_no_date", 0),
             "dropped_no_hours": normalize_totals.get("dropped_no_hours", 0),
         })
+        if normalize.is_llm:
+            # How many sheets a proposal actually decided - and how many fell back to the
+            # deterministic rules (or to as-is). Without these two numbers a probe graph
+            # cannot tell "the model mapped it" from "the model was ignored".
+            stats["llm_mapped_sheets"] = mapped_sheets
+            stats["llm_fallback_sheets"] = fallback_sheets
         if len(normalized_header_rows) == 1:
             # On which row the real table started - the fact that explains most
             # "the model invented a column" reports, worth keeping visible.
@@ -359,6 +408,7 @@ def _parse_xlsx(content: bytes, limits: DocumentLimits,
         truncated=bool(warnings),
         warnings=warnings,
         stats=stats,
+        sheet_mappings=sheet_mappings,
     )
 
 
