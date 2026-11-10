@@ -3,7 +3,8 @@ import inspect
 import json
 import logging
 import re
-from typing import Dict, Set, Callable, Awaitable, Any, Optional, Tuple
+from dataclasses import replace
+from typing import Dict, Set, Callable, Awaitable, Any, List, Optional, Tuple
 
 import grpc
 from langchain_core.runnables import RunnableConfig
@@ -18,6 +19,7 @@ from app.graph_engine.document_parser import (
     DocumentLimits,
     DocumentParseError,
     parse_document,
+    read_sheets,
 )
 from app.graph_engine.table_normalize import NormalizeOptions
 from app.graph_engine.graph_utils import format_state_context, extract_json_from_response, JsonGenerationError, \
@@ -828,7 +830,12 @@ class NodeHandler:
         if node_type == "HTTP_REQUEST":
             return await self._process_http_request(n_id, n_meta, state)
         if node_type == "DOCUMENT":
-            return await self._process_document(n_id, n_meta, state)
+            # llm/credentials ride along for `normalize: "llm"`: the mapping proposal is an
+            # ordinary model call made with THIS run's client and keys. A node that does not
+            # ask for the mode never uses them - and the servicer only resolved a client for
+            # it in that case (see uses_llm), so passing them costs nothing here.
+            return await self._process_document(n_id, n_meta, state, llm,
+                                                credentials, require_user_key, caller_kind)
         if node_type in self.ACTION_NODE_TYPES:
             return await self._process_action(n_id, n_meta, state, llm,
                                               credentials, require_user_key, caller_kind,
@@ -1206,7 +1213,11 @@ class NodeHandler:
             logger.error(f"Node {n_id}: Unexpected HTTP request error - {e}", exc_info=True)
             return {"last_node": n_id, "output": "Unexpected error during HTTP request execution.", "error": str(e)}
 
-    async def _process_document(self, n_id: str, n_meta: Dict, state: GraphState) -> Dict:
+    async def _process_document(self, n_id: str, n_meta: Dict, state: GraphState,
+                                llm=None,
+                                credentials: Optional[LLMCredentialSet] = None,
+                                require_user_key: bool = False,
+                                caller_kind: str = "") -> Dict:
         """Fetch a caller-attached document and extract prompt-ready text from it.
 
         The document itself NEVER enters GraphState: it would be checkpointed to Postgres on
@@ -1224,6 +1235,12 @@ class NodeHandler:
         DOCUMENT nodes its own key and its own variable, so the second extraction lands beside
         the first instead of overwriting it, and the ACTION node downstream can name both.
         See :func:`app.graph_engine.graph_utils.document_variables_of`.
+
+        LLM MODE: with ``normalize: "llm"`` the node first reads the sheet grid and asks the
+        model for ONE mapping per sheet (see :meth:`_propose_mappings`), then parses with
+        those mappings in hand. The model never sees the whole file and never writes a cell -
+        the parser applies what survived validation, or falls back to the deterministic
+        rules when nothing did.
         """
         context = state.get("context") or {}
         if not isinstance(context, dict):
